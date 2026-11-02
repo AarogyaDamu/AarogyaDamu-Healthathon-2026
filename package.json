@@ -14,6 +14,7 @@
     "build:web": "npm --workspace=apps/web run build",
     "db:generate": "npm --workspace=services/api run prisma:generate",
     "db:migrate": "npm --workspace=services/api run prisma:migrate",
+    "db:seed": "npm --workspace=services/api run prisma:seed",
     "dev": "npm run dev:api",
     "dev:api": "npm --workspace=services/api run dev",
     "dev:web": "npm --workspace=apps/web run dev",
@@ -21,7 +22,11 @@
     "dev:mobile:web": "npm --workspace=apps/mobile run web",
     "dev:mobile:android": "npm --workspace=apps/mobile run android",
     "dev:mobile:ios": "npm --workspace=apps/mobile run ios",
-    "test:api": "npm --workspace=services/api run test"
+    "test": "npm run test:api && npm run test:web && npm run test:mobile",
+    "test:api": "npm --workspace=services/api run test",
+    "test:web": "npm --workspace=apps/web run test",
+    "test:mobile": "npm --workspace=apps/mobile run test",
+    "typecheck:mobile": "npm --workspace=apps/mobile exec tsc -- --noEmit"
   },
   "devDependencies": {
     "metro": "^0.82.5",

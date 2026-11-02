@@ -1,4 +1,3 @@
-
 import React from 'react';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -21,7 +20,6 @@ export default function RootLayout() {
           <Stack.Screen name="(auth)" />
           <Stack.Screen name="session-router" />
           <Stack.Screen name="(tabs)" />
-          <Stack.Screen name="(doctor)" />
           <Stack.Screen name="(caregiver)" />
         </Stack>
       </ToastProvider>

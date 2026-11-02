@@ -76,7 +76,7 @@ An Android emulator validation attempt was executed on the local `Pixel_7` AVD. 
 - **Idempotency**: Rapid double-submission of task completion verified in automated test suite (returns HTTP 200 with persisted completed state).
 
 ### Task 6 — Controlled Pilot Runbook & Operational Readiness
-- **File Created**: [`controlled_pilot_runbook.md`](file:///c:/Users/prana/Desktop/aarogyadamu-project3/controlled_pilot_runbook.md)
+- **File Location**: [`controlled_pilot_runbook.md`](../runbooks/controlled_pilot_runbook.md)
 - **Artifact Copy**: [`controlled_pilot_runbook.md`](file:///C:/Users/prana/.gemini/antigravity-ide/brain/4dcd9c02-722d-42f2-a370-8742b1a17566/controlled_pilot_runbook.md)
 - **Contents Delivered**:
   1. **SQLite Backup & Restore Runbook**: Exact guidance for WAL checkpointing (`PRAGMA wal_checkpoint(TRUNCATE)`), native `.backup` commands, atomic `VACUUM INTO` procedures, backup integrity validation (`PRAGMA integrity_check`), and non-destructive recovery steps.

@@ -461,15 +461,22 @@ authRouter.post('/login', loginRateLimiter, async (req: Request, res: Response):
 
 authRouter.post('/demo-session', async (req: Request, res: Response): Promise<void> => {
   try {
+    if (!env.ALLOW_DEMO_AUTH || env.NODE_ENV === 'production') {
+      res.status(403).json({ error: 'Demo authentication is disabled in this environment.' });
+      return;
+    }
+
     const requestedRole = (req.body?.role || 'PATIENT').toUpperCase();
 
-    let demoUser: any = null;
+    // Security remediation: Clinician/Doctor accounts cannot be issued via unauthenticated demo-session
     if (requestedRole === 'DOCTOR') {
-      demoUser = await prisma.user.findFirst({
-        where: { isSyntheticDemo: true, isClinician: true },
-        include: { profile: true },
-      });
-    } else if (requestedRole === 'CAREGIVER') {
+      await recordSecurityEvent('DOCTOR_DEMO_SESSION_DENIED', req);
+      res.status(403).json({ error: 'Clinician access is restricted to verified invitation workflows.' });
+      return;
+    }
+
+    let demoUser: any = null;
+    if (requestedRole === 'CAREGIVER') {
       demoUser = await prisma.user.findFirst({
         where: { isSyntheticDemo: true, email: { contains: 'family' } },
         include: { profile: true },

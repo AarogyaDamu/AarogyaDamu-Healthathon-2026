@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+**/node_modules/
 /.pnp
 .pnp.js
 
@@ -11,18 +12,15 @@ build/
 
 # Environment Variables & Secrets
 .env
-.env.local
-.env.*.local
-.env.development.local
-.env.test.local
-.env.production.local
+.env.*
 **/.env
-**/.env.local
-**/.env.*.local
+**/.env.*
+!.env.example
 !**/.env.example
 
 # Local SQLite Databases, Journals & Backups
 *.db
+*.db-*
 *.db-journal
 *.db-shm
 *.db-wal
@@ -33,6 +31,8 @@ dev.db*
 services/api/prisma/*.db
 services/api/prisma/*.db-*
 services/api/prisma/*.db.backup*
+services/api/prisma/backups/
+**/backups/
 
 # File Uploads Storage
 services/api/uploads/*

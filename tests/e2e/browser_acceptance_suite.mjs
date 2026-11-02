@@ -18,16 +18,28 @@ const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '../..');
 
 const EVIDENCE_DIR_LOCAL = path.join(rootDir, 'apps', 'web', 'tests', 'evidence');
-const EVIDENCE_DIR_ARTIFACT = 'C:\\Users\\prana\\.gemini\\antigravity\\brain\\049b5f9f-1e13-45ae-a700-7e7ec3fe1d67\\evidence';
+const EVIDENCE_DIR_ARTIFACT = process.env.EVIDENCE_DIR_ARTIFACT || null;
 
 fs.mkdirSync(EVIDENCE_DIR_LOCAL, { recursive: true });
-fs.mkdirSync(EVIDENCE_DIR_ARTIFACT, { recursive: true });
+if (EVIDENCE_DIR_ARTIFACT) {
+  try {
+    fs.mkdirSync(EVIDENCE_DIR_ARTIFACT, { recursive: true });
+  } catch (err) {
+    console.warn('[Warning] Could not create EVIDENCE_DIR_ARTIFACT:', err.message);
+  }
+}
 
 function saveEvidence(filename, buffer) {
   const p1 = path.join(EVIDENCE_DIR_LOCAL, filename);
-  const p2 = path.join(EVIDENCE_DIR_ARTIFACT, filename);
   fs.writeFileSync(p1, buffer);
-  fs.writeFileSync(p2, buffer);
+  if (EVIDENCE_DIR_ARTIFACT) {
+    try {
+      const p2 = path.join(EVIDENCE_DIR_ARTIFACT, filename);
+      fs.writeFileSync(p2, buffer);
+    } catch (err) {
+      console.warn(`[Warning] Could not save artifact evidence for ${filename}:`, err.message);
+    }
+  }
   console.log(`[Evidence Saved] ${filename} (${buffer.length} bytes)`);
 }
 
