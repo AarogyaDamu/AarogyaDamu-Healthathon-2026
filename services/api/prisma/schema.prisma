@@ -1,0 +1,520 @@
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ==========================================
+// 1. USERS & IDENTITY
+// ==========================================
+model User {
+  id                  String   @id @default(uuid())
+  email               String   @unique
+  passwordHash        String
+  isSyntheticDemo     Boolean  @default(false)
+  isClinician         Boolean  @default(false)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  profile             PatientProfile?
+  observations        HealthObservation[]
+  tasks               CareTask[]
+  documents           HealthDocument[]
+  consultationPreps   ConsultationPrep[]
+  consentsGiven       CaregiverConsent[]    @relation("PatientConsents")
+  assistantProposals  AssistantProposal[]
+  medicationSchedules MedicationSchedule[]
+  auditLogs           AuditLog[]
+  consultationNotes   ConsultationNote[]
+  authoredNotes       ConsultationNote[]    @relation("ConsultationNoteAuthor")
+  approvedNotes       ConsultationNote[]    @relation("ConsultationNoteApprover")
+
+  // Shared appointment and care coordination relationships
+  appointmentsAsPatient Appointment[]             @relation("AppointmentPatient")
+  appointmentsAsDoctor  Appointment[]             @relation("AppointmentDoctor")
+  appointmentsBooked   Appointment[]             @relation("AppointmentBookedBy")
+  doctorAssignments    DoctorPatientAssignment[] @relation("DoctorAssignments")
+  patientAssignments   DoctorPatientAssignment[] @relation("PatientAssignments")
+  carePlansAsPatient   CarePlan[]                @relation("CarePlanPatient")
+  carePlansAsDoctor    CarePlan[]                @relation("CarePlanDoctor")
+  carePlansApproved    CarePlan[]                @relation("CarePlanApprover")
+
+  // Phase 4: Caregiver Connect, Doctor Dashboard & Care Coordination
+  tasksCompleted       CareTask[]                @relation("TaskCompletedBy")
+  sentMessages         CareTeamMessage[]         @relation("MessageSender")
+  receivedMessages     CareTeamMessage[]         @relation("MessageRecipient")
+  patientMessages      CareTeamMessage[]         @relation("PatientMessages")
+  notifications        CareNotification[]        @relation("UserNotifications")
+  authSessions         AuthSession[]
+  passwordResetTokens PasswordResetToken[]
+}
+
+model AuthSession {
+  id        String         @id @default(uuid())
+  userId    String
+  createdAt DateTime       @default(now())
+  expiresAt DateTime
+  revokedAt DateTime?
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokens    RefreshToken[]
+
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+}
+
+model RefreshToken {
+  id            String      @id @default(uuid())
+  sessionId     String
+  tokenHash     String      @unique
+  expiresAt     DateTime
+  usedAt        DateTime?
+  revokedAt     DateTime?
+  successorHash String?
+  createdAt     DateTime    @default(now())
+  session       AuthSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, expiresAt])
+}
+
+model DoctorInvitation {
+  id        String   @id
+  email     String
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([email, expiresAt])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+}
+
+model SecurityAuditEvent {
+  id         String   @id @default(uuid())
+  action     String
+  subject    String?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  @@index([action, createdAt])
+  @@index([subject, createdAt])
+}
+
+// ==========================================
+// 2. PATIENT PROFILE
+// ==========================================
+model PatientProfile {
+  id                    String   @id @default(uuid())
+  userId                String   @unique
+  fullName              String
+  dateOfBirth           DateTime?
+  diabetesType          String   @default("UNKNOWN")
+  diagnosisYear         Int?     @default(2021)
+  primaryClinician      String?  @default("Unassigned")
+  knownAllergies        String?  @default("None documented")
+  targetFastingMin      Float    @default(80)
+  targetFastingMax      Float    @default(130)
+  targetPostMealMax     Float    @default(180)
+  emergencyContactName  String?
+  emergencyContactPhone String?
+  preferredLanguage     String?  @default("en")
+  timeZone              String?  @default("Asia/Kolkata")
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ==========================================
+// 3. HEALTH OBSERVATIONS
+// ==========================================
+model HealthObservation {
+  id           String   @id @default(uuid())
+  userId       String
+  type         String   @default("BLOOD_GLUCOSE")
+  numericValue Float
+  unit         String   @default("mg/dL")
+  context      String   @default("FASTING")
+  notes        String?
+  provenance   String   @default("PATIENT_ENTERED")
+  observedAt   DateTime @default(now())
+  createdAt    DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, observedAt])
+  @@index([userId, type])
+}
+
+// ==========================================
+// 4. CARE TASKS & REMINDERS
+// ==========================================
+model CareTask {
+  id              String    @id @default(uuid())
+  userId          String
+  carePlanId      String?
+  completedById   String?
+  completedByRole String?   // PATIENT, CAREGIVER, DOCTOR
+  title           String
+  category        String    @default("FOLLOW_UP")
+  status          String    @default("PENDING")
+  dueAt           DateTime
+  completedAt     DateTime?
+  idempotencyKey  String?   @unique
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  completedBy User?     @relation("TaskCompletedBy", fields: [completedById], references: [id], onDelete: SetNull)
+  carePlan    CarePlan? @relation("CarePlanTasks", fields: [carePlanId], references: [id], onDelete: SetNull)
+
+  @@index([userId, status, dueAt])
+  @@index([carePlanId])
+  @@index([completedById])
+}
+
+// ==========================================
+// 5. HEALTH DOCUMENTS
+// ==========================================
+model HealthDocument {
+  id               String   @id @default(uuid())
+  userId           String
+  title            String
+  category         String   @default("LAB_REPORT")
+  issuingFacility  String?
+  reportDate       DateTime @default(now())
+  notes            String?
+  processingStatus String   @default("READY")
+  extractedData    String?
+  storagePath      String?
+  fileSizeBytes    Int?
+  mimeType         String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, reportDate])
+  @@index([userId, category])
+}
+
+// ==========================================
+// 6. CONSULTATION PREPARATION
+// ==========================================
+model ConsultationPrep {
+  id                   String   @id @default(uuid())
+  userId               String
+  clinicianName        String   @default("Treating Physician")
+  facilityName         String?
+  scheduledAt          DateTime @default(now())
+  concernsAndQuestions String
+  personalNotes        String?
+  snapshotData         String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  user          User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clinicalNotes ConsultationNote[]
+
+  @@index([userId, scheduledAt])
+}
+
+// ==========================================
+// 7. CAREGIVER CONSENTS
+// ==========================================
+model CaregiverConsent {
+  id             String   @id @default(uuid())
+  patientId      String
+  caregiverEmail String
+  caregiverName  String
+  relationship   String
+  status         String   @default("ACTIVE")
+  permissions    String
+  expiresAt      DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  patient User @relation("PatientConsents", fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@index([patientId, caregiverEmail, status])
+}
+
+// ==========================================
+// 8. DAMU ASSISTANT PROPOSALS
+// ==========================================
+model AssistantProposal {
+  id          String   @id @default(uuid())
+  userId      String
+  type        String   @default("SCHEDULE_TASK")
+  summaryText String
+  payload     String
+  status      String   @default("PENDING")
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+}
+
+// ==========================================
+// 9. MEDICATION SCHEDULES
+// ==========================================
+model MedicationSchedule {
+  id                String   @id @default(uuid())
+  userId            String
+  medicineName      String   @default("")
+  medicationName    String?
+  dosage            String   @default("")
+  dosageInstruction String?
+  frequency         String?
+  timing            String   @default("MORNING")
+  notes             String?
+  startDate         DateTime? @default(now())
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isActive])
+}
+
+// ==========================================
+// 10. AUDIT LOGS
+// ==========================================
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String
+  actorId    String
+  action     String
+  entityType String
+  entityId   String?
+  metadata   String?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([actorId])
+}
+
+// ==========================================
+// 11. MEDICAL SCRIBE NOTES
+// ==========================================
+model ConsultationNote {
+  id                       String    @id @default(uuid())
+  userId                   String
+  clinicianId              String
+  consultationPrepId       String?
+  idempotencyKey           String?
+  retryCount               Int       @default(0)
+  clinicianName            String
+  facilityName             String?
+  status                   String    @default("RECORDING")
+  recordingStatus          String    @default("NOT_STARTED")
+  recordingDurationSeconds Int?
+  audioConsentObtained     Boolean   @default(false)
+  audioConsentAt           DateTime?
+  consentMetadata          String?
+  transcriptionProvider    String?
+  rawTranscript            String
+  speakerSegments          String
+  structuredNote           String
+  approvedNoteText         String?
+  approvedAt               DateTime?
+  approvedBy               String?
+  rejectionReason          String?
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+
+  user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clinician        User              @relation("ConsultationNoteAuthor", fields: [clinicianId], references: [id], onDelete: Restrict)
+  approver         User?             @relation("ConsultationNoteApprover", fields: [approvedBy], references: [id], onDelete: SetNull)
+  consultationPrep ConsultationPrep? @relation(fields: [consultationPrepId], references: [id], onDelete: SetNull)
+
+  @@index([userId, status])
+  @@index([clinicianId])
+  @@unique([clinicianId, idempotencyKey])
+  @@index([consultationPrepId])
+}
+
+// ==========================================
+// 12. DOCTOR–PATIENT ASSIGNMENTS
+// ==========================================
+model DoctorPatientAssignment {
+  id          String    @id @default(uuid())
+  doctorId    String
+  patientId   String
+  status      String    @default("PENDING")
+  activatedAt DateTime?
+  endedAt     DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  doctor  User @relation("DoctorAssignments", fields: [doctorId], references: [id], onDelete: Restrict)
+  patient User @relation("PatientAssignments", fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@unique([doctorId, patientId])
+  @@index([doctorId, status])
+  @@index([patientId, status])
+}
+
+// ==========================================
+// 13. SHARED APPOINTMENTS
+// ==========================================
+model Appointment {
+  id              String   @id @default(uuid())
+  patientId       String
+  doctorId        String
+  bookedById      String
+  scheduledAt     DateTime
+  durationMinutes Int      @default(30)
+  reason          String
+  visitType       String   @default("CHECKUP")
+  status          String   @default("REQUESTED")
+  notes           String?
+  idempotencyKey  String?  @unique
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  patient  User @relation("AppointmentPatient", fields: [patientId], references: [id], onDelete: Cascade)
+  doctor   User @relation("AppointmentDoctor", fields: [doctorId], references: [id], onDelete: Restrict)
+  bookedBy User @relation("AppointmentBookedBy", fields: [bookedById], references: [id], onDelete: Restrict)
+
+  @@index([patientId, scheduledAt, status])
+  @@index([doctorId, scheduledAt, status])
+}
+
+// ==========================================
+// 14. SHARED DIABETES CARE PLANS
+// ==========================================
+model CarePlan {
+  id                 String             @id @default(uuid())
+  patientId          String
+  doctorId           String
+  approvedById       String?
+  title              String
+  diagnosis          String?            @default("Type 2 Diabetes Mellitus")
+  status             String             @default("DRAFT") // DRAFT, ACTIVE, SUPERSEDED, ARCHIVED
+  version            Int                @default(1)
+  summary            String?
+  doctorInstructions String?
+  reviewDate         DateTime?
+  approvedAt         DateTime?
+  rejectionReason    String?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  patient            User               @relation("CarePlanPatient", fields: [patientId], references: [id], onDelete: Cascade)
+  doctor             User               @relation("CarePlanDoctor", fields: [doctorId], references: [id], onDelete: Restrict)
+  approver           User?              @relation("CarePlanApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+
+  goals              CarePlanGoal[]
+  activities         CarePlanActivity[]
+  tasks              CareTask[]         @relation("CarePlanTasks")
+
+  @@index([patientId, status])
+  @@index([doctorId, status])
+  @@index([patientId, version])
+}
+
+model CarePlanGoal {
+  id          String   @id @default(uuid())
+  carePlanId  String
+  category    String   @default("GLUCOSE") // GLUCOSE, HBA1C, BLOOD_PRESSURE, WEIGHT, LIFESTYLE, MEDICATION
+  title       String
+  targetValue String
+  unit        String?
+  timeframe   String?  @default("Daily")
+  status      String   @default("IN_PROGRESS") // IN_PROGRESS, ACHIEVED, NEEDS_ATTENTION
+  notes       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  carePlan    CarePlan @relation(fields: [carePlanId], references: [id], onDelete: Cascade)
+
+  @@index([carePlanId, category])
+}
+
+model CarePlanActivity {
+  id                  String   @id @default(uuid())
+  carePlanId          String
+  category            String   @default("BLOOD_SUGAR_CHECK") // BLOOD_SUGAR_CHECK, MEDICATION, EXERCISE, DIET, FOOT_CARE, CLINICAL_REVIEW
+  title               String
+  frequency           String   @default("DAILY") // DAILY, TWICE_DAILY, WEEKLY, AS_NEEDED
+  timing              String?  @default("MORNING") // MORNING, AFTERNOON, EVENING, BEDTIME, WITH_MEALS, BEFORE_MEALS, POST_MEALS
+  instructions        String?
+  isCaregiverEligible Boolean  @default(true)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  carePlan            CarePlan @relation(fields: [carePlanId], references: [id], onDelete: Cascade)
+
+  @@index([carePlanId, category])
+}
+
+// ==========================================
+// 15. CARE TEAM COMMUNICATION
+// ==========================================
+model CareTeamMessage {
+  id          String    @id @default(uuid())
+  patientId   String
+  senderId    String
+  recipientId String?
+  senderRole  String    @default("PATIENT") // PATIENT, DOCTOR, CAREGIVER
+  category    String    @default("GENERAL") // QUESTION, DOCTOR_RESPONSE, CAREGIVER_UPDATE, FOLLOW_UP_INSTRUCTION, APPOINTMENT, GENERAL
+  content     String
+  isRead      Boolean   @default(false)
+  readAt      DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  patient   User  @relation("PatientMessages", fields: [patientId], references: [id], onDelete: Cascade)
+  sender    User  @relation("MessageSender", fields: [senderId], references: [id], onDelete: Cascade)
+  recipient User? @relation("MessageRecipient", fields: [recipientId], references: [id], onDelete: SetNull)
+
+  @@index([patientId, createdAt])
+  @@index([senderId])
+  @@index([recipientId, isRead])
+}
+
+// ==========================================
+// 16. CARE NOTIFICATIONS
+// ==========================================
+model CareNotification {
+  id        String    @id @default(uuid())
+  userId    String    // The recipient user
+  patientId String?   // Patient context if applicable
+  actorId   String?   // User who triggered this event
+  type      String    // APPOINTMENT_UPDATE, CARE_PLAN_APPROVED, TASK_ASSIGNED, DELEGATED_TASK_COMPLETED, CONSENT_CHANGE, DOCTOR_MESSAGE, FOLLOW_UP_DUE, ACCESS_REQUEST
+  title     String
+  message   String
+  link      String?
+  isRead    Boolean   @default(false)
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation("UserNotifications", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead, createdAt])
+  @@index([patientId])
+}

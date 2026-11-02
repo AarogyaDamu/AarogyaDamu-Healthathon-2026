@@ -1,0 +1,30 @@
+{
+  "name": "aarogyadamu-project3",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AarogyaDamu — Diabetes Care Journey Companion (Health-a-thon 2026)",
+  "workspaces": [
+    "packages/*",
+    "services/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build:api && npm run build:web",
+    "build:api": "npm --workspace=services/api run build",
+    "build:web": "npm --workspace=apps/web run build",
+    "db:generate": "npm --workspace=services/api run prisma:generate",
+    "db:migrate": "npm --workspace=services/api run prisma:migrate",
+    "dev": "npm run dev:api",
+    "dev:api": "npm --workspace=services/api run dev",
+    "dev:web": "npm --workspace=apps/web run dev",
+    "dev:mobile": "npm --workspace=apps/mobile run start",
+    "dev:mobile:web": "npm --workspace=apps/mobile run web",
+    "dev:mobile:android": "npm --workspace=apps/mobile run android",
+    "dev:mobile:ios": "npm --workspace=apps/mobile run ios",
+    "test:api": "npm --workspace=services/api run test"
+  },
+  "devDependencies": {
+    "metro": "^0.82.5",
+    "typescript": "~5.3.3"
+  }
+}

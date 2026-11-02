@@ -1,0 +1,73 @@
+# Dependencies
+node_modules/
+/.pnp
+.pnp.js
+
+# Build Outputs & Bundles
+dist/
+**/dist/
+build/
+**/build/
+
+# Environment Variables & Secrets
+.env
+.env.local
+.env.*.local
+.env.development.local
+.env.test.local
+.env.production.local
+**/.env
+**/.env.local
+**/.env.*.local
+!**/.env.example
+
+# Local SQLite Databases, Journals & Backups
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.db.backup*
+dev.db*
+services/api/prisma/*.db
+services/api/prisma/*.db-*
+services/api/prisma/*.db.backup*
+
+# File Uploads Storage
+services/api/uploads/*
+!services/api/uploads/.gitkeep
+
+# Mobile & Expo Artifacts
+.expo/
+**/.expo/
+web-build/
+.metro-health-check*
+
+# OS & Shell Caches / Artifacts
+.DS_Store
+Thumbs.db
+Microsoft/
+**/Microsoft/
+
+# IDE & Editor Configs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Testing & Coverage
+coverage/
+.nyc_output/
+.vitest/
+
+# TypeScript Cache
+*.tsbuildinfo

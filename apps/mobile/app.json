@@ -1,0 +1,27 @@
+{
+  "expo": {
+    "name": "AarogyaDamu",
+    "slug": "aarogyadamu",
+    "scheme": "aarogyadamu",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "in.panumirge.aarogyadamu"
+    },
+    "android": {
+      "package": "in.panumirge.aarogyadamu"
+    },
+    "web": {
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
