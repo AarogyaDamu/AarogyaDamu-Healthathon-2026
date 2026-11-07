@@ -129,6 +129,7 @@ const corsMiddleware = cors({
     'X-Doctor-Invitation-Admin-Key',
     'X-Aarogyadamu-Environment',
   ],
+  exposedHeaders: ['X-CSRF-Token'],
 });
 app.use(corsMiddleware);
 app.options('*', corsMiddleware);
@@ -227,12 +228,13 @@ export function parseCookies(cookieHeader?: string): Record<string, string> {
   return cookies;
 }
 
-export function setAuthCookies(res: Response, refreshToken: string, req: Request): void {
+export function setAuthCookies(res: Response, refreshToken: string, req: Request): string {
   const isSecure = req.secure || env.NODE_ENV === 'production' || req.headers['x-forwarded-proto'] === 'https';
+  const sameSitePolicy = isSecure ? 'none' : 'lax';
   res.cookie(REFRESH_COOKIE_NAME, refreshToken, {
     httpOnly: true,
     secure: isSecure,
-    sameSite: 'lax',
+    sameSite: sameSitePolicy,
     path: '/api/auth',
     maxAge: env.REFRESH_TOKEN_EXPIRES_DAYS * 24 * 60 * 60 * 1000,
   });
@@ -241,27 +243,30 @@ export function setAuthCookies(res: Response, refreshToken: string, req: Request
   res.cookie(CSRF_COOKIE_NAME, csrfToken, {
     httpOnly: false,
     secure: isSecure,
-    sameSite: 'lax',
+    sameSite: sameSitePolicy,
     path: '/',
     maxAge: env.REFRESH_TOKEN_EXPIRES_DAYS * 24 * 60 * 60 * 1000,
   });
+  res.setHeader('X-CSRF-Token', csrfToken);
+  return csrfToken;
 }
 
 export function clearAuthCookies(res: Response, req?: Request): void {
   const isSecure = req
     ? (req.secure || env.NODE_ENV === 'production' || req.headers['x-forwarded-proto'] === 'https')
     : (env.NODE_ENV === 'production');
+  const sameSitePolicy = isSecure ? 'none' : 'lax';
   res.clearCookie(REFRESH_COOKIE_NAME, {
     path: '/api/auth',
     httpOnly: true,
     secure: isSecure,
-    sameSite: 'lax',
+    sameSite: sameSitePolicy,
   });
   res.clearCookie(CSRF_COOKIE_NAME, {
     path: '/',
     httpOnly: false,
     secure: isSecure,
-    sameSite: 'lax',
+    sameSite: sameSitePolicy,
   });
 }
 
@@ -380,9 +385,10 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
       entityId: user.id,
     });
 
-    setAuthCookies(res, session.refreshToken, req);
+    const csrfToken = setAuthCookies(res, session.refreshToken, req);
     res.status(201).json({
       ...session,
+      csrfToken,
       user: { id: user.id, email: user.email, isSyntheticDemo: user.isSyntheticDemo, isClinician: user.isClinician },
       profile: user.profile,
     });
@@ -486,9 +492,10 @@ authRouter.post('/doctor/register', async (req: Request, res: Response): Promise
       userAgent: req.headers['user-agent'],
     });
 
-    setAuthCookies(res, session.refreshToken, req);
+    const csrfToken = setAuthCookies(res, session.refreshToken, req);
     res.status(201).json({
       ...session,
+      csrfToken,
       user: { id: user.id, email: user.email, isSyntheticDemo: user.isSyntheticDemo, isClinician: true },
       profile: user.profile,
     });
@@ -532,9 +539,10 @@ authRouter.post('/login', loginRateLimiter, async (req: Request, res: Response):
       entityId: user.id,
     });
 
-    setAuthCookies(res, session.refreshToken, req);
+    const csrfToken = setAuthCookies(res, session.refreshToken, req);
     res.json({
       ...session,
+      csrfToken,
       user: { id: user.id, email: user.email, isSyntheticDemo: user.isSyntheticDemo, isClinician: user.isClinician },
       profile: user.profile,
     });
@@ -648,7 +656,7 @@ authRouter.post('/refresh', asyncRoute(async (req: Request, res: Response): Prom
   }
 
   if (!rawRefreshToken || typeof rawRefreshToken !== 'string') {
-    res.status(400).json({ error: 'A valid refresh token is required.' });
+    res.status(401).json({ error: 'A valid refresh token is required.' });
     return;
   }
 
@@ -659,8 +667,11 @@ authRouter.post('/refresh', asyncRoute(async (req: Request, res: Response): Prom
     return;
   }
 
-  setAuthCookies(res, session.refreshToken, req);
-  res.json(session);
+  const csrfToken = setAuthCookies(res, session.refreshToken, req);
+  res.json({
+    ...session,
+    csrfToken,
+  });
 }));
 
 authRouter.post('/logout', requireAuth, asyncRoute(async (req: Request, res: Response): Promise<void> => {

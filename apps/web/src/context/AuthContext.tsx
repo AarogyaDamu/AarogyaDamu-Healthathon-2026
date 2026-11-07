@@ -14,6 +14,7 @@ import {
   setActiveTargetPatientId,
   setAuthSession,
   refreshAccessToken,
+  hasExistingSession,
 } from '../api/client';
 import { clearApiCache } from '../api/swrClient';
 import type { AuthUser, UserProfile } from '../api/types';
@@ -78,6 +79,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const refreshSession = useCallback(async () => {
     let storedToken = getStoredToken();
     if (!storedToken) {
+      if (!hasExistingSession()) {
+        setToken(null);
+        setUser(null);
+        setProfile(null);
+        setLoading(false);
+        return;
+      }
       try {
         storedToken = await refreshAccessToken();
       } catch (err) {
@@ -151,7 +159,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const acceptDoctorSession = useCallback(async (response: AuthResponse) => {
     if (!response.token || response.user?.isClinician !== true) {
       if (response.token && response.refreshToken) {
-        setAuthSession(response.token, response.refreshToken);
+        setAuthSession(response.token, response.refreshToken, (response as any).csrfToken);
         await rejectNonDoctor();
       }
       clearSessionData();
@@ -163,7 +171,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     setActiveTargetPatientId(null);
     clearApiCache();
-    setAuthSession(response.token, response.refreshToken);
+    setAuthSession(response.token, response.refreshToken, (response as any).csrfToken);
 
     try {
       const verified = await apiFetch<MeResponse>('/auth/me');

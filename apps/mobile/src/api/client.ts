@@ -187,9 +187,10 @@ export function resolveApiBaseUrl(rawUrl?: string): string {
     }
   }
 
-  const configured = (apiUrl || 'http://localhost:4000/api')
+  const rawConfigured = (apiUrl || 'http://localhost:4000/api')
     .trim()
     .replace(/\/+$/, '');
+  const configured = rawConfigured.endsWith('/api') ? rawConfigured : `${rawConfigured}/api`;
 
   if (!configured) {
     return Platform.OS === 'android' ? 'http://10.0.2.2:4000/api' : 'http://localhost:4000/api';

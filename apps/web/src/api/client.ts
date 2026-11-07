@@ -38,10 +38,19 @@ if (viteEnv.PROD) {
     throw new Error('Staging and production web builds require a credential-free, reachable HTTPS API URL.');
   }
 }
-const API_BASE = configuredApiBase || 'http://localhost:4000/api';
+export function resolveApiBaseUrl(rawUrl?: string): string {
+  const configured = (rawUrl || viteEnv.VITE_API_URL || 'http://localhost:4000/api')
+    .trim()
+    .replace(/\/+$/, '');
+  return configured.endsWith('/api') ? configured : `${configured}/api`;
+}
+
+export const API_BASE = resolveApiBaseUrl(configuredApiBase);
 const TOKEN_KEY = 'aarogyadamu_token';
 const REFRESH_TOKEN_KEY = 'aarogyadamu_refresh_token';
 const TARGET_PATIENT_KEY = 'aarogyadamu_target_patient_id';
+const SESSION_ACTIVE_KEY = 'aarogyadamu_session_active';
+const CSRF_STORAGE_KEY = 'aarogyadamu_csrf_token';
 
 // Short-lived access token held strictly in memory to resist XSS exfiltration
 let inMemoryAccessToken: string | null = null;
@@ -58,9 +67,27 @@ export class ApiError extends Error {
   }
 }
 export function getCsrfToken(): string | null {
-  if (typeof document === 'undefined') return null;
-  const match = document.cookie.match(/(?:^|;\s*)aarogyadamu_csrf_token=([^;]+)/);
-  return match ? decodeURIComponent(match[1]) : null;
+  if (typeof document !== 'undefined') {
+    const match = document.cookie.match(/(?:^|;\s*)aarogyadamu_csrf_token=([^;]+)/);
+    if (match) return decodeURIComponent(match[1]);
+  }
+  try {
+    return sessionStorage.getItem(CSRF_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function hasExistingSession(): boolean {
+  if (inMemoryAccessToken) return true;
+  if (getAuthToken()) return true;
+  if (getStoredRefreshToken()) return true;
+  if (getCsrfToken()) return true;
+  try {
+    return localStorage.getItem(SESSION_ACTIVE_KEY) === 'true';
+  } catch {
+    return false;
+  }
 }
 
 export function getAuthToken(): string | null {
@@ -79,6 +106,10 @@ export function setAuthToken(token: string | null): void {
     if (!token) {
       localStorage.removeItem(TOKEN_KEY);
       localStorage.removeItem(REFRESH_TOKEN_KEY);
+      localStorage.removeItem(SESSION_ACTIVE_KEY);
+      sessionStorage.removeItem(CSRF_STORAGE_KEY);
+    } else {
+      localStorage.setItem(SESSION_ACTIVE_KEY, 'true');
     }
   } catch (err) {
     console.error('Failed to update auth token storage', err);
@@ -88,9 +119,16 @@ export const setStoredToken = setAuthToken;
 
 export function clearAuthToken(): void {
   inMemoryAccessToken = null;
+  if (typeof document !== 'undefined') {
+    try {
+      document.cookie = 'aarogyadamu_csrf_token=; Max-Age=0; path=/; SameSite=Lax';
+    } catch {}
+  }
   try {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(REFRESH_TOKEN_KEY);
+    localStorage.removeItem(SESSION_ACTIVE_KEY);
+    sessionStorage.removeItem(CSRF_STORAGE_KEY);
   } catch (err) {
     console.error('Failed to clear authentication token storage', err);
   }
@@ -109,13 +147,17 @@ export function getStoredRefreshToken(): string | null {
  * Stores the short-lived access token in memory while ensuring the refresh token
  * is managed via HttpOnly cookies and purged from localStorage.
  */
-export function setAuthSession(token: string, _refreshToken?: string): void {
+export function setAuthSession(token: string, _refreshToken?: string, csrfToken?: string): void {
   void _refreshToken;
   inMemoryAccessToken = token;
   try {
     // Purge legacy refresh token from localStorage (migration security enforcement)
     localStorage.removeItem(REFRESH_TOKEN_KEY);
     localStorage.removeItem(TOKEN_KEY);
+    localStorage.setItem(SESSION_ACTIVE_KEY, 'true');
+    if (csrfToken) {
+      sessionStorage.setItem(CSRF_STORAGE_KEY, csrfToken);
+    }
   } catch (err) {
     console.error('Failed to update authentication session storage', err);
   }
@@ -147,6 +189,9 @@ export interface WebApiFetchOptions extends RequestInit {
 }
 
 export async function refreshAccessToken(): Promise<string | null> {
+  if (!hasExistingSession()) {
+    return null;
+  }
   if (refreshInProgress) return refreshInProgress;
 
   refreshInProgress = (async () => {
@@ -181,12 +226,15 @@ export async function refreshAccessToken(): Promise<string | null> {
 
     if (response.status === 401 || response.status === 403) {
       // Confirmed session expired or revoked on server
+      const hadSession = hasExistingSession();
       clearAuthToken();
-      window.dispatchEvent(
-        new CustomEvent('aarogyadamu:session_expired', {
-          detail: { message: 'Your session has expired. Please sign in again.' },
-        })
-      );
+      if (hadSession) {
+        window.dispatchEvent(
+          new CustomEvent('aarogyadamu:session_expired', {
+            detail: { message: 'Your session has expired. Please sign in again.' },
+          })
+        );
+      }
       return null;
     }
 
@@ -201,9 +249,14 @@ export async function refreshAccessToken(): Promise<string | null> {
       throw new ApiError(response.status, `Server returned ${response.status} during session refresh.`);
     }
 
-    const session = await response.json() as { token?: string; refreshToken?: string };
-    if (!session.token) return null;
-    setAuthSession(session.token, session.refreshToken);
+    const csrfHeader = response.headers?.get?.('x-csrf-token') || null;
+    const session = await response.json() as { token?: string; refreshToken?: string; csrfToken?: string };
+    if (!session.token) {
+      clearAuthToken();
+      return null;
+    }
+    const newCsrf = csrfHeader || session.csrfToken;
+    setAuthSession(session.token, session.refreshToken, newCsrf);
     return session.token;
   })();
 
@@ -249,9 +302,11 @@ export async function apiFetch<T>(
   }
 
   const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  const normalizedEndpoint = cleanEndpoint.replace(/^\/api(\/|$)/i, '$1');
+  const targetPath = normalizedEndpoint.startsWith('/') ? normalizedEndpoint : `/${normalizedEndpoint}`;
 
   // Standard 15-second request timeout; 60 seconds for long uploads/audio
-  const isLongRunning = cleanEndpoint.includes('/recordings') || isFormData;
+  const isLongRunning = targetPath.includes('/recordings') || isFormData;
   const timeoutMs = options.timeoutMs ?? (isLongRunning ? 60000 : 15000);
 
   let controller: AbortController | null = null;
@@ -269,7 +324,7 @@ export async function apiFetch<T>(
   let response: Response;
 
   try {
-    response = await fetch(`${API_BASE}${cleanEndpoint}`, {
+    response = await fetch(`${API_BASE}${targetPath}`, {
       ...options,
       credentials: 'include',
       headers,
@@ -294,13 +349,15 @@ export async function apiFetch<T>(
   }
 
   if (response.status === 401) {
-    const canRefresh = ![
+    const isAuthEndpoint = [
       '/auth/login',
       '/auth/doctor/register',
       '/auth/refresh',
       '/auth/forgot-password',
       '/auth/reset-password',
-    ].includes(cleanEndpoint);
+    ].includes(targetPath);
+
+    const canRefresh = !isAuthEndpoint && hasExistingSession();
 
     if (canRefresh) {
       let refreshedToken: string | null = null;
@@ -319,7 +376,7 @@ export async function apiFetch<T>(
 
       if (refreshedToken) {
         try {
-          response = await fetch(`${API_BASE}${cleanEndpoint}`, {
+          response = await fetch(`${API_BASE}${targetPath}`, {
             ...options,
             credentials: 'include',
             headers: { ...headers, Authorization: `Bearer ${refreshedToken}` },
@@ -335,12 +392,15 @@ export async function apiFetch<T>(
   }
 
   if (response.status === 401) {
+    const hadSession = hasExistingSession();
     clearAuthToken();
-    window.dispatchEvent(
-      new CustomEvent('aarogyadamu:session_expired', {
-        detail: { message: 'Your session has expired. Please sign in again.' },
-      })
-    );
+    if (hadSession) {
+      window.dispatchEvent(
+        new CustomEvent('aarogyadamu:session_expired', {
+          detail: { message: 'Your session has expired. Please sign in again.' },
+        })
+      );
+    }
     throw new ApiError(401, 'Your session has expired. Please sign in again.');
   }
 

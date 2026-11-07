@@ -281,21 +281,21 @@ describe('Session UX, Doctor Login & Lifecycle Verification (Issue 4)', () => {
     const logoutCookieStr = Array.isArray(logoutCookies) ? logoutCookies.join('; ') : logoutCookies;
     expect(logoutCookieStr).toMatch(/aarogyadamu_refresh_token=;/i);
 
-    // Browser refreshes (cookies are now empty): /refresh returns 400 (not logged in)
+    // Browser refreshes (cookies are now empty): /refresh returns 401 (not logged in)
     const postLogoutRefresh = await request(app)
       .post('/api/auth/refresh')
       .send({});
-    expect(postLogoutRefresh.status).toBe(400);
+    expect(postLogoutRefresh.status).toBe(401);
     expect(postLogoutRefresh.body.error).toMatch(/valid refresh token is required/i);
   });
 
   // SCENARIO 8: Opening the app in Incognito
-  test('SCENARIO 8: Incognito / empty session returns 400 without session-expired notice and preserves invite-only doctor registration', async () => {
+  test('SCENARIO 8: Incognito / empty session returns 401 without session-expired notice and preserves invite-only doctor registration', async () => {
     // Fresh request with no cookies, no body
     const freshRefresh = await request(app)
       .post('/api/auth/refresh')
       .send({});
-    expect(freshRefresh.status).toBe(400);
+    expect(freshRefresh.status).toBe(401);
 
     // Attempting doctor registration without invitation token is strictly rejected
     const uninvitedReg = await request(app)
