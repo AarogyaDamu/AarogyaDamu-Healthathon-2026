@@ -39,11 +39,11 @@
     "npm": ">=10.0.0"
   },
   "devDependencies": {
-    "metro": "^0.82.5",
-    "typescript": "5.9.3"
+    "metro": "^0.82.5"
   },
   "dependencies": {
     "@types/three": "^0.187.0",
-    "three": "^0.187.0"
+    "three": "^0.187.0",
+    "typescript": "5.9.3"
   }
 }
