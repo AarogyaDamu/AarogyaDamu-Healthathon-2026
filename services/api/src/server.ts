@@ -768,6 +768,13 @@ authRouter.post('/deactivate', requireAuth, asyncRoute(async (req: Request, res:
 
 authRouter.post('/forgot-password', passwordResetRateLimiter, async (req: Request, res: Response): Promise<void> => {
   try {
+    if (env.EMAIL_PROVIDER === 'disabled' && (env.APP_ENV === 'staging' || process.env.NODE_ENV === 'production')) {
+      res.status(503).json({
+        error: 'Password reset email delivery is currently disabled or unavailable in this environment. Please contact your clinical administrator.',
+      });
+      return;
+    }
+
     const { email } = z.object({
       email: z.string().email().transform((value) => value.trim().toLowerCase()),
     }).parse(req.body);
@@ -807,6 +814,10 @@ authRouter.post('/forgot-password', passwordResetRateLimiter, async (req: Reques
         if (!(error instanceof EmailDeliveryError)) {
           throw error;
         }
+        res.status(503).json({
+          error: 'Password reset email delivery failed. Please try again later or contact your clinical administrator.',
+        });
+        return;
       }
     }
 

@@ -34,6 +34,7 @@ const envSchema = z.object({
   // Demo authentication is opt-in even for development; it is always rejected
   // by the production validation below.
   ALLOW_DEMO_AUTH: z.string().default('false').transform((val) => val === 'true'),
+  ENABLE_DEV_DEMO_MODE: z.string().default('false').transform((val) => val === 'true'),
   GEMINI_API_KEY: z.string().trim().optional().transform((val) => (val && val.length > 0 ? val : undefined)),
   SARVAM_API_KEY: z.string().trim().optional().transform((val) => (val && val.length > 0 ? val : undefined)),
   SARVAM_TTS_MODEL: z.string().trim().default('bulbul:v4-flash'),
@@ -102,15 +103,8 @@ const envSchema = z.object({
     });
   }
 
-  // 5. Strict production environment hardening
+  // 5. Deployed runtime hardening (applies to both staging and production with NODE_ENV=production)
   if (config.NODE_ENV === 'production') {
-    if (config.MEDICAL_REPORT_OCR_PROVIDER !== 'google_vision') {
-      context.addIssue({
-        code: 'custom',
-        path: ['MEDICAL_REPORT_OCR_PROVIDER'],
-        message: 'Production medical report OCR must use MEDICAL_REPORT_OCR_PROVIDER=google_vision.',
-      });
-    }
     if (!process.env.APP_ENV || config.APP_ENV === 'development') {
       context.addIssue({
         code: 'custom',
@@ -130,14 +124,6 @@ const envSchema = z.object({
         code: 'custom',
         path: ['DATABASE_URL'],
         message: 'Staging and production require a PostgreSQL DATABASE_URL; SQLite development databases are not supported.',
-      });
-    }
-
-    if (config.EMAIL_PROVIDER !== 'resend') {
-      context.addIssue({
-        code: 'custom',
-        path: ['EMAIL_PROVIDER'],
-        message: 'Production password-reset delivery requires EMAIL_PROVIDER=resend.',
       });
     }
 
@@ -164,16 +150,18 @@ const envSchema = z.object({
       });
     }
 
-    if (
-      config.RESEND_API_KEY?.startsWith('replace-with-') ||
-      config.EMAIL_FROM?.endsWith('@example.com') ||
-      config.EMAIL_FROM?.endsWith('.local')
-    ) {
-      context.addIssue({
-        code: 'custom',
-        path: ['EMAIL_PROVIDER'],
-        message: 'Staging and production require a provisioned email credential and verified sender address.',
-      });
+    if (config.EMAIL_PROVIDER === 'resend') {
+      if (
+        config.RESEND_API_KEY?.startsWith('replace-with-') ||
+        config.EMAIL_FROM?.endsWith('@example.com') ||
+        config.EMAIL_FROM?.endsWith('.local')
+      ) {
+        context.addIssue({
+          code: 'custom',
+          path: ['EMAIL_PROVIDER'],
+          message: 'Staging and production using Resend require a provisioned email credential and verified sender address.',
+        });
+      }
     }
 
     if (
@@ -222,14 +210,32 @@ const envSchema = z.object({
       });
     }
 
-    if (config.ALLOW_DEMO_AUTH) {
+    if (config.ALLOW_DEMO_AUTH || config.ENABLE_DEV_DEMO_MODE) {
       context.addIssue({
         code: 'custom',
         path: ['ALLOW_DEMO_AUTH'],
-        message: 'Demo authentication must be disabled in staging and production.',
+        message: 'Demo authentication and demo mode must be disabled in staging and production.',
       });
     }
 
+    // 6. Strict Production-Only Hardening (requires APP_ENV === 'production')
+    if (config.APP_ENV === 'production') {
+      if (config.MEDICAL_REPORT_OCR_PROVIDER !== 'google_vision') {
+        context.addIssue({
+          code: 'custom',
+          path: ['MEDICAL_REPORT_OCR_PROVIDER'],
+          message: 'Production medical report OCR must use MEDICAL_REPORT_OCR_PROVIDER=google_vision.',
+        });
+      }
+
+      if (config.EMAIL_PROVIDER !== 'resend') {
+        context.addIssue({
+          code: 'custom',
+          path: ['EMAIL_PROVIDER'],
+          message: 'Production password-reset delivery requires EMAIL_PROVIDER=resend.',
+        });
+      }
+    }
   }
 });
 
@@ -246,3 +252,4 @@ if (!parsed.success) {
 }
 
 export const env = parsed.data;
+export { envSchema };
