@@ -32,11 +32,15 @@
     "test:web": "npm --workspace=apps/web run test",
     "test:mobile": "npm --workspace=apps/mobile run test",
     "typecheck": "npm run typecheck:mobile && npm run build:contracts && npm run build:api && npm run build:web",
-    "typecheck:mobile": "node apps/mobile/node_modules/typescript/bin/tsc --noEmit --project apps/mobile/tsconfig.json"
+    "typecheck:mobile": "tsc --noEmit --project apps/mobile/tsconfig.json"
+  },
+  "engines": {
+    "node": ">=22.0.0 <23.0.0",
+    "npm": ">=10.0.0"
   },
   "devDependencies": {
     "metro": "^0.82.5",
-    "typescript": "~5.3.3"
+    "typescript": "5.9.3"
   },
   "dependencies": {
     "@types/three": "^0.187.0",

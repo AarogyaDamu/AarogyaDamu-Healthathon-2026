@@ -40,7 +40,7 @@
     "@babel/core": "^7.20.0",
     "@babel/plugin-transform-class-static-block": "^7.29.7",
     "@types/react": "~19.0.10",
-    "typescript": "~5.8.3"
+    "typescript": "5.9.3"
   },
   "private": true
 }
