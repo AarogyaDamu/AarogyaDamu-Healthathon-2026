@@ -35,6 +35,7 @@ import { evaluateClinicalSafety } from './safety/clinicalSafetyEvaluator';
 import { logClinicalAccessEvent, logClinicalMutationEvent, safeClinicalLog } from './audit/clinicalAuditLogger';
 import { getAllFeatureFlags, setFeatureFlag } from './features/featureFlags';
 import { submitAgentProposal, reviewAgentProposal } from './ai/safety/approvalManager';
+import { ensureStagingDemoDoctor } from './services/stagingDemoSeed';
 import { prisma } from './db/prisma';
 
 export { prisma } from './db/prisma';
@@ -2625,6 +2626,14 @@ if (process.env.NODE_ENV !== 'test') {
   const startServer = async (): Promise<void> => {
     if (env.NODE_ENV === 'production') {
       await prisma.$connect();
+    }
+
+    if (env.APP_ENV === 'staging') {
+      try {
+        await ensureStagingDemoDoctor(prisma);
+      } catch (err: any) {
+        console.error('[Staging Demo Seed] Failed to bootstrap staging demo accounts:', err?.message || err);
+      }
     }
 
     const httpServer = app.listen(env.PORT, () => {

@@ -21,6 +21,7 @@
     "db:deploy": "npm --workspace=services/api run prisma:deploy",
     "db:status": "npm --workspace=services/api run prisma:status",
     "db:seed": "npm --workspace=services/api run prisma:seed",
+    "db:seed:staging": "npm --workspace=services/api run seed:staging",
     "dev": "npm run dev:api",
     "dev:api": "npm --workspace=services/api run dev",
     "dev:web": "npm --workspace=apps/web run dev",
