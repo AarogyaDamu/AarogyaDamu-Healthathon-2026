@@ -173,7 +173,7 @@ export default function Home({ onNavigate }: { onNavigate: (tab: string) => void
   const targetZoneHeight = Math.max(targetZoneYBottom - targetZoneYTop, 6);
 
   return (
-    <div className="space-y-6 max-w-5xl mx-auto animate-in fade-in duration-300">
+    <div className="space-y-6 max-w-5xl mx-auto">
       {/* 1. Clinician Review Toggle Persona Strip */}
       <div className="flex items-center justify-between rounded-2xl bg-slate-900 text-white p-3.5 sm:p-4 shadow-xs">
         <div className="flex items-center gap-3">
@@ -209,7 +209,7 @@ export default function Home({ onNavigate }: { onNavigate: (tab: string) => void
 
       {clinicianMode ? (
         /* ================= DOCTOR SCAN VIEW ================= */
-        <div className="space-y-5 animate-in fade-in duration-300">
+        <div className="space-y-5">
           <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-xs space-y-4">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div>
@@ -254,7 +254,7 @@ export default function Home({ onNavigate }: { onNavigate: (tab: string) => void
         </div>
       ) : (
         /* ================= PATIENT VIEW ================= */
-        <div className="space-y-6 animate-in fade-in duration-300">
+        <div className="space-y-6">
           {/* 2. Welcome Card (Clean & Modern) */}
           <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-5 relative overflow-hidden">
             <div className="space-y-2">
@@ -268,7 +268,7 @@ export default function Home({ onNavigate }: { onNavigate: (tab: string) => void
               </h2>
 
               <p className="text-xs text-slate-500">
-                Doctor: <span className="font-semibold text-slate-800">{data.profile?.primaryClinician || 'Dr. Anjali Kulkarni (Endocrinologist)'}</span>
+                Doctor: <span className="font-semibold text-slate-800">{data.profile?.primaryClinician || 'Dr. Rupam Choudhary (Diabetologist)'}</span>
                 {' '}•{' '}
                 Target Fasting: <span className="font-semibold text-teal-800">80–130 mg/dL</span>
               </p>
@@ -319,16 +319,16 @@ export default function Home({ onNavigate }: { onNavigate: (tab: string) => void
             {/* Journey Navigator Banner */}
             <div
               onClick={() => onNavigate('journey')}
-              className="rounded-2xl border border-indigo-200 bg-gradient-to-r from-indigo-50 via-blue-50 to-white p-4 shadow-xs flex items-center justify-between cursor-pointer hover:border-indigo-400 hover:shadow-md transition"
+              className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs flex items-center justify-between cursor-pointer hover:border-slate-300 hover:shadow-md transition"
             >
               <div className="flex items-center gap-3">
-                <div className="h-10 w-10 rounded-xl bg-indigo-700 text-white flex items-center justify-center shrink-0">
+                <div className="h-10 w-10 rounded-xl bg-teal-700 text-white flex items-center justify-center shrink-0">
                   <Compass className="h-5 w-5" />
                 </div>
                 <div>
                   <div className="flex items-center gap-2">
                     <h4 className="text-sm font-bold text-slate-900">Diabetes Journey</h4>
-                    <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 border border-indigo-300">
+                    <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-slate-100 text-slate-800 border border-slate-300">
                       9 Stages
                     </span>
                   </div>
@@ -563,7 +563,7 @@ export default function Home({ onNavigate }: { onNavigate: (tab: string) => void
 
                   {/* Plain Language Guidance Notice if High / Low */}
                   {isHigh && (
-                    <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl flex items-center gap-2.5 text-xs text-rose-900 animate-in fade-in">
+                    <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl flex items-center gap-2.5 text-xs text-rose-900">
                       <AlertOctagon className="h-4 w-4 text-rose-600 shrink-0" />
                       <p className="leading-snug">
                         <span className="font-bold">Attention: Your sugar is in the High Zone ({latestValue} mg/dL). </span>
@@ -575,7 +575,7 @@ export default function Home({ onNavigate }: { onNavigate: (tab: string) => void
                   )}
 
                   {isLow && (
-                    <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl flex items-center gap-2.5 text-xs text-blue-900 animate-in fade-in">
+                    <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl flex items-center gap-2.5 text-xs text-blue-900">
                       <AlertTriangle className="h-4 w-4 text-blue-600 shrink-0" />
                       <p className="leading-snug">
                         <span className="font-bold">Low Sugar Detected ({latestValue} mg/dL). </span>

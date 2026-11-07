@@ -42,7 +42,6 @@ export interface UserProfile {
   createdAt: string;
   updatedAt: string;
 }
-
 export interface AuthUser {
   id: string;
   email: string;
@@ -445,7 +444,6 @@ export interface DoctorDashboardResponse {
     totalAssignedPatients: number;
     highRiskCount: number;
     overdueFollowUpsCount: number;
-    pendingConsultationsCount: number;
     upcomingAppointmentsCount: number;
   };
   patients: DoctorDashboardPatient[];
@@ -460,15 +458,6 @@ export interface DoctorDashboardResponse {
     reason: string;
     visitType: string;
     status: string;
-  }>;
-  pendingNotes: Array<{
-    id: string;
-    patientId: string;
-    patientName: string;
-    clinicianName: string;
-    status: string;
-    recordingDurationSeconds?: number;
-    createdAt: string;
   }>;
 }
 
@@ -553,4 +542,294 @@ export interface ActivityFeedResponse {
   patientId: string;
   totalActivities: number;
   feed: ActivityFeedItem[];
+}
+
+// ==========================================
+// P0.7 Governed Agentic Proposals & Feeds
+// ==========================================
+
+export type AgentProposalType =
+  | 'MEDICATION_ADJUSTMENT_REQUEST'
+  | 'TARGET_GLUCOSE_RANGE_REVISION'
+  | 'LIFESTYLE_GOAL_ADJUSTMENT'
+  | 'LAB_WORK_ORDER';
+
+export interface AgentProposalItem {
+  actionId: string;
+  planId: string;
+  planVersion: number;
+  patientId: string;
+  patientName?: string;
+  toolName: string;
+  riskTier: 'LOW_RISK' | 'MEDIUM_RISK' | 'HIGH_RISK';
+  status:
+    | 'DRAFT'
+    | 'AWAITING_CONFIRMATION'
+    | 'PENDING_CLINICIAN_APPROVAL'
+    | 'EXECUTING'
+    | 'COMPLETED'
+    | 'FAILED'
+    | 'CANCELLED'
+    | 'EXPIRED'
+    | 'REJECTED';
+  parameters: {
+    proposalType?: AgentProposalType;
+    title?: string;
+    rationale?: string;
+    proposedDetails?: Record<string, unknown>;
+    [key: string]: unknown;
+  };
+  explanation?: string;
+  expiresAt: string;
+  createdAt: string;
+}
+
+export interface AgentProposalsResponse {
+  success: boolean;
+  proposals: AgentProposalItem[];
+  error?: string;
+  errorCode?: string;
+}
+
+export interface AgentProposalReviewPayload {
+  planId: string;
+  planVersion?: number;
+  decision: 'APPROVE' | 'REJECT';
+  clinicalReviewNotes?: string;
+  rejectionReason?: string;
+}
+
+export interface AgentProposalReviewResponse {
+  success: boolean;
+  actionId: string;
+  status: string;
+  decision: 'APPROVE' | 'REJECT';
+  error?: string;
+  errorCode?: string;
+}
+
+export interface AgentActionFeedItem {
+  id: string;
+  planId: string;
+  toolName: string;
+  riskTier: 'LOW_RISK' | 'MEDIUM_RISK' | 'HIGH_RISK';
+  status:
+    | 'DRAFT'
+    | 'AWAITING_CONFIRMATION'
+    | 'PENDING_CLINICIAN_APPROVAL'
+    | 'EXECUTING'
+    | 'COMPLETED'
+    | 'FAILED'
+    | 'CANCELLED'
+    | 'EXPIRED'
+    | 'REJECTED';
+  parameters: string | Record<string, unknown>;
+  result?: string | Record<string, unknown> | null;
+  errorMessage?: string | null;
+  createdAt: string;
+  executedAt?: string | null;
+  plan?: {
+    id: string;
+    version: number;
+    userIntent: string;
+    explanation?: string;
+    targetPatientId: string;
+    status: string;
+    createdAt: string;
+    expiresAt?: string;
+  };
+}
+
+export interface AgentPlanResponse {
+  success: boolean;
+  plan: {
+    id: string;
+    version: number;
+    userIntent: string;
+    explanation?: string;
+    targetPatientId: string;
+    status: string;
+    createdAt: string;
+    expiresAt?: string;
+    actions: AgentActionFeedItem[];
+  };
+  error?: string;
+  errorCode?: string;
+}
+
+export interface AgentActionResponse {
+  success: boolean;
+  action: AgentActionFeedItem;
+  error?: string;
+  errorCode?: string;
+}
+
+// ----------------------------------------------------
+// Phase 4: Appointment Booking & Visit Management
+// ----------------------------------------------------
+export type AppointmentStatus =
+  | 'REQUESTED'
+  | 'CONFIRMED'
+  | 'DECLINED'
+  | 'RESCHEDULED'
+  | 'CANCELLED'
+  | 'COMPLETED'
+  | 'MISSED';
+
+export type VisitType =
+  | 'CHECKUP'
+  | 'FOLLOW_UP'
+  | 'DIABETES_REVIEW'
+  | 'EMERGENCY'
+  | 'OTHER'
+  | 'IN_PERSON'
+  | 'VIDEO_CONSULT'
+  | 'HOME_VISIT'
+  | 'EMERGENCY_TRIAGE';
+
+export interface DoctorAppointmentItem {
+  id: string;
+  patientId: string;
+  doctorId: string;
+  patientName: string;
+  patientEmail?: string;
+  patientDateOfBirth?: string | null;
+  patientDiabetesType?: string;
+  doctorName: string;
+  doctorEmail?: string;
+  scheduledAt: string;
+  durationMinutes: number;
+  reason: string;
+  visitType: string;
+  status: AppointmentStatus;
+  clinicName: string;
+  clinicFacilityId?: string | null;
+  questionnaireResponse?: Record<string, any> | null;
+  rejectionReason?: string | null;
+  cancellationReason?: string | null;
+  rescheduledFromId?: string | null;
+  completedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DoctorAvailabilitySlot {
+  startTime: string;
+  endTime: string;
+  scheduledAt: string;
+  available: boolean;
+  reason?: string;
+}
+
+export interface DoctorScheduleSetting {
+  id?: string;
+  doctorId?: string;
+  dayOfWeek: number;
+  startTime: string;
+  endTime: string;
+  slotDurationMinutes: number;
+  isActive: boolean;
+  clinicName?: string;
+}
+
+export interface DoctorTimeOffItem {
+  id: string;
+  doctorId: string;
+  startDate: string;
+  endDate: string;
+  reason?: string | null;
+  createdAt?: string;
+}
+
+export interface HealthInsight {
+  id: string;
+  category: 'GLUCOSE' | 'MEDICATION' | 'CARE_PLAN' | 'APPOINTMENT' | 'MILESTONE' | 'LIFESTYLE';
+  title: string;
+  summary: string;
+  periodLabel: string;
+  readingCount: number;
+  confidence: number;
+  dataSufficiency: 'SUFFICIENT' | 'LIMITED' | 'INSUFFICIENT';
+  isActionable: boolean;
+  suggestedDiscussion?: string;
+  sourceReference: string;
+  createdAt: string;
+}
+
+export interface JourneyMilestoneItem {
+  id: string;
+  userId: string;
+  milestoneKey: string;
+  title: string;
+  description: string;
+  achievedAt: string;
+  eventRefType?: string | null;
+  eventRefId?: string | null;
+  actorId?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface JourneyProgressSummary {
+  patientId: string;
+  evaluationDate: string;
+  overallProgress: {
+    currentStageId: string;
+    completedStagesCount: number;
+    totalStagesCount: number;
+    completionPercentage: number;
+  };
+  glucoseProgress: {
+    totalReadings30Days: number;
+    readings7Days: number;
+    readingsPrior7Days: number;
+    averageGlucose30Days: number | null;
+    averageGlucose7Days: number | null;
+    averageGlucosePrior7Days: number | null;
+    trendDelta7Days: number | null;
+    trendDirection: 'INCREASING' | 'DECREASING' | 'STABLE' | 'INSUFFICIENT_DATA';
+    timeInRangePercentage: number;
+    fastingAverage: number | null;
+    postMealAverage: number | null;
+    hypoCount: number;
+    hyperCount: number;
+    missingMeasurementAlert?: string | null;
+    nonCausationDisclaimer: string;
+  };
+  medicationAdherence: {
+    prescribedMedicinesCount: number;
+    recordedDoses30Days: number;
+    takenDosesCount: number;
+    skippedDosesCount: number;
+    unconfirmedDosesCount: number;
+    adherenceRatePercentage: number;
+    weeklyAdherenceRate: number;
+  };
+  carePlanProgress: {
+    activePlanTitle: string | null;
+    planVersion: number | null;
+    totalTasksAssigned: number;
+    completedTasksCount: number;
+    pendingTasksCount: number;
+    overdueTasksCount: number;
+    completionRatePercentage: number;
+  };
+  consultationsAndAppointments: {
+    upcomingAppointmentsCount: number;
+    nextAppointment?: {
+      id: string;
+      scheduledAt: string;
+      doctorName: string;
+      reason: string;
+      isServerConfirmed: boolean;
+    } | null;
+    recentApprovedConsultationsCount: number;
+    latestApprovedConsultation?: {
+      id: string;
+      clinicianName: string;
+      approvedAt: string;
+      summarySnippet: string;
+    } | null;
+  };
+  milestones: JourneyMilestoneItem[];
+  insights: HealthInsight[];
 }

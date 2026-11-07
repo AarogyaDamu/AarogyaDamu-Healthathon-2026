@@ -10,7 +10,8 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import Svg, { Path, Circle, Line, Text as SvgText } from 'react-native-svg';
+import { router } from 'expo-router';
+import Svg, { Path, Circle, Line } from 'react-native-svg';
 import {
   Calendar,
   ShieldCheck,
@@ -23,7 +24,11 @@ import {
   Stethoscope,
   Target,
   FileText,
-  Sparkles,
+  Pill,
+  TrendingUp,
+  AlertCircle,
+  ChevronRight,
+  ShieldAlert,
 } from 'lucide-react-native';
 import {
   clinicalStore,
@@ -35,10 +40,13 @@ import {
   type MobileJourneyTimeline,
   type MobileDailyJourney,
   type MobileJourneyFollowUp,
+  type MobileJourneyProgressSummary,
+  type MobileHealthInsight,
+  type MobileJourneyMilestone,
 } from '../../src/api/journey';
 import { theme } from '../../src/theme';
 
-type JourneyTab = 'STAGES' | 'DAILY' | 'TRENDS' | 'FOLLOW_UP';
+type JourneyTab = 'OVERVIEW' | 'STAGES' | 'DAILY' | 'TRENDS' | 'FOLLOW_UP';
 
 export default function JourneyScreen() {
   const insets = useSafeAreaInsets();
@@ -48,12 +56,15 @@ export default function JourneyScreen() {
   const [loading, setLoading] = useState(true);
 
   // Tab navigation
-  const [activeTab, setActiveTab] = useState<JourneyTab>('STAGES');
+  const [activeTab, setActiveTab] = useState<JourneyTab>('OVERVIEW');
 
   // Backend Journey Data
   const [timelineData, setTimelineData] = useState<MobileJourneyTimeline | null>(null);
   const [dailyData, setDailyData] = useState<MobileDailyJourney | null>(null);
   const [followUpData, setFollowUpData] = useState<MobileJourneyFollowUp | null>(null);
+  const [summaryData, setSummaryData] = useState<MobileJourneyProgressSummary | null>(null);
+  const [insightsData, setInsightsData] = useState<MobileHealthInsight[]>([]);
+  const [milestonesData, setMilestonesData] = useState<MobileJourneyMilestone[]>([]);
 
   // Trends controls
   const [periodDays, setPeriodDays] = useState<14 | 30 | 90>(30);
@@ -61,14 +72,20 @@ export default function JourneyScreen() {
 
   const loadServerData = useCallback(async () => {
     try {
-      const [tData, dData, fData] = await Promise.all([
+      const [tData, dData, fData, sData, iData, mData] = await Promise.all([
         journeyApi.getTimeline(),
         journeyApi.getDaily(),
         journeyApi.getFollowUp(),
+        journeyApi.getSummary(),
+        journeyApi.getInsights(),
+        journeyApi.getMilestones(),
       ]);
       setTimelineData(tData);
       setDailyData(dData);
       setFollowUpData(fData);
+      setSummaryData(sData);
+      setInsightsData(iData);
+      setMilestonesData(mData);
     } catch {
       // Offline fallback
     } finally {
@@ -152,11 +169,19 @@ export default function JourneyScreen() {
 
     return (
       <Svg width={chartWidth} height={chartHeight}>
-        <Line x1={padX} y1={getY(140)} x2={chartWidth - padX} y2={getY(140)} stroke="#A7F3D0" strokeWidth="1" strokeDasharray="4 4" />
-        <Line x1={padX} y1={getY(70)} x2={chartWidth - padX} y2={getY(70)} stroke="#BFDBFE" strokeWidth="1" strokeDasharray="4 4" />
-        <Path d={pathD} fill="none" stroke={theme.colors.primary} strokeWidth="2.5" strokeLinecap="round" />
+        <Line x1={padX} y1={getY(140)} x2={chartWidth - padX} y2={getY(140)} stroke="#A7F3D0" strokeWidth={1} strokeDasharray="4 4" />
+        <Line x1={padX} y1={getY(70)} x2={chartWidth - padX} y2={getY(70)} stroke="#BFDBFE" strokeWidth={1} strokeDasharray="4 4" />
+        <Path d={pathD} fill="none" stroke={theme.colors.primary} strokeWidth={2.5} strokeLinecap="round" />
         {data.map((d, i) => (
-          <Circle key={d.id} cx={getX(i)} cy={getY(d.value)} r="4" fill={d.value > 180 ? '#EF4444' : d.value < 70 ? '#3B82F6' : theme.colors.primary} stroke="#FFFFFF" strokeWidth="1.5" />
+          <Circle
+            key={d.id}
+            cx={getX(i)}
+            cy={getY(d.value)}
+            r={4}
+            fill={d.value > 180 ? '#EF4444' : d.value < 70 ? '#3B82F6' : theme.colors.primary}
+            stroke="#FFFFFF"
+            strokeWidth={1.5}
+          />
         ))}
       </Svg>
     );
@@ -168,14 +193,14 @@ export default function JourneyScreen() {
       <View style={styles.header}>
         <View>
           <Text style={styles.headerSuper}>DIABETES CARE JOURNEY</Text>
-          <Text style={styles.headerTitle}>Journey Navigator</Text>
+          <Text style={styles.headerTitle}>My Journey</Text>
         </View>
 
-        {timelineData ? (
+        {summaryData ? (
           <View style={styles.stageProgressPill}>
             <Compass color="#0F766E" size={13} />
             <Text style={styles.stageProgressPillText}>
-              {timelineData.overallProgress.completedCount} of {timelineData.overallProgress.totalStages} Done
+              {summaryData.overallProgress.completedStagesCount} of {summaryData.overallProgress.totalStagesCount} Done
             </Text>
           </View>
         ) : null}
@@ -183,16 +208,34 @@ export default function JourneyScreen() {
 
       {/* Main Tabs */}
       <View style={styles.tabBar}>
-        <TouchableOpacity style={[styles.tabItem, activeTab === 'STAGES' && styles.tabItemActive]} onPress={() => setActiveTab('STAGES')}>
+        <TouchableOpacity
+          style={[styles.tabItem, activeTab === 'OVERVIEW' && styles.tabItemActive]}
+          onPress={() => setActiveTab('OVERVIEW')}
+        >
+          <Text style={[styles.tabText, activeTab === 'OVERVIEW' && styles.tabTextActive]}>Overview</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.tabItem, activeTab === 'STAGES' && styles.tabItemActive]}
+          onPress={() => setActiveTab('STAGES')}
+        >
           <Text style={[styles.tabText, activeTab === 'STAGES' && styles.tabTextActive]}>Milestones</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={[styles.tabItem, activeTab === 'DAILY' && styles.tabItemActive]} onPress={() => setActiveTab('DAILY')}>
-          <Text style={[styles.tabText, activeTab === 'DAILY' && styles.tabTextActive]}>Daily Agenda</Text>
+        <TouchableOpacity
+          style={[styles.tabItem, activeTab === 'DAILY' && styles.tabItemActive]}
+          onPress={() => setActiveTab('DAILY')}
+        >
+          <Text style={[styles.tabText, activeTab === 'DAILY' && styles.tabTextActive]}>Daily</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={[styles.tabItem, activeTab === 'TRENDS' && styles.tabItemActive]} onPress={() => setActiveTab('TRENDS')}>
+        <TouchableOpacity
+          style={[styles.tabItem, activeTab === 'TRENDS' && styles.tabItemActive]}
+          onPress={() => setActiveTab('TRENDS')}
+        >
           <Text style={[styles.tabText, activeTab === 'TRENDS' && styles.tabTextActive]}>Trends</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={[styles.tabItem, activeTab === 'FOLLOW_UP' && styles.tabItemActive]} onPress={() => setActiveTab('FOLLOW_UP')}>
+        <TouchableOpacity
+          style={[styles.tabItem, activeTab === 'FOLLOW_UP' && styles.tabItemActive]}
+          onPress={() => setActiveTab('FOLLOW_UP')}
+        >
           <Text style={[styles.tabText, activeTab === 'FOLLOW_UP' && styles.tabTextActive]}>Follow-up</Text>
         </TouchableOpacity>
       </View>
@@ -204,6 +247,208 @@ export default function JourneyScreen() {
       >
         {loading ? (
           <ActivityIndicator style={{ marginTop: 40 }} color={theme.colors.primary} size="large" />
+        ) : activeTab === 'OVERVIEW' ? (
+          // -------------------------------------------------------------
+          // 0. HEALTH PROGRESS DASHBOARD (PHASE 7 PRIMARY VIEW)
+          // -------------------------------------------------------------
+          <View style={{ gap: 14 }}>
+            {/* A. Overall Journey Stage Banner */}
+            <View style={styles.overviewHeroCard}>
+              <View style={styles.heroTopRow}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Compass color="#5EEAD4" size={16} />
+                  <Text style={styles.heroSuperText}>CURRENT CARE STAGE</Text>
+                </View>
+                <Text style={styles.heroPctText}>{summaryData?.overallProgress.completionPercentage ?? 55}%</Text>
+              </View>
+
+              <Text style={styles.heroStageTitle}>
+                {summaryData?.overallProgress.currentStageId.replace(/_/g, ' ') || 'Daily Monitoring & Adherence'}
+              </Text>
+
+              {summaryData?.carePlanProgress.activePlanTitle ? (
+                <Text style={styles.heroSubText}>
+                  Plan v{summaryData.carePlanProgress.planVersion}: {summaryData.carePlanProgress.activePlanTitle}
+                </Text>
+              ) : null}
+
+              {/* Progress bar */}
+              <View style={styles.progressBarTrack}>
+                <View
+                  style={[
+                    styles.progressBarFill,
+                    { width: `${summaryData?.overallProgress.completionPercentage ?? 55}%` },
+                  ]}
+                />
+              </View>
+            </View>
+
+            {/* B. Blood Glucose Progress Card */}
+            <View style={styles.card}>
+              <View style={styles.sectionHeaderRow}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Activity color={theme.colors.primary} size={18} />
+                  <Text style={styles.sectionTitle}>Blood Glucose Progress</Text>
+                </View>
+                <TouchableOpacity onPress={() => setActiveTab('TRENDS')}>
+                  <Text style={styles.linkText}>View Chart →</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.metricGrid}>
+                <View style={styles.metricBox}>
+                  <Text style={styles.metricLabel}>30-Day Average</Text>
+                  <Text style={styles.metricBigVal}>
+                    {summaryData?.glucoseProgress.averageGlucose30Days
+                      ? `${summaryData.glucoseProgress.averageGlucose30Days} mg/dL`
+                      : 'No Data'}
+                  </Text>
+                  <Text style={styles.metricSub}>
+                    {summaryData?.glucoseProgress.totalReadings30Days ?? 0} reading(s) logged
+                  </Text>
+                </View>
+
+                <View style={styles.metricBox}>
+                  <Text style={styles.metricLabel}>Time-In-Range</Text>
+                  <Text style={[styles.metricBigVal, { color: '#059669' }]}>
+                    {summaryData?.glucoseProgress.timeInRangePercentage ?? 0}%
+                  </Text>
+                  <Text style={styles.metricSub}>Target: 70 - 180 mg/dL</Text>
+                </View>
+              </View>
+
+              {summaryData?.glucoseProgress.trendDelta7Days !== null && (
+                <View style={styles.trendRow}>
+                  <TrendingUp color="#0F766E" size={14} />
+                  <Text style={styles.trendText}>
+                    7d vs Prior 7d:{' '}
+                    <Text style={{ fontWeight: '800' }}>
+                      {(summaryData?.glucoseProgress.trendDelta7Days ?? 0) > 0 ? '+' : ''}
+                      {summaryData?.glucoseProgress.trendDelta7Days} mg/dL
+                    </Text>{' '}
+                    ({summaryData?.glucoseProgress.trendDirection})
+                  </Text>
+                </View>
+              )}
+
+              {summaryData?.glucoseProgress.missingMeasurementAlert ? (
+                <View style={styles.warningBanner}>
+                  <AlertCircle color="#D97706" size={14} />
+                  <Text style={styles.warningText}>{summaryData.glucoseProgress.missingMeasurementAlert}</Text>
+                </View>
+              ) : null}
+
+              <Text style={styles.nonCausationNote}>
+                {summaryData?.glucoseProgress.nonCausationDisclaimer ||
+                  'Descriptive measurements only. Fluctuations reflect nutrition, exercise, illness, and medications.'}
+              </Text>
+            </View>
+
+            {/* C. Medication Adherence Card */}
+            <View style={styles.card}>
+              <View style={styles.sectionHeaderRow}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Pill color="#059669" size={18} />
+                  <Text style={styles.sectionTitle}>Medication Adherence</Text>
+                </View>
+                <TouchableOpacity onPress={() => router.push('/(tabs)/medications')}>
+                  <Text style={styles.linkText}>Med Vault →</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.metricGrid}>
+                <View style={styles.metricBox}>
+                  <Text style={styles.metricLabel}>30-Day Rate</Text>
+                  <Text style={[styles.metricBigVal, { color: '#059669' }]}>
+                    {summaryData?.medicationAdherence.adherenceRatePercentage ?? 100}%
+                  </Text>
+                  <Text style={styles.metricSub}>
+                    {summaryData?.medicationAdherence.prescribedMedicinesCount ?? 0} Doctor Prescriptions
+                  </Text>
+                </View>
+
+                <View style={styles.metricBox}>
+                  <Text style={styles.metricLabel}>Doses Breakdown</Text>
+                  <Text style={styles.doseBreakdownText}>
+                    Taken: {summaryData?.medicationAdherence.takenDosesCount ?? 0}
+                  </Text>
+                  <Text style={styles.doseBreakdownText}>
+                    Skipped: {summaryData?.medicationAdherence.skippedDosesCount ?? 0}
+                  </Text>
+                  <Text style={styles.doseBreakdownText}>
+                    Pending: {summaryData?.medicationAdherence.unconfirmedDosesCount ?? 0}
+                  </Text>
+                </View>
+              </View>
+            </View>
+
+            {/* D. Care Plan Progress */}
+            <View style={styles.card}>
+              <View style={styles.sectionHeaderRow}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <CheckCircle2 color="#4F46E5" size={18} />
+                  <Text style={styles.sectionTitle}>Doctor Care Tasks</Text>
+                </View>
+                <TouchableOpacity onPress={() => router.push('/(tabs)/tasks')}>
+                  <Text style={styles.linkText}>Tasks →</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.taskProgressRow}>
+                <Text style={styles.taskProgressNum}>
+                  {summaryData?.carePlanProgress.completedTasksCount ?? 0} /{' '}
+                  {summaryData?.carePlanProgress.totalTasksAssigned ?? 0} Completed ({summaryData?.carePlanProgress.pendingTasksCount ?? 0} Pending)
+                </Text>
+                <Text style={styles.taskProgressPct}>
+                  {summaryData?.carePlanProgress.completionRatePercentage ?? 100}%
+                </Text>
+              </View>
+
+              {(summaryData?.carePlanProgress.overdueTasksCount ?? 0) > 0 ? (
+                <View style={styles.overdueBanner}>
+                  <AlertTriangle color="#DC2626" size={14} />
+                  <Text style={styles.overdueText}>
+                    {summaryData?.carePlanProgress.overdueTasksCount} doctor-assigned task(s) are overdue.
+                  </Text>
+                </View>
+              ) : (
+                <Text style={styles.onScheduleText}>All doctor care routines are up to date.</Text>
+              )}
+            </View>
+
+            {/* E. Health Insights & Observations */}
+            <View style={styles.card}>
+              <View style={styles.sectionHeaderRow}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <TrendingUp color="#0D9488" size={18} />
+                  <Text style={styles.sectionTitle}>Health Journey Insights</Text>
+                </View>
+              </View>
+
+              {insightsData.length === 0 ? (
+                <Text style={styles.emptySubText}>Log observations to generate validated health insights.</Text>
+              ) : (
+                <View style={{ gap: 10, marginTop: 4 }}>
+                  {insightsData.slice(0, 4).map((ins) => (
+                    <View key={ins.id} style={styles.insightCard}>
+                      <View style={styles.insightHeaderRow}>
+                        <Text style={styles.insightTitle}>{ins.title}</Text>
+                        <View style={styles.periodPill}>
+                          <Text style={styles.periodPillText}>{ins.periodLabel}</Text>
+                        </View>
+                      </View>
+                      <Text style={styles.insightSummary}>{ins.summary}</Text>
+                      {ins.suggestedDiscussion ? (
+                        <Text style={styles.insightDiscussion}>
+                          Discussion Points for Doctor: {ins.suggestedDiscussion}
+                        </Text>
+                      ) : null}
+                    </View>
+                  ))}
+                </View>
+              )}
+            </View>
+          </View>
         ) : activeTab === 'STAGES' ? (
           // -------------------------------------------------------------
           // 1. JOURNEY MILESTONES (CHRONOLOGICAL 9 STAGES)
@@ -211,7 +456,7 @@ export default function JourneyScreen() {
           <View style={styles.card}>
             <View style={styles.sectionHeaderRow}>
               <View>
-                <Text style={styles.sectionTitle}>Care Journey Roadmap</Text>
+                <Text style={styles.sectionTitle}>Care Milestones & Roadmap</Text>
                 <Text style={styles.sectionSub}>Milestones advance only upon verified clinical records</Text>
               </View>
               <View style={styles.pctBadge}>
@@ -278,7 +523,7 @@ export default function JourneyScreen() {
 
                       {stage.completedAt ? (
                         <Text style={styles.stageMeta}>
-                          ✓ Verified: {new Date(stage.completedAt).toLocaleDateString('en-IN', { month: 'short', day: 'numeric', year: 'numeric' })}
+                          Verified: {new Date(stage.completedAt).toLocaleDateString('en-IN', { month: 'short', day: 'numeric', year: 'numeric' })}
                           {stage.recordType ? ` (${stage.recordType})` : ''}
                         </Text>
                       ) : stage.recordType ? (
@@ -381,7 +626,7 @@ export default function JourneyScreen() {
 
               {/* Crucial Clinical Distinction Note */}
               <View style={styles.provenanceNote}>
-                <Sparkles color="#0D9488" size={13} />
+                <Activity color="#0D9488" size={13} />
                 <Text style={styles.provenanceText}>
                   Actual self-monitored logs are recorded with provenance timestamps. Estimated A1c is derived from average blood glucose and does not replace a clinical venous lab draw.
                 </Text>
@@ -437,6 +682,22 @@ export default function JourneyScreen() {
             ) : null}
 
             <View style={styles.card}>
+              <TouchableOpacity
+                style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingBottom: 12, marginBottom: 12, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' }}
+                onPress={() => router.push('/(tabs)/tasks')}
+                activeOpacity={0.7}
+              >
+                <View style={{ flex: 1, paddingRight: 8 }}>
+                  <Text style={{ fontSize: 13, fontWeight: '700', color: '#0F172A' }}>Your Care Plan</Text>
+                  <Text style={{ fontSize: 11, color: '#64748B', marginTop: 2 }}>
+                    Doctor-prescribed daily care tasks, instructions & adherence.
+                  </Text>
+                </View>
+                <View style={{ paddingHorizontal: 10, paddingVertical: 5, backgroundColor: '#0F172A', borderRadius: 8 }}>
+                  <Text style={{ color: '#FFFFFF', fontSize: 11, fontWeight: '700' }}>Open Plan →</Text>
+                </View>
+              </TouchableOpacity>
+
               <Text style={styles.sectionTitle}>Upcoming Consultations</Text>
               {(followUpData?.upcomingAppointments ?? []).length === 0 ? (
                 <View style={styles.emptyCard}>
@@ -531,129 +792,326 @@ const styles = StyleSheet.create({
   },
   tabItemActive: { borderBottomColor: theme.colors.primary },
   tabText: { fontSize: 12, fontWeight: '700', color: '#64748B' },
-  tabTextActive: { color: theme.colors.primary },
-  scrollContent: { padding: 16, backgroundColor: '#F8FAFC' },
+  tabTextActive: { color: theme.colors.primary, fontWeight: '900' },
+  scrollContent: { padding: 16 },
+
+  // Overview Hero Card
+  overviewHeroCard: {
+    backgroundColor: '#0F172A',
+    borderRadius: 16,
+    padding: 18,
+    shadowColor: '#000',
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  heroTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  heroSuperText: { fontSize: 10, fontWeight: '800', color: '#5EEAD4', letterSpacing: 0.6 },
+  heroPctText: { fontSize: 20, fontWeight: '900', color: '#2DD4BF' },
+  heroStageTitle: { fontSize: 18, fontWeight: '900', color: '#FFFFFF', marginTop: 6 },
+  heroSubText: { fontSize: 12, color: '#94A3B8', marginTop: 2 },
+  progressBarTrack: {
+    height: 6,
+    backgroundColor: '#1E293B',
+    borderRadius: 3,
+    marginTop: 14,
+    overflow: 'hidden',
+  },
+  progressBarFill: {
+    height: 6,
+    backgroundColor: '#2DD4BF',
+    borderRadius: 3,
+  },
+
+  // Metric Grids
+  metricGrid: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 10,
+  },
+  metricBox: {
+    flex: 1,
+    backgroundColor: '#F8FAFC',
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  metricLabel: { fontSize: 11, fontWeight: '700', color: '#64748B' },
+  metricBigVal: { fontSize: 18, fontWeight: '900', color: '#0F172A', marginTop: 4 },
+  metricSub: { fontSize: 10, color: '#94A3B8', marginTop: 2 },
+  doseBreakdownText: { fontSize: 11, fontWeight: '600', color: '#334155', marginTop: 2 },
+
+  trendRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#F0FDFA',
+    padding: 10,
+    borderRadius: 10,
+    marginTop: 10,
+    borderWidth: 1,
+    borderColor: '#CCFBF1',
+  },
+  trendText: { fontSize: 11, color: '#0F766E' },
+  warningBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#FFFBEB',
+    padding: 10,
+    borderRadius: 10,
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+  },
+  warningText: { fontSize: 11, color: '#92400E', fontWeight: '600' },
+  nonCausationNote: {
+    fontSize: 10,
+    color: '#94A3B8',
+    marginTop: 10,
+    fontStyle: 'italic',
+    lineHeight: 14,
+  },
+
+  // Tasks overview
+  taskProgressRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 10,
+  },
+  taskProgressNum: { fontSize: 15, fontWeight: '800', color: '#0F172A' },
+  taskProgressPct: { fontSize: 15, fontWeight: '900', color: '#4F46E5' },
+  overdueBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#FEF2F2',
+    padding: 8,
+    borderRadius: 8,
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+  },
+  overdueText: { fontSize: 11, color: '#B91C1C', fontWeight: '700' },
+  onScheduleText: { fontSize: 11, color: '#059669', fontWeight: '700', marginTop: 8 },
+
+  // Insight Cards
+  insightCard: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  insightHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  insightTitle: { fontSize: 13, fontWeight: '800', color: '#0F172A', flex: 1 },
+  periodPill: {
+    backgroundColor: '#E2E8F0',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  periodPillText: { fontSize: 9, fontWeight: '700', color: '#475569' },
+  insightSummary: { fontSize: 11, color: '#334155', marginTop: 4, lineHeight: 16 },
+  insightDiscussion: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#0F766E',
+    backgroundColor: '#F0FDFA',
+    padding: 6,
+    borderRadius: 6,
+    marginTop: 6,
+  },
+  emptySubText: { fontSize: 12, color: '#64748B', fontStyle: 'italic', marginTop: 6 },
+  linkText: { fontSize: 11, fontWeight: '800', color: theme.colors.primary },
+
+  // Common Card Styles
   card: {
     backgroundColor: '#FFFFFF',
     borderRadius: 16,
     padding: 16,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.03,
-    shadowRadius: 4,
-    elevation: 1,
+    borderColor: '#F1F5F9',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
   },
   sectionHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 12,
+    alignItems: 'center',
   },
-  sectionTitle: { fontSize: 16, fontWeight: '800', color: '#0F172A' },
+  sectionTitle: { fontSize: 15, fontWeight: '800', color: '#0F172A' },
   sectionSub: { fontSize: 11, color: '#64748B', marginTop: 2 },
-  pctBadge: { backgroundColor: '#ECFDF5', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, borderWidth: 1, borderColor: '#A7F3D0' },
-  pctBadgeText: { fontSize: 12, fontWeight: '800', color: '#065F46' },
-  stagesList: { marginTop: 4 },
-  stageRow: { flexDirection: 'row', gap: 12 },
+  pctBadge: {
+    backgroundColor: '#F0FDFA',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#99F6E4',
+  },
+  pctBadgeText: { fontSize: 12, fontWeight: '800', color: '#0F766E' },
+
+  // Stages Timeline Styles
+  stagesList: { marginTop: 16 },
+  stageRow: { flexDirection: 'row', gap: 14 },
   stageTrackCol: { alignItems: 'center', width: 24 },
   stageNode: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
     backgroundColor: '#F1F5F9',
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1.5,
+    borderWidth: 2,
     borderColor: '#CBD5E1',
-    marginTop: 2,
   },
   nodeCompleted: { backgroundColor: '#059669', borderColor: '#059669' },
   nodeCurrent: { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary },
-  nodeOverdue: { backgroundColor: '#EF4444', borderColor: '#EF4444' },
-  nodeUpcoming: { backgroundColor: '#F8FAFC', borderColor: '#CBD5E1' },
+  nodeOverdue: { backgroundColor: '#DC2626', borderColor: '#DC2626' },
+  nodeUpcoming: { backgroundColor: '#F8FAFC', borderColor: '#E2E8F0' },
   stageOrderNum: { fontSize: 10, fontWeight: '800', color: '#64748B' },
   textWhite: { color: '#FFFFFF' },
-  stageTrackLine: { width: 2, flex: 1, backgroundColor: '#E2E8F0', marginVertical: 3 },
-  stageBody: { flex: 1, paddingBottom: 16 },
+  stageTrackLine: { width: 2, flex: 1, backgroundColor: '#E2E8F0', marginVertical: 4 },
+  stageBody: { flex: 1, paddingBottom: 18 },
   stageTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  stageTitle: { fontSize: 13, fontWeight: '800', color: '#0F172A', flex: 1, marginRight: 6 },
-  stageDesc: { fontSize: 11, color: '#475569', marginTop: 3, lineHeight: 16 },
-  stageMeta: { fontSize: 10, fontWeight: '700', color: '#059669', marginTop: 4 },
-  stageMetaPending: { fontSize: 10, color: '#94A3B8', marginTop: 3 },
-  statusTag: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
-  tagGood: { backgroundColor: '#ECFDF5' },
-  tagActive: { backgroundColor: '#EFF6FF' },
-  tagWarn: { backgroundColor: '#FEF2F2' },
-  tagUpcoming: { backgroundColor: '#F1F5F9' },
+  stageTitle: { fontSize: 13, fontWeight: '800', color: '#0F172A', flex: 1 },
+  statusTag: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
   statusTagText: { fontSize: 9, fontWeight: '800' },
+  tagGood: { backgroundColor: '#ECFDF5' },
   textGood: { color: '#059669' },
-  textActive: { color: '#2563EB' },
+  tagActive: { backgroundColor: '#F0FDFA' },
+  textActive: { color: theme.colors.primary },
+  tagWarn: { backgroundColor: '#FEF2F2' },
   textWarn: { color: '#DC2626' },
-  textUpcoming: { color: '#64748B' },
+  tagUpcoming: { backgroundColor: '#F8FAFC' },
+  textUpcoming: { color: '#94A3B8' },
+  stageDesc: { fontSize: 11, color: '#64748B', marginTop: 4, lineHeight: 16 },
+  stageMeta: { fontSize: 10, fontWeight: '700', color: '#059669', marginTop: 4 },
+  stageMetaPending: { fontSize: 10, color: '#94A3B8', marginTop: 4 },
+
+  // Daily Journey Styles
   carePlanBanner: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
+    backgroundColor: '#ECFDF5',
+    borderWidth: 1,
+    borderColor: '#A7F3D0',
     padding: 16,
-    borderWidth: 1.5,
-    borderColor: '#99F6E4',
-    gap: 6,
+    borderRadius: 16,
   },
   bannerTop: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  bannerTitle: { fontSize: 11, fontWeight: '800', color: '#0F766E' },
-  planHeading: { fontSize: 15, fontWeight: '800', color: '#0F172A' },
-  instBox: { backgroundColor: '#F0FDFA', padding: 8, borderRadius: 8, marginTop: 4 },
-  instLabel: { fontSize: 10, fontWeight: '800', color: '#0F766E' },
-  instText: { fontSize: 11, color: '#134E4A', marginTop: 2 },
-  taskCountText: { fontSize: 11, fontWeight: '700', color: theme.colors.primary },
-  emptyCard: { padding: 18, alignItems: 'center', gap: 6 },
+  bannerTitle: { fontSize: 11, fontWeight: '800', color: '#059669', letterSpacing: 0.5 },
+  planHeading: { fontSize: 16, fontWeight: '900', color: '#064E3B', marginTop: 4 },
+  instBox: { backgroundColor: '#FFFFFF', padding: 10, borderRadius: 10, marginTop: 8 },
+  instLabel: { fontSize: 10, fontWeight: '800', color: '#059669' },
+  instText: { fontSize: 12, color: '#334155', marginTop: 2 },
+  taskCountText: { fontSize: 11, fontWeight: '700', color: '#64748B' },
+  emptyCard: { alignItems: 'center', paddingVertical: 16, gap: 6 },
   emptyTitle: { fontSize: 12, fontWeight: '700', color: '#64748B' },
-  taskItem: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 10, backgroundColor: '#F8FAFC', borderRadius: 8 },
-  taskBullet: { width: 8, height: 8, borderRadius: 4, backgroundColor: theme.colors.primary },
+  taskItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 10,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 10,
+  },
+  taskBullet: { width: 6, height: 6, borderRadius: 3, backgroundColor: theme.colors.primary },
   taskTitle: { fontSize: 12, fontWeight: '700', color: '#0F172A' },
-  taskTime: { fontSize: 10, color: '#64748B', marginTop: 1 },
-  medCard: { padding: 10, backgroundColor: '#F8FAFC', borderRadius: 8, borderWidth: 1, borderColor: '#E2E8F0' },
-  medName: { fontSize: 13, fontWeight: '800', color: '#0F172A' },
+  taskTime: { fontSize: 10, color: '#64748B', marginTop: 2 },
+  medCard: { padding: 10, backgroundColor: '#F8FAFC', borderRadius: 10 },
+  medName: { fontSize: 12, fontWeight: '800', color: '#0F172A' },
   medDose: { fontSize: 11, color: '#64748B', marginTop: 2 },
-  metricSwitcherRow: { flexDirection: 'row', backgroundColor: '#F1F5F9', borderRadius: 8, padding: 3, marginBottom: 10 },
-  metricTabBtn: { flex: 1, paddingVertical: 6, alignItems: 'center', borderRadius: 6 },
+
+  // Trends Tab Styles
+  metricSwitcherRow: {
+    flexDirection: 'row',
+    backgroundColor: '#F1F5F9',
+    borderRadius: 10,
+    padding: 2,
+    marginBottom: 12,
+  },
+  metricTabBtn: { flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: 8 },
   metricTabBtnActive: { backgroundColor: '#FFFFFF', elevation: 1 },
   metricTabTitle: { fontSize: 11, fontWeight: '700', color: '#64748B' },
-  metricTabTitleActive: { color: theme.colors.primary },
-  comparisonBox: { marginBottom: 8 },
-  comparisonValue: { fontSize: 22, fontWeight: '900', color: '#0F172A' },
-  comparisonBadge: { alignSelf: 'flex-start', backgroundColor: '#F0FDFA', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, marginTop: 4 },
-  comparisonBadgeText: { fontSize: 11, fontWeight: '700', color: '#0F766E' },
-  chartContainer: { alignItems: 'center', marginVertical: 8 },
-  chartEmpty: { height: 120, alignItems: 'center', justifyContent: 'center', gap: 6 },
-  chartEmptyText: { fontSize: 11, color: '#94A3B8', textAlign: 'center' },
-  provenanceNote: { flexDirection: 'row', gap: 6, backgroundColor: '#F0FDFA', padding: 8, borderRadius: 8, marginTop: 8 },
+  metricTabTitleActive: { color: theme.colors.primary, fontWeight: '800' },
+  comparisonBox: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  comparisonValue: { fontSize: 20, fontWeight: '900', color: '#0F172A' },
+  comparisonBadge: { backgroundColor: '#F0FDFA', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
+  comparisonBadgeText: { fontSize: 10, fontWeight: '800', color: '#0F766E' },
+  chartContainer: { alignItems: 'center', paddingVertical: 6 },
+  chartEmpty: { height: 140, justifyContent: 'center', alignItems: 'center', gap: 6 },
+  chartEmptyText: { fontSize: 11, color: '#94A3B8' },
+  provenanceNote: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
+    backgroundColor: '#F0FDFA',
+    padding: 10,
+    borderRadius: 10,
+    marginTop: 10,
+  },
   provenanceText: { fontSize: 10, color: '#0F766E', flex: 1, lineHeight: 14 },
-  checkupsList: { gap: 8, marginTop: 6 },
-  checkupCard: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 10, backgroundColor: '#F8FAFC', borderRadius: 8 },
-  checkupIconCol: { width: 22, alignItems: 'center' },
-  checkupTitle: { fontSize: 12, fontWeight: '800', color: '#0F172A' },
-  checkupDoctor: { fontSize: 10, color: '#64748B', marginTop: 1 },
-  statusBadge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
+  checkupsList: { gap: 8, marginTop: 10 },
+  checkupCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 10,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 10,
+  },
+  checkupIconCol: { width: 24, alignItems: 'center' },
+  checkupTitle: { fontSize: 12, fontWeight: '700', color: '#0F172A' },
+  checkupDoctor: { fontSize: 10, color: '#64748B', marginTop: 2 },
+  statusBadge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
+  statusText: { fontSize: 9, fontWeight: '800' },
   badgeGood: { backgroundColor: '#ECFDF5' },
   badgeWarn: { backgroundColor: '#FFFBEB' },
-  statusText: { fontSize: 10, fontWeight: '800' },
-  reviewCountdownCard: { backgroundColor: '#F0FDFA', borderRadius: 16, padding: 16, borderWidth: 1.5, borderColor: '#99F6E4', gap: 6 },
+
+  // Follow-up Tab Styles
+  reviewCountdownCard: {
+    backgroundColor: '#F0FDFA',
+    borderWidth: 1,
+    borderColor: '#99F6E4',
+    padding: 16,
+    borderRadius: 16,
+  },
   reviewOverdueCard: { backgroundColor: '#FEF2F2', borderColor: '#FECACA' },
   reviewHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   reviewHeaderTitle: { fontSize: 12, fontWeight: '800', color: '#0F766E' },
   textRed: { color: '#DC2626' },
-  reviewDateDisplay: { fontSize: 18, fontWeight: '900', color: '#0F172A' },
-  reviewSub: { fontSize: 11, color: '#475569', lineHeight: 16 },
-  apptCard: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 10, backgroundColor: '#F8FAFC', borderRadius: 8, borderWidth: 1, borderColor: '#E2E8F0' },
+  reviewDateDisplay: { fontSize: 18, fontWeight: '900', color: '#0F172A', marginTop: 6 },
+  reviewSub: { fontSize: 11, color: '#64748B', marginTop: 4, lineHeight: 16 },
+  apptCard: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 12,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
   apptDoctor: { fontSize: 13, fontWeight: '800', color: '#0F172A' },
-  apptDate: { fontSize: 11, color: '#0F766E', fontWeight: '700', marginTop: 2 },
+  apptDate: { fontSize: 11, color: '#0D9488', fontWeight: '700', marginTop: 2 },
   apptReason: { fontSize: 11, color: '#64748B', marginTop: 2 },
   serverBadge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
   serverBadgeText: { fontSize: 10, fontWeight: '800' },
-  activeClinicianBadge: { backgroundColor: '#EFF6FF', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
-  activeClinicianText: { fontSize: 10, fontWeight: '700', color: '#2563EB' },
-  clinicianName: { fontSize: 15, fontWeight: '800', color: '#0F172A', marginTop: 4 },
-  clinicianEmail: { fontSize: 12, color: '#64748B', marginTop: 1 },
+  activeClinicianBadge: { backgroundColor: '#F0FDFA', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
+  activeClinicianText: { fontSize: 10, fontWeight: '800', color: '#0F766E' },
+  clinicianName: { fontSize: 14, fontWeight: '800', color: '#0F172A', marginTop: 6 },
+  clinicianEmail: { fontSize: 11, color: '#64748B', marginTop: 2 },
 });

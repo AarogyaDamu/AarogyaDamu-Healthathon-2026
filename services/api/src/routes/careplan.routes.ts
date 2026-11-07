@@ -1,5 +1,4 @@
 import { Router, Request, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
 import { z } from 'zod';
 export const CarePlanGoalCategoryEnum = z.enum([
   'GLUCOSE',
@@ -80,7 +79,7 @@ import { requireClinician } from '../middleware/requireClinician';
 import { logAuditEvent } from '../audit/auditLogger';
 
 const router = Router();
-const prisma = new PrismaClient();
+import { prisma } from '../db/prisma';
 
 router.use(requireAuth);
 

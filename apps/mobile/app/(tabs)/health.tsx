@@ -1,19 +1,20 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import {
+  Platform,
   View,
   Text,
   TextInput,
+  Image,
   TouchableOpacity,
   StyleSheet,
   ScrollView,
-  Dimensions,
   Modal,
+  ActivityIndicator,
+  RefreshControl,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import Svg, { Path, Circle, Line, Text as SvgText } from 'react-native-svg';
 import {
   Plus,
-  Search,
   CheckCircle2,
   TrendingDown,
   TrendingUp,
@@ -21,629 +22,971 @@ import {
   FileUp,
   Activity,
   AlertTriangle,
-  ShieldCheck,
   X,
-  Edit3,
+  Clock,
+  Pill,
+  Flame,
+  Calendar,
+  Stethoscope,
+  Filter,
   Check,
-  XCircle,
-  Eye,
+  ShieldCheck,
+  Download,
+  AlertCircle,
+  Camera,
+  Image as ImageIcon,
 } from 'lucide-react-native';
+import * as DocumentPicker from 'expo-document-picker';
+import * as ImagePicker from 'expo-image-picker';
+import { WebView } from 'react-native-webview';
 import {
-  clinicalStore,
-  subscribeToClinicalStore,
-  MedicalReport,
-  ExtractedField,
-  MedicalSpecialty,
-  GlucoseContext,
+  mobileApiFetch,
+  getSelectedMobileRole,
+  getMobileToken,
+  resolveApiBaseUrl,
 } from '../../src/api/client';
+import {
+  enqueueOfflineObservation,
+  syncOfflineQueue,
+  getCachedObservations,
+  setCachedObservations,
+} from '../../src/api/services/offlineStorage';
+import { medicationApi, type MobileMedication } from '../../src/api/medications';
 import { useToast } from '../../components/ui/ToastProvider';
 import { theme } from '../../src/theme';
 
-const SPECIALTIES: { key: MedicalSpecialty; label: string; sub: string }[] = [
-  { key: 'DIABETOLOGY', label: 'Diabetes Care', sub: 'Blood Sugars' },
-  { key: 'CARDIOLOGY', label: 'Heart & Lipids', sub: 'Cholesterol' },
-  { key: 'NEPHROLOGY', label: 'Kidney Health', sub: 'Filtration' },
-];
+type VaultTab = 'RECORD_SUGAR' | 'MED_VAULT' | 'LIFESTYLE' | 'MEDICAL_REPORTS' | 'HEALTH_TIMELINE';
 
-export default function HealthScreen() {
+type VitalType = 'BLOOD_GLUCOSE' | 'BLOOD_PRESSURE' | 'WEIGHT' | 'HBA1C';
+
+interface ObservationRecord {
+  id: string;
+  type: VitalType;
+  numericValue: number;
+  secondaryValue?: number;
+  unit: string;
+  context: string;
+  clinicalFlag?: string;
+  notes?: string;
+  sourceProvenance?: string;
+  observedAt: string;
+}
+
+interface LifestyleEntry {
+  id: string;
+  category: 'PHYSICAL_ACTIVITY' | 'SLEEP' | 'NUTRITION' | 'HYDRATION' | 'WELLBEING';
+  numericValue?: number;
+  unit?: string;
+  qualitativeValue?: string;
+  notes?: string;
+  recordedAt: string;
+}
+
+interface MedicalDoc {
+  id: string;
+  title: string;
+  category: string;
+  issuingFacility?: string;
+  reportDate: string;
+  notes?: string;
+  processingStatus: string;
+  fileSizeBytes?: number;
+  mimeType?: string;
+  extractedData?: {
+    provider?: string;
+    status?: string;
+    text?: string;
+    error?: string;
+    isSynthetic?: boolean;
+  } | null;
+}
+
+interface SelectedReportFile {
+  uri: string;
+  name: string;
+  mimeType: string;
+  size?: number;
+  file?: File;
+}
+
+interface TimelineEvent {
+  id: string;
+  eventType: 'OBSERVATION' | 'TASK' | 'CONSULTATION' | 'DOCUMENT' | 'CONSULTATION_NOTE' | 'MEDICATION_EVENT';
+  title: string;
+  details?: string;
+  occurredAt: string;
+}
+
+function getRequestErrorMessage(error: unknown): string {
+  return error instanceof Error && error.message
+    ? error.message
+    : 'Unexpected server response.';
+}
+
+export default function HealthVaultScreen() {
   const insets = useSafeAreaInsets();
   const { showToast } = useToast();
-  const screenWidth = Dimensions.get('window').width;
-  const [, setTick] = useState(0);
 
-  useEffect(() => {
-    return subscribeToClinicalStore(() => setTick((t) => t + 1));
+  const [activeTab, setActiveTab] = useState<VaultTab>('RECORD_SUGAR');
+  const [role, setRole] = useState<'PATIENT' | 'CAREGIVER'>('PATIENT');
+  const [refreshing, setRefreshing] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  // Tab 1: Record Sugar & Vitals State
+  const [observations, setObservations] = useState<ObservationRecord[]>([]);
+  const [vitalType, setVitalType] = useState<VitalType>('BLOOD_GLUCOSE');
+  const [sugarFilter, setSugarFilter] = useState<'ALL' | 'FASTING' | 'POST_MEAL_2HR' | 'RANDOM'>('ALL');
+  const [showLogModal, setShowLogModal] = useState(false);
+  const [primaryValue, setPrimaryValue] = useState('');
+  const [secondaryValue, setSecondaryValue] = useState('');
+  const [vitalContext, setVitalContext] = useState('FASTING');
+  const [vitalNotes, setVitalNotes] = useState('');
+  const [submittingVital, setSubmittingVital] = useState(false);
+
+  // Tab 2: Med Vault State
+  const [medications, setMedications] = useState<MobileMedication[]>([]);
+  const [adherenceRate, setAdherenceRate] = useState<number | null>(null);
+  const [medicationError, setMedicationError] = useState<string | null>(null);
+  const [recordingDoseId, setRecordingDoseId] = useState<string | null>(null);
+
+  // Tab 3: Lifestyle State
+  const [lifestyleEntries, setLifestyleEntries] = useState<LifestyleEntry[]>([]);
+  const [showLifestyleModal, setShowLifestyleModal] = useState(false);
+  const [lifestyleCategory, setLifestyleCategory] = useState<'PHYSICAL_ACTIVITY' | 'SLEEP' | 'NUTRITION' | 'HYDRATION'>('PHYSICAL_ACTIVITY');
+  const [lifestyleValue, setLifestyleValue] = useState('');
+  const [lifestyleNotes, setLifestyleNotes] = useState('');
+  const [submittingLifestyle, setSubmittingLifestyle] = useState(false);
+
+  // Tab 4: Medical Reports State
+  const [reports, setReports] = useState<MedicalDoc[]>([]);
+  const [showUploadModal, setShowUploadModal] = useState(false);
+  const [uploadTitle, setUploadTitle] = useState('');
+  const [uploadFacility, setUploadFacility] = useState('');
+  const [selectedReportFile, setSelectedReportFile] = useState<SelectedReportFile | null>(null);
+  const [selectingReport, setSelectingReport] = useState(false);
+  const [submittingUpload, setSubmittingUpload] = useState(false);
+  const [selectedReportForReview, setSelectedReportForReview] = useState<MedicalDoc | null>(null);
+  const [reportReviewTab, setReportReviewTab] = useState<'ocr' | 'source'>('ocr');
+  const [reportPreviewToken, setReportPreviewToken] = useState<string | null>(null);
+  const [abhaBusy, setAbhaBusy] = useState<'export' | 'import' | null>(null);
+  const [abhaMessage, setAbhaMessage] = useState<string | null>(null);
+  const [abhaSummary, setAbhaSummary] = useState<any | null>(null);
+
+  // Tab 5: Health Timeline State
+  const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[]>([]);
+  const [timelineFilter, setTimelineFilter] = useState<string>('ALL');
+
+  const loadMedicationData = useCallback(async () => {
+    const [medicationsResult, adherenceResult] = await Promise.allSettled([
+      medicationApi.getMedications({ status: 'ACTIVE' }),
+      medicationApi.getAdherenceStats({ days: 14 }),
+    ]);
+
+    const errors: string[] = [];
+    if (medicationsResult.status === 'fulfilled') {
+      setMedications(medicationsResult.value);
+    } else {
+      errors.push(`Medication list: ${getRequestErrorMessage(medicationsResult.reason)}`);
+    }
+
+    if (adherenceResult.status === 'fulfilled' && typeof adherenceResult.value?.adherenceRate === 'number') {
+      setAdherenceRate(adherenceResult.value.adherenceRate);
+    } else {
+      setAdherenceRate(null);
+      errors.push(
+        adherenceResult.status === 'rejected'
+          ? `Adherence statistics: ${getRequestErrorMessage(adherenceResult.reason)}`
+          : 'Adherence statistics: the server returned an invalid response.',
+      );
+    }
+
+    setMedicationError(errors.length > 0 ? errors.join('\n') : null);
   }, []);
 
-  // Primary Navigation: Verified Results & Trends VS Dedicated Medical Reports Area
-  const [activeMainSection, setActiveMainSection] = useState<'VERIFIED_TRENDS' | 'REPORTS_AREA'>('VERIFIED_TRENDS');
+  const loadVaultData = useCallback(async () => {
+    try {
+      const activeRole = await getSelectedMobileRole();
+      if (activeRole) setRole(activeRole);
 
-  // --- 1. VERIFIED RESULTS & TRENDS STATE ---
-  const [selectedSpecialty, setSelectedSpecialty] = useState<MedicalSpecialty>('DIABETOLOGY');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [glucoseInput, setGlucoseInput] = useState('');
-  const [mealType, setMealType] = useState<GlucoseContext>('FASTING');
+      // Load Observations (Sugar)
+      try {
+        const obsRes = await mobileApiFetch<{ observations: ObservationRecord[] }>('/observations?limit=50');
+        if (obsRes?.observations) {
+          setObservations(obsRes.observations);
+          await setCachedObservations(obsRes.observations);
+        }
+      } catch {
+        const cached = await getCachedObservations();
+        if (cached && cached.length > 0) setObservations(cached as ObservationRecord[]);
+      }
 
-  // --- 2. DEDICATED MEDICAL REPORTS AREA STATE ---
-  const [reportSubTab, setReportSubTab] = useState<'ALL_REPORTS' | 'PA_QUEUE'>('ALL_REPORTS');
+      await loadMedicationData();
 
-  // A. Upload Report Flow Modal
-  const [showUploadModal, setShowUploadModal] = useState(false);
-  const [selectedFileType, setSelectedFileType] = useState<'PDF' | 'IMAGE'>('PDF');
-  const [uploadFileName, setUploadFileName] = useState('Apollo_Lab_Oct2026.pdf');
-  const [uploadPatientName, setUploadPatientName] = useState('Pranav Mirage');
-  const [uploadReportDate, setUploadReportDate] = useState('27 Oct 2026');
-  const [uploadFacility, setUploadFacility] = useState('Apollo Diagnostics, Pune');
-  const [isUploading, setIsUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
+      // Load Lifestyle
+      try {
+        const lifeRes = await mobileApiFetch<{ records: LifestyleEntry[] }>('/lifestyle');
+        if (lifeRes?.records) setLifestyleEntries(lifeRes.records);
+      } catch {
+        // Lifestyle fetch fallback
+      }
 
-  // B. Extraction Review Modal
-  const [activeExtractionReport, setActiveExtractionReport] = useState<MedicalReport | null>(null);
-  const [editingFieldId, setEditingFieldId] = useState<string | null>(null);
-  const [editedValue, setEditedValue] = useState('');
-  const [editedUnit, setEditedUnit] = useState('');
+      // Load Medical Reports
+      try {
+        const docRes = await mobileApiFetch<{ documents: MedicalDoc[] }>('/documents');
+        if (docRes?.documents) setReports(docRes.documents);
+      } catch {
+        // Doc fetch fallback
+      }
 
-  // C. Physician-Assistant (PA) Review Modal
-  const [activePAReport, setActivePAReport] = useState<MedicalReport | null>(null);
-  const [paReviewerName, setPaReviewerName] = useState('Sister Anjali (PA)');
-  const [paNotes, setPaNotes] = useState('');
-  const [isRejecting, setIsRejecting] = useState(false);
-  const [rejectionReason, setRejectionReason] = useState('');
+      // Load Timeline
+      try {
+        const timeRes = await mobileApiFetch<{ events: TimelineEvent[] }>('/timeline');
+        if (timeRes?.events) setTimelineEvents(timeRes.events);
+      } catch {
+        // Timeline fetch fallback
+      }
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, [loadMedicationData]);
 
-  // Reports data from store
-  const reports = clinicalStore.reports;
-  const biomarkers = clinicalStore.biomarkers;
-  const hba1cHistory = clinicalStore.hba1cHistory;
+  useEffect(() => {
+    void loadVaultData();
+  }, [loadVaultData]);
 
-  const pendingPAReports = useMemo(() => {
-    return reports.filter((r) => r.status === 'PENDING_PA_REVIEW');
+  useEffect(() => {
+    if (!reports.some((report) => report.processingStatus === 'PENDING')) return;
+
+    let requestInProgress = false;
+    const timer = setInterval(() => {
+      if (requestInProgress) return;
+      requestInProgress = true;
+      void mobileApiFetch<{ documents: MedicalDoc[] }>('/documents')
+        .then((response) => {
+          if (response?.documents) setReports(response.documents);
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          requestInProgress = false;
+        });
+    }, 2500);
+
+    return () => clearInterval(timer);
   }, [reports]);
 
-  const extractionReviewReports = useMemo(() => {
-    return reports.filter((r) => r.status === 'EXTRACTION_REVIEW');
-  }, [reports]);
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await syncOfflineQueue();
+    await loadVaultData();
+  };
 
-  const filteredBiomarkers = useMemo(() => {
-    return biomarkers.filter((b) => {
-      const matchSpec = b.specialty === selectedSpecialty;
-      const matchQuery =
-        !searchQuery.trim() ||
-        b.testName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        b.date.toLowerCase().includes(searchQuery.toLowerCase());
-      return matchSpec && matchQuery;
-    });
-  }, [biomarkers, selectedSpecialty, searchQuery]);
-
-  const handleQuickLog = () => {
-    const val = parseFloat(glucoseInput);
-    if (isNaN(val) || val < 40 || val > 600) {
-      showToast('Enter a valid blood sugar reading (40–600 mg/dL)');
+  // --- RECORD SUGAR HANDLERS ---
+  const handleLogVital = async () => {
+    const val = parseFloat(primaryValue);
+    if (isNaN(val) || val <= 0) {
+      showToast('Please enter a valid numeric reading.');
       return;
     }
 
-    const baseline = mealType === 'FASTING' ? 108 : 145;
-    const now = new Date();
-    clinicalStore.addObservation({
-      value: val,
-      type: mealType,
-      date: now.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
-      time: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      status:
-        val <= (mealType === 'FASTING' ? 100 : 140)
-          ? 'OPTIMAL'
-          : val <= (mealType === 'FASTING' ? 125 : 180)
-          ? 'NORMAL'
-          : 'ELEVATED',
-      source: 'MANUAL',
-      patientBaseline: baseline,
-    });
+    setSubmittingVital(true);
+    const sourceProvenance = role === 'CAREGIVER' ? 'CAREGIVER_INPUT' : 'MANUAL_PATIENT';
+    const idempotencyKey = `obs-${Date.now()}-${Math.random().toString(36).substring(7)}`;
 
-    setGlucoseInput('');
-    showToast(`Saved ${val} mg/dL reading to your Health Vault`);
-  };
-
-  // Upload Simulation with Progress Bar
-  const handleStartUpload = () => {
-    setIsUploading(true);
-    setUploadProgress(15);
-
-    const step1 = setTimeout(() => setUploadProgress(45), 300);
-    const step2 = setTimeout(() => setUploadProgress(85), 600);
-    const step3 = setTimeout(() => {
-      setUploadProgress(100);
-      setIsUploading(false);
-      setShowUploadModal(false);
-
-      const created = clinicalStore.createUploadedReport({
-        title: `${uploadFacility.split(' ')[0]} Lab Report (${selectedFileType})`,
-        fileName: uploadFileName,
-        fileType: selectedFileType,
-        fileSize: selectedFileType === 'PDF' ? '1.8 MB' : '920 KB',
-        patientName: uploadPatientName,
-        reportDate: uploadReportDate,
-        facility: uploadFacility,
-      });
-
-      showToast('Upload complete! Opening Extraction Review...');
-      setActiveExtractionReport(created);
-    }, 900);
-
-    return () => {
-      clearTimeout(step1);
-      clearTimeout(step2);
-      clearTimeout(step3);
+    const payload = {
+      type: vitalType,
+      numericValue: val,
+      secondaryValue: secondaryValue ? parseFloat(secondaryValue) : undefined,
+      unit: vitalType === 'BLOOD_GLUCOSE' ? 'mg/dL' : vitalType === 'BLOOD_PRESSURE' ? 'mmHg' : vitalType === 'WEIGHT' ? 'kg' : '%',
+      context: vitalContext,
+      notes: vitalNotes.trim() || undefined,
+      sourceProvenance,
+      idempotencyKey,
+      observedAt: new Date().toISOString(),
     };
+
+    try {
+      await mobileApiFetch('/observations', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      showToast('✓ Reading saved to clinical logbook!');
+      setShowLogModal(false);
+      setPrimaryValue('');
+      setSecondaryValue('');
+      setVitalNotes('');
+      await loadVaultData();
+    } catch {
+      // Offline fallback queue
+      await enqueueOfflineObservation(payload);
+      showToast('Reading queued offline. Will sync when back online.');
+      setShowLogModal(false);
+    } finally {
+      setSubmittingVital(false);
+    }
   };
 
-  const handleSubmitToPAQueue = (rep: MedicalReport) => {
-    clinicalStore.submitReportToPAQueue(rep.id, rep.extractedFields);
-    setActiveExtractionReport(null);
-    showToast('Extraction confirmed! Report sent to Physician Assistant review queue.');
-    setActiveMainSection('REPORTS_AREA');
-    setReportSubTab('PA_QUEUE');
+  // --- MED VAULT ADHERENCE HANDLER ---
+  const handleLogAdherence = async (medId: string, action: 'TAKEN' | 'SKIPPED') => {
+    setRecordingDoseId(medId);
+    try {
+      await medicationApi.recordAdherenceEvent(
+        medId,
+        action,
+        action === 'TAKEN' ? 'Confirmed dose taken' : 'Reported skipped dose',
+        new Date().toISOString(),
+      );
+      showToast(action === 'TAKEN' ? '✓ Dose recorded as taken!' : 'Reported dose as skipped.');
+      await loadVaultData();
+    } catch {
+      showToast('Unable to record dose adherence. Check your connection.');
+    } finally {
+      setRecordingDoseId(null);
+    }
   };
 
-  const handleApproveByPA = (rep: MedicalReport) => {
-    clinicalStore.approveReportByPA(rep.id, paReviewerName, paNotes);
-    setActivePAReport(null);
-    setPaNotes('');
-    showToast('Report verified by PA! All measurements synced to Health Vault & Trends.');
-  };
-
-  const handleRejectByPA = (rep: MedicalReport) => {
-    if (!rejectionReason.trim()) {
-      showToast('Please provide a clinical reason for rejection');
+  // --- LIFESTYLE LOG HANDLER ---
+  const handleLogLifestyle = async () => {
+    const val = parseFloat(lifestyleValue);
+    if (isNaN(val) || val <= 0) {
+      showToast('Please enter a valid duration or quantity.');
       return;
     }
-    clinicalStore.rejectReportByPA(rep.id, paReviewerName, rejectionReason);
-    setActivePAReport(null);
-    setIsRejecting(false);
-    setRejectionReason('');
-    showToast('Report rejected with note. Excluded from doctor health vault.');
+    setSubmittingLifestyle(true);
+    try {
+      const unit = lifestyleCategory === 'PHYSICAL_ACTIVITY' ? 'MINUTES' : lifestyleCategory === 'SLEEP' ? 'HOURS' : 'GLASSES';
+      await mobileApiFetch('/lifestyle', {
+        method: 'POST',
+        body: JSON.stringify({
+          category: lifestyleCategory,
+          numericValue: val,
+          unit,
+          notes: lifestyleNotes.trim() || undefined,
+          recordedAt: new Date().toISOString(),
+        }),
+      });
+      showToast('✓ Lifestyle activity recorded!');
+      setShowLifestyleModal(false);
+      setLifestyleValue('');
+      setLifestyleNotes('');
+      await loadVaultData();
+    } catch {
+      showToast('Unable to record lifestyle entry.');
+    } finally {
+      setSubmittingLifestyle(false);
+    }
   };
 
-  const chartPoints = useMemo(() => clinicalStore.hba1cHistory.slice(-5), [clinicalStore.hba1cHistory.length]);
+  // --- REPORT UPLOAD HANDLER ---
+  const setSelectedReport = (file: SelectedReportFile) => {
+    if (file.size && file.size > 10 * 1024 * 1024) {
+      showToast('Reports must be 10 MB or smaller.');
+      return;
+    }
 
-  const renderHbA1cTrendGraph = () => {
-    const chartWidth = Math.max(280, screenWidth - 72);
-    const chartHeight = 175;
-    const padX = 28;
-    const padTop = 30;
-    const padBottom = 38;
-    const minVal = 5.0;
-    const maxVal = 8.0;
-
-    const getX = (i: number) => padX + (i * (chartWidth - padX * 2)) / Math.max(1, chartPoints.length - 1);
-    const getY = (v: number) => chartHeight - padBottom - ((v - minVal) / (maxVal - minVal)) * (chartHeight - padTop - padBottom);
-
-    const baselineY = getY(6.2);
-    const path = chartPoints.map((pt, i) => `${i === 0 ? 'M' : 'L'} ${getX(i)} ${getY(pt.value)}`).join(' ');
-
-    return (
-      <View style={styles.graphCard}>
-        <View style={styles.graphHeaderRow}>
-          <View style={{ flex: 1, marginRight: 8 }}>
-            <Text style={styles.graphTitle}>3-Month HbA1c Trend</Text>
-            <Text style={styles.graphSub}>Verified laboratory results against personal target (6.2%)</Text>
-          </View>
-          <View style={styles.deltaPillGreen}>
-            <TrendingDown color={theme.colors.success} size={14} />
-            <Text style={styles.deltaPillText}>-0.4% Below Goal</Text>
-          </View>
-        </View>
-
-        <View style={styles.legendRow}>
-          <View style={styles.legendItem}>
-            <View style={styles.solidLine} />
-            <Text style={styles.legendText}>Measured HbA1c</Text>
-          </View>
-          <View style={styles.legendItem}>
-            <View style={styles.dashedLine} />
-            <Text style={styles.legendText}>Personal Target (6.2%)</Text>
-          </View>
-        </View>
-
-        <Svg width={chartWidth} height={chartHeight}>
-          <Line x1={padX} y1={baselineY} x2={chartWidth - padX} y2={baselineY} stroke={theme.colors.warning} strokeWidth="2" strokeDasharray="6,4" />
-          <Path d={path} fill="none" stroke={theme.colors.primary} strokeWidth="3" />
-          {chartPoints.map((pt, idx) => {
-            const cx = getX(idx);
-            const cy = getY(pt.value);
-            const labelY = pt.value > 6.25 ? cy - 12 : cy + 20;
-            return (
-              <React.Fragment key={pt.id}>
-                <Circle cx={cx} cy={cy} r="6" fill={theme.colors.primary} stroke={theme.colors.white} strokeWidth="2.5" />
-                <SvgText x={cx} y={labelY} fill={theme.colors.text} fontSize="12" fontWeight="bold" textAnchor="middle">
-                  {pt.value}%
-                </SvgText>
-                <SvgText x={cx} y={chartHeight - 6} fill={theme.colors.textMuted} fontSize="11" textAnchor="middle">
-                  {pt.monthLabel}
-                </SvgText>
-              </React.Fragment>
-            );
-          })}
-        </Svg>
-      </View>
-    );
+    setSelectedReportFile(file);
+    if (!uploadTitle.trim()) {
+      setUploadTitle(file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' '));
+    }
   };
+
+  const selectReportFile = async (source: 'camera' | 'photos' | 'pdf') => {
+    setSelectingReport(true);
+    try {
+      if (source === 'pdf') {
+        const result = await DocumentPicker.getDocumentAsync({
+          type: 'application/pdf',
+          copyToCacheDirectory: true,
+          multiple: false,
+        });
+        if (result.canceled) return;
+        const asset = result.assets[0];
+        setSelectedReport({
+          uri: asset.uri,
+          name: asset.name,
+          mimeType: asset.mimeType || 'application/pdf',
+          size: asset.size,
+          file: asset.file,
+        });
+        return;
+      }
+
+      if (source === 'camera') {
+        const permission = await ImagePicker.requestCameraPermissionsAsync();
+        if (!permission.granted) {
+          showToast('Allow camera access to take a report photo.');
+          return;
+        }
+      }
+
+      const options: ImagePicker.ImagePickerOptions = {
+        mediaTypes: ['images'],
+        quality: 0.9,
+        preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
+      };
+      const result = source === 'camera'
+        ? await ImagePicker.launchCameraAsync(options)
+        : await ImagePicker.launchImageLibraryAsync(options);
+      if (result.canceled) return;
+
+      const asset = result.assets[0];
+      const mimeType = asset.mimeType || 'image/jpeg';
+      const extension = mimeType === 'image/png' ? '.png' : mimeType === 'image/webp' ? '.webp' : '.jpg';
+      setSelectedReport({
+        uri: asset.uri,
+        name: asset.fileName || `medical-report-${Date.now()}${extension}`,
+        mimeType,
+        size: asset.fileSize,
+        file: asset.file,
+      });
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Unable to select this report.');
+    } finally {
+      setSelectingReport(false);
+    }
+  };
+
+  const handleUploadReport = async () => {
+    if (!selectedReportFile) {
+      showToast('Take a report photo or choose a photo or PDF first.');
+      return;
+    }
+    setSubmittingUpload(true);
+    try {
+      const formData = new FormData();
+      formData.append('title', uploadTitle.trim() || selectedReportFile.name);
+      if (uploadFacility.trim()) formData.append('issuingFacility', uploadFacility.trim());
+      if (Platform.OS === 'web') {
+        const file = selectedReportFile.file ?? await fetch(selectedReportFile.uri).then((response) => response.blob());
+        formData.append('file', file, selectedReportFile.name);
+      } else {
+        formData.append('file', {
+          uri: selectedReportFile.uri,
+          name: selectedReportFile.name,
+          type: selectedReportFile.mimeType,
+        } as unknown as Blob);
+      }
+
+      const response = await mobileApiFetch<{
+        document: MedicalDoc;
+        extraction: { status: string; message: string };
+      }>('/documents/upload-report', {
+        method: 'POST',
+        body: formData,
+      });
+      showToast(response.extraction.message);
+      setShowUploadModal(false);
+      setSelectedReportFile(null);
+      setUploadTitle('');
+      setUploadFacility('');
+      await loadVaultData();
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Unable to upload the report. Check your connection and try again.');
+    } finally {
+      setSubmittingUpload(false);
+    }
+  };
+
+  const openReportReview = async (report: MedicalDoc) => {
+    setSelectedReportForReview(report);
+    setReportReviewTab('ocr');
+    setReportPreviewToken(await getMobileToken());
+  };
+
+  const runSyntheticAbhaExchange = async (operation: 'export' | 'import') => {
+    setAbhaBusy(operation);
+    setAbhaMessage(null);
+    try {
+      const result = await mobileApiFetch<{ abhaId: string; summary: any; alreadyImported?: boolean }>(`/abha/${operation}`, {
+        method: operation === 'import' ? 'POST' : 'GET',
+      });
+      setAbhaSummary({ ...result.summary, abhaId: result.abhaId });
+      setAbhaMessage(operation === 'import'
+        ? result.alreadyImported ? 'Synthetic ABHA data is already imported; your health record is up to date.' : 'Synthetic patient health imported successfully.'
+        : 'Synthetic ABHA health summary is ready to review.');
+      if (operation === 'import') await loadVaultData();
+    } catch (error) {
+      setAbhaMessage(getRequestErrorMessage(error));
+    } finally {
+      setAbhaBusy(null);
+    }
+  };
+
+  // Filtered observations
+  const filteredObs = useMemo(() => {
+    return observations.filter((obs) => {
+      if (obs.type !== 'BLOOD_GLUCOSE') return false;
+      if (sugarFilter === 'ALL') return true;
+      return obs.context === sugarFilter;
+    });
+  }, [observations, sugarFilter]);
+
+  // Statistics
+  const glucoseValues = filteredObs.map((o) => o.numericValue);
+  const avgGlucose = glucoseValues.length > 0 ? Math.round(glucoseValues.reduce((a, b) => a + b, 0) / glucoseValues.length) : 0;
+  const inRangeCount = glucoseValues.filter((v) => v >= 70 && v <= 180).length;
+  const tirPercentage = glucoseValues.length > 0 ? Math.round((inRangeCount / glucoseValues.length) * 100) : 100;
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
-      {/* Top Bar */}
+      {/* HEADER */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
-          <Text style={styles.headerSuper}>HEALTH VAULT & MEDICAL RECORDS</Text>
-          <Text style={styles.headerTitle}>Tests, Reports & Review</Text>
+          <Text style={styles.headerTitle}>Health Vault</Text>
+          <Text style={styles.headerSub}>Comprehensive Clinical Record & Vitals</Text>
         </View>
-        <TouchableOpacity
-          style={styles.uploadQuickBtn}
-          onPress={() => setShowUploadModal(true)}
-          activeOpacity={0.85}
-        >
-          <FileUp color={theme.colors.white} size={15} />
-          <Text style={styles.uploadQuickBtnText}>+ Upload</Text>
-        </TouchableOpacity>
+        <View style={styles.verifiedBadge}>
+          <ShieldCheck color={theme.colors.primary} size={14} />
+          <Text style={styles.verifiedBadgeText}>Verified Records</Text>
+        </View>
       </View>
 
-      {/* Main Switcher: Verified Results vs Dedicated Reports Area */}
-      <View style={styles.mainSwitcherWrapper}>
-        <View style={styles.mainSwitcherControl}>
+      {/* 5-MODULE TAB NAVIGATION PILLS */}
+      <View style={styles.tabsContainer}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabsScroll}>
           <TouchableOpacity
-            style={[styles.mainSwitchBtn, activeMainSection === 'VERIFIED_TRENDS' && styles.mainSwitchBtnActive]}
-            onPress={() => setActiveMainSection('VERIFIED_TRENDS')}
-            activeOpacity={0.85}
+            style={[styles.tabPill, activeTab === 'RECORD_SUGAR' && styles.tabPillActive]}
+            onPress={() => setActiveTab('RECORD_SUGAR')}
+            accessibilityRole="tab"
+            accessibilityLabel="Record Sugar Module"
           >
-            <Activity color={activeMainSection === 'VERIFIED_TRENDS' ? theme.colors.white : theme.colors.textMuted} size={15} />
-            <Text style={[styles.mainSwitchText, activeMainSection === 'VERIFIED_TRENDS' && styles.mainSwitchTextActive]}>
-              Verified Results & Trends
+            <Activity color={activeTab === 'RECORD_SUGAR' ? theme.colors.white : theme.colors.text} size={14} />
+            <Text style={[styles.tabPillText, activeTab === 'RECORD_SUGAR' && styles.tabPillTextActive]}>
+              Record Sugar
             </Text>
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[styles.mainSwitchBtn, activeMainSection === 'REPORTS_AREA' && styles.mainSwitchBtnActive]}
-            onPress={() => setActiveMainSection('REPORTS_AREA')}
-            activeOpacity={0.85}
+            style={[styles.tabPill, activeTab === 'MED_VAULT' && styles.tabPillActive]}
+            onPress={() => setActiveTab('MED_VAULT')}
+            accessibilityRole="tab"
+            accessibilityLabel="Med Vault Module"
           >
-            <FileText color={activeMainSection === 'REPORTS_AREA' ? theme.colors.white : theme.colors.textMuted} size={15} />
-            <Text style={[styles.mainSwitchText, activeMainSection === 'REPORTS_AREA' && styles.mainSwitchTextActive]}>
-              Medical Reports ({reports.length})
+            <Pill color={activeTab === 'MED_VAULT' ? theme.colors.white : theme.colors.text} size={14} />
+            <Text style={[styles.tabPillText, activeTab === 'MED_VAULT' && styles.tabPillTextActive]}>
+              Med Vault
             </Text>
-            {pendingPAReports.length > 0 && (
-              <View style={styles.queueDot}>
-                <Text style={styles.queueDotText}>{pendingPAReports.length}</Text>
-              </View>
-            )}
           </TouchableOpacity>
-        </View>
+
+          <TouchableOpacity
+            style={[styles.tabPill, activeTab === 'LIFESTYLE' && styles.tabPillActive]}
+            onPress={() => setActiveTab('LIFESTYLE')}
+            accessibilityRole="tab"
+            accessibilityLabel="Lifestyle Module"
+          >
+            <Flame color={activeTab === 'LIFESTYLE' ? theme.colors.white : theme.colors.text} size={14} />
+            <Text style={[styles.tabPillText, activeTab === 'LIFESTYLE' && styles.tabPillTextActive]}>
+              Lifestyle
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.tabPill, activeTab === 'MEDICAL_REPORTS' && styles.tabPillActive]}
+            onPress={() => setActiveTab('MEDICAL_REPORTS')}
+            accessibilityRole="tab"
+            accessibilityLabel="Medical Reports Module"
+          >
+            <FileText color={activeTab === 'MEDICAL_REPORTS' ? theme.colors.white : theme.colors.text} size={14} />
+            <Text style={[styles.tabPillText, activeTab === 'MEDICAL_REPORTS' && styles.tabPillTextActive]}>
+              Medical Reports
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.tabPill, activeTab === 'HEALTH_TIMELINE' && styles.tabPillActive]}
+            onPress={() => setActiveTab('HEALTH_TIMELINE')}
+            accessibilityRole="tab"
+            accessibilityLabel="Health Timeline Module"
+          >
+            <Calendar color={activeTab === 'HEALTH_TIMELINE' ? theme.colors.white : theme.colors.text} size={14} />
+            <Text style={[styles.tabPillText, activeTab === 'HEALTH_TIMELINE' && styles.tabPillTextActive]}>
+              Health Timeline
+            </Text>
+          </TouchableOpacity>
+        </ScrollView>
       </View>
 
       <ScrollView
-        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 90 }]}
+        contentContainerStyle={[styles.contentScroll, { paddingBottom: insets.bottom + 84 }]}
         showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.colors.primary} />}
       >
-        {activeMainSection === 'VERIFIED_TRENDS' ? (
-          /* ========================================================================= */
-          /* SCREEN 4: VERIFIED RESULTS AND TRENDS                                     */
-          /* ========================================================================= */
+        {loading && !refreshing ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color={theme.colors.primary} />
+            <Text style={styles.loadingText}>Fetching Health Vault records...</Text>
+          </View>
+        ) : (
           <>
-            {/* Specialty Selector */}
-            <View style={styles.specialtyRibbon}>
-              {SPECIALTIES.map((spec) => {
-                const active = selectedSpecialty === spec.key;
-                return (
-                  <TouchableOpacity
-                    key={spec.key}
-                    style={[styles.specialtyTab, active && styles.specialtyTabActive]}
-                    onPress={() => setSelectedSpecialty(spec.key)}
-                    activeOpacity={0.85}
-                  >
-                    <Text style={[styles.specialtyTabTitle, active && styles.specialtyTabTitleActive]}>
-                      {spec.label}
-                    </Text>
-                    <Text style={[styles.specialtyBadge, active && styles.specialtyBadgeActive]}>
-                      {spec.sub}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
+            {/* ============================================================== */}
+            {/* 1. RECORD SUGAR MODULE                                         */}
+            {/* ============================================================== */}
+            {activeTab === 'RECORD_SUGAR' && (
+              <View style={styles.tabSection}>
+                {/* Stats Summary Cards */}
+                <View style={styles.statsRow}>
+                  <View style={styles.statBox}>
+                    <Text style={styles.statBoxNum}>{avgGlucose || '--'}</Text>
+                    <Text style={styles.statBoxUnit}>mg/dL</Text>
+                    <Text style={styles.statBoxLabel}>Average Glucose</Text>
+                  </View>
+                  <View style={styles.statBox}>
+                    <Text style={styles.statBoxNum}>{tirPercentage}%</Text>
+                    <Text style={styles.statBoxUnit}>70-180 mg/dL</Text>
+                    <Text style={styles.statBoxLabel}>Time in Target</Text>
+                  </View>
+                  <View style={styles.statBox}>
+                    <Text style={styles.statBoxNum}>{filteredObs.length}</Text>
+                    <Text style={styles.statBoxUnit}>Entries</Text>
+                    <Text style={styles.statBoxLabel}>Total Logs</Text>
+                  </View>
+                </View>
 
-            {/* HbA1c Long-Term Trend SVG Graph */}
-            {renderHbA1cTrendGraph()}
-
-            {/* Quick Sugar Logger Card */}
-            <View style={styles.card}>
-              <Text style={styles.sectionTitle}>Log Instant Blood Sugar Reading</Text>
-              <Text style={styles.sectionSub}>Quickly enter a test reading from your home glucometer</Text>
-
-              <View style={styles.quickInputRow}>
-                <TextInput
-                  style={styles.quickInput}
-                  placeholder="e.g. 105"
-                  placeholderTextColor={theme.colors.textPlaceholder}
-                  keyboardType="numeric"
-                  value={glucoseInput}
-                  onChangeText={setGlucoseInput}
-                />
-                <TouchableOpacity style={styles.saveBtn} onPress={handleQuickLog} activeOpacity={0.85}>
-                  <Plus color={theme.colors.white} size={16} />
-                  <Text style={styles.saveBtnText}>Save</Text>
+                {/* Log Reading CTA */}
+                <TouchableOpacity
+                  style={styles.primaryActionBtn}
+                  onPress={() => setShowLogModal(true)}
+                  activeOpacity={0.88}
+                >
+                  <Plus color={theme.colors.white} size={20} />
+                  <Text style={styles.primaryActionBtnText}>Record Blood Sugar / Vitals</Text>
                 </TouchableOpacity>
-              </View>
 
-              <View style={styles.mealPillRow}>
-                {(['FASTING', 'POST_MEAL_2HR'] as const).map((m) => (
-                  <TouchableOpacity
-                    key={m}
-                    style={[styles.mealPill, mealType === m && styles.mealPillActive]}
-                    onPress={() => setMealType(m)}
-                  >
-                    <Text style={[styles.mealPillText, mealType === m && styles.mealPillTextActive]}>
-                      {m === 'FASTING' ? 'Morning Empty Stomach (Goal: 108)' : '2 Hours After Meal (Goal: 145)'}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </View>
-
-            {/* Structured Verified Biomarkers Table */}
-            <View style={styles.card}>
-              <View style={styles.sectionTitleRow}>
-                <Text style={styles.sectionTitle}>
-                  {selectedSpecialty === 'DIABETOLOGY'
-                    ? 'Verified Diabetes Measurements'
-                    : selectedSpecialty === 'CARDIOLOGY'
-                    ? 'Verified Heart & Lipid Tests'
-                    : 'Verified Kidney Health Tests'}
-                </Text>
-                <View style={styles.verifiedTagGreen}>
-                  <CheckCircle2 color={theme.colors.success} size={12} />
-                  <Text style={styles.verifiedTagGreenText}>PA Approved</Text>
+                {/* Filter Pills */}
+                <View style={styles.filterRow}>
+                  {(['ALL', 'FASTING', 'POST_MEAL_2HR', 'RANDOM'] as const).map((f) => (
+                    <TouchableOpacity
+                      key={f}
+                      style={[styles.filterChip, sugarFilter === f && styles.filterChipActive]}
+                      onPress={() => setSugarFilter(f)}
+                    >
+                      <Text style={[styles.filterChipText, sugarFilter === f && styles.filterChipTextActive]}>
+                        {f === 'ALL' ? 'All Readings' : f === 'POST_MEAL_2HR' ? '2h Post-Meal' : f.charAt(0) + f.slice(1).toLowerCase()}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
                 </View>
-              </View>
-              <Text style={styles.sectionSub}>All numbers are verified by a clinical assistant against original laboratory seals</Text>
 
-              <View style={styles.searchBar}>
-                <Search color={theme.colors.textPlaceholder} size={16} />
-                <TextInput
-                  style={styles.searchInput}
-                  placeholder="Search test name or date..."
-                  placeholderTextColor={theme.colors.textPlaceholder}
-                  value={searchQuery}
-                  onChangeText={setSearchQuery}
-                />
-              </View>
-
-              {filteredBiomarkers.length === 0 ? (
-                <View style={styles.emptyCard}>
-                  <Text style={styles.emptyText}>No verified measurements match your filter.</Text>
-                </View>
-              ) : (
-                <View style={styles.cardsContainer}>
-                  {filteredBiomarkers.map((bio) => {
-                    const delta = +(bio.value - bio.patientBaseline).toFixed(1);
-                    const isGood = delta <= 0;
-                    return (
-                      <View key={bio.id} style={styles.biomarkerCard}>
-                        <View style={styles.bioTopRow}>
-                          <Text style={styles.bioName}>{bio.testName}</Text>
-                          <Text style={styles.bioValue}>
-                            {bio.value} <Text style={styles.bioUnit}>{bio.unit}</Text>
-                          </Text>
-                        </View>
-
-                        <View style={styles.bioMiddleRow}>
-                          <Text style={styles.bioRef}>Normal: {bio.referenceRange} {bio.unit}</Text>
-                          <View style={styles.targetDiffRow}>
-                            {isGood ? (
-                              <TrendingDown color={theme.colors.success} size={13} />
-                            ) : (
-                              <TrendingUp color={theme.colors.warning} size={13} />
-                            )}
-                            <Text style={[styles.bioDiff, isGood ? styles.textGood : styles.textWarn]}>
-                              {delta > 0 ? `+${delta}` : delta} vs goal ({bio.patientBaseline} {bio.unit})
+                {/* Logbook List */}
+                <View style={styles.logListCard}>
+                  <Text style={styles.sectionHeaderTitle}>Blood Glucose Logbook</Text>
+                  {filteredObs.length > 0 ? (
+                    filteredObs.map((obs) => {
+                      const isNorm = obs.numericValue >= 80 && obs.numericValue <= 130;
+                      const isElev = obs.numericValue > 130 && obs.numericValue <= 180;
+                      return (
+                        <View key={obs.id} style={styles.obsItemRow}>
+                          <View style={styles.obsLeft}>
+                            <View style={[styles.obsDot, isNorm ? styles.dotGreen : isElev ? styles.dotAmber : styles.dotRed]} />
+                            <View>
+                              <Text style={styles.obsValueText}>
+                                {obs.numericValue} <Text style={styles.obsUnitText}>{obs.unit}</Text>
+                              </Text>
+                              <Text style={styles.obsContextText}>
+                                {obs.context.replace(/_/g, ' ')} • {new Date(obs.observedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              </Text>
+                            </View>
+                          </View>
+                          <View style={styles.obsRight}>
+                            <View style={[styles.statusBadge, isNorm ? styles.badgeGreen : isElev ? styles.badgeAmber : styles.badgeRed]}>
+                              <Text style={[styles.statusBadgeText, isNorm ? styles.badgeGreenText : isElev ? styles.badgeAmberText : styles.badgeRedText]}>
+                                {isNorm ? 'In Target' : isElev ? 'Elevated' : 'High'}
+                              </Text>
+                            </View>
+                            <Text style={styles.obsDateText}>
+                              {new Date(obs.observedAt).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' })}
                             </Text>
                           </View>
                         </View>
-
-                        <View style={styles.bioBottomRow}>
-                          <View style={styles.verifiedPill}>
-                            <Text style={styles.verifiedPillText}>✓ Verified by {bio.paReviewer || 'Care Team'}</Text>
-                          </View>
-                          <Text style={styles.bioDate}>{bio.date}</Text>
-                        </View>
-                      </View>
-                    );
-                  })}
+                      );
+                    })
+                  ) : (
+                    <View style={styles.emptyContainer}>
+                      <Activity color={theme.colors.textMuted} size={32} />
+                      <Text style={styles.emptyTitle}>No Readings in This Filter</Text>
+                      <Text style={styles.emptySub}>Record your morning fasting or after-meal reading to populate this logbook.</Text>
+                    </View>
+                  )}
                 </View>
-              )}
-            </View>
-          </>
-        ) : (
-          /* ========================================================================= */
-          /* DEDICATED MEDICAL REPORTS AREA                                            */
-          /* ========================================================================= */
-          <>
-            {/* Sub-Header Tabs */}
-            <View style={styles.reportSubHeader}>
-              <TouchableOpacity
-                style={[styles.reportSubBtn, reportSubTab === 'ALL_REPORTS' && styles.reportSubBtnActive]}
-                onPress={() => setReportSubTab('ALL_REPORTS')}
-              >
-                <Text style={[styles.reportSubText, reportSubTab === 'ALL_REPORTS' && styles.reportSubTextActive]}>
-                  All Documents ({reports.length})
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.reportSubBtn, reportSubTab === 'PA_QUEUE' && styles.reportSubBtnActive]}
-                onPress={() => setReportSubTab('PA_QUEUE')}
-              >
-                <Text style={[styles.reportSubText, reportSubTab === 'PA_QUEUE' && styles.reportSubTextActive]}>
-                  PA Review Queue ({pendingPAReports.length})
-                </Text>
-                {pendingPAReports.length > 0 && (
-                  <View style={styles.amberQueueDot}>
-                    <Text style={styles.amberQueueDotText}>{pendingPAReports.length}</Text>
-                  </View>
-                )}
-              </TouchableOpacity>
-            </View>
-
-            {/* In-Review Notice Banner */}
-            {extractionReviewReports.length > 0 && (
-              <View style={styles.extractionBanner}>
-                <AlertTriangle color={theme.colors.accent} size={18} />
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.extractionBannerTitle}>
-                    {extractionReviewReports.length} {extractionReviewReports.length === 1 ? 'Report' : 'Reports'} Ready for Extraction Review
-                  </Text>
-                  <Text style={styles.extractionBannerSub}>
-                    Check OCR test names and values against the scanned document.
-                  </Text>
-                </View>
-                <TouchableOpacity
-                  style={styles.openReviewPill}
-                  onPress={() => setActiveExtractionReport(extractionReviewReports[0])}
-                >
-                  <Text style={styles.openReviewPillText}>Review Now</Text>
-                </TouchableOpacity>
               </View>
             )}
 
-            {/* Reports List */}
-            {reportSubTab === 'ALL_REPORTS' ? (
-              <View style={styles.card}>
-                <View style={styles.cardHeaderFlex}>
+            {/* ============================================================== */}
+            {/* 2. MED VAULT MODULE (Doctor-Prescribed Only)                   */}
+            {/* ============================================================== */}
+            {activeTab === 'MED_VAULT' && (
+              <View style={styles.tabSection}>
+                {/* Clinical Governance Notice */}
+                <View style={styles.clinicalNoticeCard}>
+                  <ShieldCheck color="#15803D" size={20} />
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.sectionTitle}>Medical Reports Archive</Text>
-                    <Text style={styles.sectionSub}>All uploaded PDFs, lab scans, and clinical summaries</Text>
-                  </View>
-                  <TouchableOpacity
-                    style={styles.uploadNewBtn}
-                    onPress={() => setShowUploadModal(true)}
-                  >
-                    <FileUp color={theme.colors.white} size={14} />
-                    <Text style={styles.uploadNewBtnText}>+ New</Text>
-                  </TouchableOpacity>
-                </View>
-
-                {reports.map((rep) => {
-                  const isApproved = rep.status === 'APPROVED';
-                  const isPending = rep.status === 'PENDING_PA_REVIEW';
-                  const isReview = rep.status === 'EXTRACTION_REVIEW';
-                  const isRejected = rep.status === 'REJECTED';
-
-                  return (
-                    <View key={rep.id} style={styles.reportItemCard}>
-                      <View style={styles.reportItemHeader}>
-                        <View style={styles.fileTypeBadge}>
-                          <Text style={styles.fileTypeText}>{rep.fileType} • {rep.fileSize}</Text>
-                        </View>
-                        <View
-                          style={[
-                            styles.statusBadge,
-                            isApproved
-                              ? styles.badgeGood
-                              : isRejected
-                              ? styles.badgeError
-                              : styles.badgeWarn,
-                          ]}
-                        >
-                          <Text
-                            style={[
-                              styles.statusText,
-                              isApproved ? styles.textGood : isRejected ? styles.textError : styles.textWarn,
-                            ]}
-                          >
-                            {isApproved
-                              ? '✓ Doctor Vault Approved'
-                              : isPending
-                              ? '⏳ Pending PA Quality Gate'
-                              : isReview
-                              ? '🔍 In Extraction Review'
-                              : '✕ Rejected'}
-                          </Text>
-                        </View>
-                      </View>
-
-                      <Text style={styles.reportTitle}>{rep.title}</Text>
-                      <Text style={styles.reportFacility}>{rep.facility} • {rep.uploadDate}</Text>
-                      <Text style={styles.reportSummaryText}>{rep.conciseSummary}</Text>
-
-                      <View style={styles.reportActionsRow}>
-                        {isReview && (
-                          <TouchableOpacity
-                            style={styles.primaryActionBtn}
-                            onPress={() => setActiveExtractionReport(rep)}
-                          >
-                            <Eye color={theme.colors.white} size={14} />
-                            <Text style={styles.primaryActionBtnText}>Review OCR Extractions</Text>
-                          </TouchableOpacity>
-                        )}
-
-                        {isPending && (
-                          <TouchableOpacity
-                            style={styles.paActionBtn}
-                            onPress={() => setActivePAReport(rep)}
-                          >
-                            <CheckCircle2 color={theme.colors.white} size={14} />
-                            <Text style={styles.primaryActionBtnText}>Open PA Review Queue</Text>
-                          </TouchableOpacity>
-                        )}
-
-                        {isApproved && (
-                          <TouchableOpacity
-                            style={styles.viewResultsBtn}
-                            onPress={() => setActiveMainSection('VERIFIED_TRENDS')}
-                          >
-                            <Text style={styles.viewResultsText}>View Verified Numbers & Chart →</Text>
-                          </TouchableOpacity>
-                        )}
-                      </View>
-                    </View>
-                  );
-                })}
-              </View>
-            ) : (
-              /* PA REVIEW QUEUE VIEW */
-              <View style={styles.card}>
-                <View style={styles.paQueueHeader}>
-                  <ShieldCheck color={theme.colors.primary} size={20} />
-                  <Text style={styles.sectionTitle}>Physician-Assistant Review Queue</Text>
-                </View>
-                <Text style={styles.sectionSub}>
-                  Clinical gatekeeper: Verify extracted numbers against original lab scans before doctors see them.
-                </Text>
-
-                {pendingPAReports.length === 0 ? (
-                  <View style={styles.emptyCard}>
-                    <CheckCircle2 color={theme.colors.success} size={32} />
-                    <Text style={styles.emptyTitle}>PA Review Queue Is Empty</Text>
-                    <Text style={styles.emptyText}>
-                      All uploaded lab reports have been checked, corrected, and verified.
+                    <Text style={styles.clinicalNoticeTitle}>Doctor-Prescribed Medication Regimen</Text>
+                    <Text style={styles.clinicalNoticeBody}>
+                      Med Vault displays prescriptions authorized by your treating clinician. To protect patient safety, medications cannot be prescribed or altered without doctor sign-off.
                     </Text>
                   </View>
-                ) : (
-                  pendingPAReports.map((rep) => (
-                    <TouchableOpacity
-                      key={rep.id}
-                      style={styles.paQueueItem}
-                      onPress={() => setActivePAReport(rep)}
-                      activeOpacity={0.85}
-                    >
-                      <View style={styles.paQueueTop}>
-                        <Text style={styles.paQueueTitle}>{rep.title}</Text>
-                        <View style={styles.pendingTag}>
-                          <Text style={styles.pendingTagText}>Needs PA Signature</Text>
+                </View>
+
+                {medicationError && (
+                  <View
+                    style={styles.medicationErrorCard}
+                    accessibilityRole="alert"
+                    accessibilityLiveRegion="polite"
+                  >
+                    <AlertCircle color={theme.colors.error} size={20} />
+                    <View style={{ flex: 1, gap: 8 }}>
+                      <Text style={styles.medicationErrorText}>{medicationError}</Text>
+                      <TouchableOpacity
+                        onPress={() => {
+                          setRefreshing(true);
+                          void loadVaultData();
+                        }}
+                        accessibilityRole="button"
+                        accessibilityLabel="Retry loading medication information"
+                        style={styles.medicationRetryButton}
+                      >
+                        <Text style={styles.medicationRetryText}>Retry</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                )}
+
+                {/* Adherence Rate Banner */}
+                <View style={styles.adherenceBanner}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.adherenceBannerTitle}>14-Day Adherence Rate</Text>
+                    <Text style={styles.adherenceBannerSub}>Consistently taking medications helps maintain target glycemic stability.</Text>
+                  </View>
+                  <View style={styles.adherenceBadge}>
+                    <Text style={styles.adherenceBadgeText}>{adherenceRate === null ? '--' : `${adherenceRate}%`}</Text>
+                  </View>
+                </View>
+
+                {/* Prescriptions List */}
+                <Text style={styles.sectionHeaderTitle}>Active Prescriptions ({medications.length})</Text>
+                {medications.length > 0 ? (
+                  medications.map((med) => (
+                    <View key={med.id} style={styles.medCard}>
+                      <View style={styles.medCardHeader}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.medName}>{med.name}</Text>
+                          <Text style={styles.medDetails}>
+                            {med.dosage} {med.strength || ''} • {med.frequency} ({med.route || 'Oral'})
+                          </Text>
+                          {med.instructions && (
+                            <Text style={styles.medInstructions}>{med.instructions}</Text>
+                          )}
+                        </View>
+                        <View style={styles.verifiedPrescriptionBadge}>
+                          <Text style={styles.verifiedPrescriptionText}>Clinician Reviewed</Text>
                         </View>
                       </View>
-                      <Text style={styles.paQueueMeta}>{rep.facility} • Patient: {rep.patientName}</Text>
-                      <Text style={styles.paQueueSnippet}>
-                        {rep.extractedFields.length} biomarkers ready for clinical sign-off →
-                      </Text>
-                    </TouchableOpacity>
+
+                      <View style={styles.medPrescriberRow}>
+                        <Stethoscope color={theme.colors.textMuted} size={14} />
+                        <Text style={styles.prescriberText}>
+                          {med.prescriber || 'Treating Endocrinologist'} • {med.source === 'CLINICIAN_PRESCRIBED' ? 'Authorized Rx' : 'Reviewed Rx'}
+                        </Text>
+                      </View>
+
+                      {/* One-Tap Adherence Actions */}
+                      <View style={styles.medActionsRow}>
+                        <TouchableOpacity
+                          style={styles.takeBtn}
+                          onPress={() => handleLogAdherence(med.id, 'TAKEN')}
+                          disabled={recordingDoseId === med.id}
+                        >
+                          <Check color={theme.colors.white} size={15} />
+                          <Text style={styles.takeBtnText}>Take Dose</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          style={styles.skipBtn}
+                          onPress={() => handleLogAdherence(med.id, 'SKIPPED')}
+                          disabled={recordingDoseId === med.id}
+                        >
+                          <X color={theme.colors.textSecondary} size={15} />
+                          <Text style={styles.skipBtnText}>Skip Dose</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
                   ))
+                ) : (
+                  <View style={styles.emptyContainer}>
+                    <Pill color={theme.colors.textMuted} size={32} />
+                    <Text style={styles.emptyTitle}>No Active Prescriptions Documented</Text>
+                    <Text style={styles.emptySub}>
+                      Your doctor will record prescribed diabetes medications during your clinical consultation.
+                    </Text>
+                  </View>
+                )}
+              </View>
+            )}
+
+            {/* ============================================================== */}
+            {/* 3. LIFESTYLE MODULE                                            */}
+            {/* ============================================================== */}
+            {activeTab === 'LIFESTYLE' && (
+              <View style={styles.tabSection}>
+                <TouchableOpacity
+                  style={styles.primaryActionBtn}
+                  onPress={() => setShowLifestyleModal(true)}
+                  activeOpacity={0.88}
+                >
+                  <Plus color={theme.colors.white} size={20} />
+                  <Text style={styles.primaryActionBtnText}>Log Lifestyle Activity</Text>
+                </TouchableOpacity>
+
+                <Text style={styles.sectionHeaderTitle}>Recent Lifestyle Records</Text>
+                {lifestyleEntries.length > 0 ? (
+                  lifestyleEntries.map((item) => (
+                    <View key={item.id} style={styles.lifestyleCard}>
+                      <View style={styles.lifestyleHeader}>
+                        <View style={styles.lifestyleIconBox}>
+                          <Flame color="#D97706" size={18} />
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.lifestyleCat}>{item.category.replace(/_/g, ' ')}</Text>
+                          <Text style={styles.lifestyleValue}>
+                            {item.numericValue ? `${item.numericValue} ${item.unit || ''}` : item.qualitativeValue || 'Completed'}
+                          </Text>
+                          {item.notes && <Text style={styles.lifestyleNotes}>"{item.notes}"</Text>}
+                        </View>
+                        <Text style={styles.lifestyleDate}>
+                          {new Date(item.recordedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </Text>
+                      </View>
+                    </View>
+                  ))
+                ) : (
+                  <View style={styles.emptyContainer}>
+                    <Flame color={theme.colors.textMuted} size={32} />
+                    <Text style={styles.emptyTitle}>No Lifestyle Records Logged</Text>
+                    <Text style={styles.emptySub}>Track 30 minutes of physical activity, restful sleep, or water intake.</Text>
+                  </View>
+                )}
+              </View>
+            )}
+
+            {/* ============================================================== */}
+            {/* 4. MEDICAL REPORTS MODULE                                      */}
+            {/* ============================================================== */}
+            {activeTab === 'MEDICAL_REPORTS' && (
+              <View style={styles.tabSection}>
+                <TouchableOpacity
+                  style={styles.primaryActionBtn}
+                  onPress={() => setShowUploadModal(true)}
+                  activeOpacity={0.88}
+                >
+                  <FileUp color={theme.colors.white} size={20} />
+                  <Text style={styles.primaryActionBtnText}>Upload Report Photo or PDF</Text>
+                </TouchableOpacity>
+
+                <View style={styles.abhaCard}>
+                  <Text style={styles.abhaEyebrow}>ABHA SHOWCASE SANDBOX</Text>
+                  <Text style={styles.abhaDescription}>Export a patient-health summary or import the bundled synthetic record. No ABDM connection and no real patient data.</Text>
+                  <View style={styles.abhaActions}>
+                    <TouchableOpacity style={styles.abhaSecondaryButton} onPress={() => void runSyntheticAbhaExchange('export')} disabled={Boolean(abhaBusy)}>
+                      <Text style={styles.abhaSecondaryText}>{abhaBusy === 'export' ? 'Preparing…' : 'Export to ABHA ID'}</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.abhaPrimaryButton} onPress={() => void runSyntheticAbhaExchange('import')} disabled={Boolean(abhaBusy)}>
+                      <Text style={styles.abhaPrimaryText}>{abhaBusy === 'import' ? 'Importing…' : 'Import from ABHA ID'}</Text>
+                    </TouchableOpacity>
+                  </View>
+                  {abhaMessage ? <Text style={styles.abhaMessage}>{abhaMessage}</Text> : null}
+                  {abhaSummary ? <View style={styles.abhaSummaryRow}><Text style={styles.abhaSummaryText}>Synthetic ID: {abhaSummary.abhaId}</Text><Text style={styles.abhaSummaryText}>Records: {(Object.values(abhaSummary.counts || {}) as Array<number | string>).reduce<number>((sum, value) => sum + Number(value), 0)}</Text></View> : null}
+                  {abhaSummary ? <View style={styles.abhaSummaryDetail}><Text style={styles.abhaSummaryText}>Health summary: {abhaSummary.patient?.fullName || 'Synthetic Demo Patient'}</Text><Text style={styles.abhaSummaryDetailText}>Recent readings: {(abhaSummary.observations || []).slice(0, 2).map((item: any) => `${item.type.replace(/_/g, ' ')} ${item.numericValue} ${item.unit}`).join(' · ') || 'None'}</Text><Text style={styles.abhaSummaryDetailText}>Active medicines: {(abhaSummary.medications || []).slice(0, 2).map((item: any) => item.medicationName || item.medicineName).join(' · ') || 'None'}</Text></View> : null}
+                </View>
+
+                <Text style={styles.sectionHeaderTitle}>Lab Reports & Diagnostics ({reports.length})</Text>
+                {reports.length > 0 ? (
+                  reports.map((doc) => (
+                    <View key={doc.id} style={styles.reportCard}>
+                      <View style={styles.reportIconBox}>
+                        <FileText color={theme.colors.primary} size={22} />
+                      </View>
+                      <View style={{ flex: 1, gap: 4 }}>
+                        <Text style={styles.reportTitle}>{doc.title}</Text>
+                        {doc.issuingFacility ? <Text style={styles.reportFacility}>{doc.issuingFacility}</Text> : null}
+                        <Text style={styles.reportDate}>
+                          Uploaded: {new Date(doc.reportDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                        </Text>
+                        <View style={[
+                          styles.reportStatusBadge,
+                          doc.processingStatus === 'EXTRACTION_FAILED' && styles.reportStatusBadgeFailed,
+                          doc.processingStatus === 'PENDING' && styles.reportStatusBadgePending,
+                        ]}>
+                          <Text style={[
+                            styles.reportStatusText,
+                            doc.processingStatus === 'EXTRACTION_FAILED' && styles.reportStatusTextFailed,
+                            doc.processingStatus === 'PENDING' && styles.reportStatusTextPending,
+                          ]}>
+                            {doc.processingStatus === 'PENDING'
+                              ? `${doc.extractedData?.provider || 'OCR'}: extracting text`
+                              : doc.processingStatus === 'NEEDS_REVIEW'
+                                ? `${doc.extractedData?.provider || 'OCR'}: text extracted`
+                                : doc.processingStatus === 'OCR_NO_TEXT'
+                                ? `${doc.extractedData?.provider || 'OCR'}: no text detected`
+                                  : doc.processingStatus === 'EXTRACTION_FAILED'
+                                ? `${doc.extractedData?.provider || 'OCR'}: extraction failed`
+                                    : 'Report saved'}
+                          </Text>
+                        </View>
+                        {doc.extractedData?.error ? (
+                          <Text style={styles.reportExtractionError}>{doc.extractedData.error}</Text>
+                        ) : null}
+                        {doc.extractedData?.text ? (
+                          <>
+                            <Text style={styles.reportExtractedText} numberOfLines={4}>{doc.extractedData.text}</Text>
+                            <TouchableOpacity style={styles.reviewReportButton} onPress={() => void openReportReview(doc)} accessibilityRole="button" accessibilityLabel={`Review OCR and original file for ${doc.title}`}>
+                              <Text style={styles.reviewReportButtonText}>Review OCR & original file</Text>
+                            </TouchableOpacity>
+                          </>
+                        ) : null}
+                      </View>
+                    </View>
+                  ))
+                ) : (
+                  <View style={styles.emptyContainer}>
+                    <FileText color={theme.colors.textMuted} size={32} />
+                    <Text style={styles.emptyTitle}>No Medical Reports Saved</Text>
+                    <Text style={styles.emptySub}>Upload HbA1c lab reports, lipid profiles, and urine microalbumin PDFs for review.</Text>
+                  </View>
+                )}
+              </View>
+            )}
+
+            {/* ============================================================== */}
+            {/* 5. HEALTH TIMELINE MODULE                                      */}
+            {/* ============================================================== */}
+            {activeTab === 'HEALTH_TIMELINE' && (
+              <View style={styles.tabSection}>
+                <Text style={styles.sectionHeaderTitle}>Unified Clinical Event Timeline</Text>
+                {timelineEvents.length > 0 ? (
+                  timelineEvents.map((event) => (
+                    <View key={event.id} style={styles.timelineRow}>
+                      <View style={styles.timelineSpine}>
+                        <View style={styles.timelineMarker} />
+                        <View style={styles.timelineLine} />
+                      </View>
+                      <View style={styles.timelineCard}>
+                        <View style={styles.timelineHeader}>
+                          <Text style={styles.timelineTypeTag}>{event.eventType.replace(/_/g, ' ')}</Text>
+                          <Text style={styles.timelineTime}>
+                            {new Date(event.occurredAt).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' })}
+                          </Text>
+                        </View>
+                        <Text style={styles.timelineTitle}>{event.title}</Text>
+                        {event.details && <Text style={styles.timelineDetails}>{event.details}</Text>}
+                      </View>
+                    </View>
+                  ))
+                ) : (
+                  <View style={styles.emptyContainer}>
+                    <Calendar color={theme.colors.textMuted} size={32} />
+                    <Text style={styles.emptyTitle}>No Timeline Events Recorded</Text>
+                    <Text style={styles.emptySub}>Events, consultations, and readings will populate chronologically here.</Text>
+                  </View>
                 )}
               </View>
             )}
@@ -651,361 +994,324 @@ export default function HealthScreen() {
         )}
       </ScrollView>
 
-      {/* ========================================================================= */}
-      {/* SCREEN 1: UPLOAD REPORT FLOW (MODAL)                                      */}
-      {/* ========================================================================= */}
-      <Modal visible={showUploadModal} transparent animationType="slide">
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalSheet}>
+      {/* MODAL: LOG BLOOD SUGAR / VITALS */}
+      <Modal visible={showLogModal} transparent animationType="slide">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
             <View style={styles.modalHeader}>
-              <View>
-                <Text style={styles.modalSuper}>STEP 1 OF 3</Text>
-                <Text style={styles.modalHeading}>Upload Medical Document</Text>
-              </View>
-              <TouchableOpacity onPress={() => setShowUploadModal(false)}>
+              <Text style={styles.modalTitle}>Record Health Reading</Text>
+              <TouchableOpacity onPress={() => setShowLogModal(false)}>
                 <X color={theme.colors.text} size={22} />
               </TouchableOpacity>
             </View>
 
-            <ScrollView showsVerticalScrollIndicator={false}>
-              {/* File Type Selector */}
-              <Text style={styles.formLabel}>Select Document Format *</Text>
-              <View style={styles.fileTypeRow}>
+            {/* Vital Type Selector */}
+            <View style={styles.vitalTypeRow}>
+              {(['BLOOD_GLUCOSE', 'BLOOD_PRESSURE', 'WEIGHT', 'HBA1C'] as const).map((t) => (
                 <TouchableOpacity
-                  style={[styles.fileTypeBtn, selectedFileType === 'PDF' && styles.fileTypeBtnActive]}
-                  onPress={() => {
-                    setSelectedFileType('PDF');
-                    setUploadFileName('Apollo_Lab_Oct2026.pdf');
-                  }}
+                  key={t}
+                  style={[styles.vitalTypeBtn, vitalType === t && styles.vitalTypeBtnActive]}
+                  onPress={() => setVitalType(t)}
                 >
-                  <FileText color={selectedFileType === 'PDF' ? theme.colors.white : theme.colors.primary} size={18} />
-                  <Text style={[styles.fileTypeBtnText, selectedFileType === 'PDF' && styles.fileTypeBtnTextActive]}>
-                    PDF Document (.pdf)
+                  <Text style={[styles.vitalTypeBtnText, vitalType === t && styles.vitalTypeBtnTextActive]}>
+                    {t === 'BLOOD_GLUCOSE' ? 'Glucose' : t === 'BLOOD_PRESSURE' ? 'BP' : t === 'WEIGHT' ? 'Weight' : 'HbA1c'}
                   </Text>
                 </TouchableOpacity>
+              ))}
+            </View>
 
-                <TouchableOpacity
-                  style={[styles.fileTypeBtn, selectedFileType === 'IMAGE' && styles.fileTypeBtnActive]}
-                  onPress={() => {
-                    setSelectedFileType('IMAGE');
-                    setUploadFileName('Lab_Paper_Scan.jpg');
-                  }}
-                >
-                  <FileUp color={selectedFileType === 'IMAGE' ? theme.colors.white : theme.colors.primary} size={18} />
-                  <Text style={[styles.fileTypeBtnText, selectedFileType === 'IMAGE' && styles.fileTypeBtnTextActive]}>
-                    Photo Scan (.jpg)
-                  </Text>
-                </TouchableOpacity>
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>
+                {vitalType === 'BLOOD_GLUCOSE'
+                  ? 'Blood Glucose (mg/dL)'
+                  : vitalType === 'BLOOD_PRESSURE'
+                    ? 'Systolic (mmHg)'
+                    : vitalType === 'WEIGHT'
+                      ? 'Weight (kg)'
+                      : 'HbA1c (%)'}
+              </Text>
+              <TextInput
+                style={styles.textInput}
+                keyboardType="numeric"
+                placeholder="e.g. 110"
+                value={primaryValue}
+                onChangeText={setPrimaryValue}
+              />
+            </View>
+
+            {vitalType === 'BLOOD_PRESSURE' && (
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Diastolic (mmHg)</Text>
+                <TextInput
+                  style={styles.textInput}
+                  keyboardType="numeric"
+                  placeholder="e.g. 78"
+                  value={secondaryValue}
+                  onChangeText={setSecondaryValue}
+                />
               </View>
+            )}
 
-              {/* Selected File Card */}
-              <View style={styles.selectedFileBox}>
-                <FileText color={theme.colors.primary} size={24} />
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.selectedFileName}>{uploadFileName}</Text>
-                  <Text style={styles.selectedFileSize}>
-                    {selectedFileType === 'PDF' ? '1.8 MB • Digital Lab PDF' : '920 KB • High Resolution Photo'}
-                  </Text>
+            {vitalType === 'BLOOD_GLUCOSE' && (
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Meal Context</Text>
+                <View style={styles.contextGrid}>
+                  {(['FASTING', 'POST_MEAL_2HR', 'RANDOM', 'BEDTIME'] as const).map((ctx) => (
+                    <TouchableOpacity
+                      key={ctx}
+                      style={[styles.contextOption, vitalContext === ctx && styles.contextOptionActive]}
+                      onPress={() => setVitalContext(ctx)}
+                    >
+                      <Text style={[styles.contextOptionText, vitalContext === ctx && styles.contextOptionTextActive]}>
+                        {ctx.replace(/_/g, ' ')}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
                 </View>
-                <Text style={styles.readyTag}>Ready</Text>
               </View>
+            )}
 
-              {/* Upload Progress Bar */}
-              {isUploading && (
-                <View style={styles.progressContainer}>
-                  <View style={styles.progressTopRow}>
-                    <Text style={styles.progressStatusText}>Uploading & Running OCR Extraction...</Text>
-                    <Text style={styles.progressPctText}>{uploadProgress}%</Text>
-                  </View>
-                  <View style={styles.progressTrack}>
-                    <View style={[styles.progressFill, { width: `${uploadProgress}%` }]} />
-                  </View>
-                </View>
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>Clinical Notes (Optional)</Text>
+              <TextInput
+                style={[styles.textInput, { height: 64 }]}
+                placeholder="e.g. Taken after 15 min morning walk"
+                value={vitalNotes}
+                onChangeText={setVitalNotes}
+                multiline
+              />
+            </View>
+
+            <TouchableOpacity
+              style={styles.modalSubmitBtn}
+              onPress={handleLogVital}
+              disabled={submittingVital}
+            >
+              {submittingVital ? (
+                <ActivityIndicator color={theme.colors.white} />
+              ) : (
+                <Text style={styles.modalSubmitBtnText}>Save Reading</Text>
               )}
-
-              {/* Confirm Patient & Report Date */}
-              <Text style={styles.formSectionHeader}>CONFIRM DOCUMENT DETAILS</Text>
-
-              <Text style={styles.formLabel}>Confirm Patient Name *</Text>
-              <TextInput
-                style={styles.modalInput}
-                value={uploadPatientName}
-                onChangeText={setUploadPatientName}
-                placeholder="Full name on report"
-                placeholderTextColor={theme.colors.textPlaceholder}
-              />
-
-              <Text style={styles.formLabel}>Report Collection Date *</Text>
-              <TextInput
-                style={styles.modalInput}
-                value={uploadReportDate}
-                onChangeText={setUploadReportDate}
-                placeholder="e.g. 27 Oct 2026"
-                placeholderTextColor={theme.colors.textPlaceholder}
-              />
-
-              <Text style={styles.formLabel}>Diagnostic Center / Facility *</Text>
-              <TextInput
-                style={styles.modalInput}
-                value={uploadFacility}
-                onChangeText={setUploadFacility}
-                placeholder="e.g. Apollo Diagnostics, Pune"
-                placeholderTextColor={theme.colors.textPlaceholder}
-              />
-
-              <TouchableOpacity
-                style={[styles.uploadSubmitBtn, isUploading && styles.uploadSubmitBtnDisabled]}
-                onPress={handleStartUpload}
-                disabled={isUploading}
-              >
-                <Text style={styles.uploadSubmitBtnText}>
-                  {isUploading ? `Uploading... ${uploadProgress}%` : 'Upload & Start OCR Extraction →'}
-                </Text>
-              </TouchableOpacity>
-            </ScrollView>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
 
-      {/* ========================================================================= */}
-      {/* SCREEN 2: EXTRACTION REVIEW SCREEN (MODAL)                                */}
-      {/* ========================================================================= */}
-      {activeExtractionReport && (
-        <Modal visible={true} transparent animationType="slide">
-          <View style={styles.modalBackdrop}>
-            <View style={styles.modalSheetFull}>
-              <View style={styles.modalHeader}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.modalSuper}>STEP 2 OF 3: EXTRACTION REVIEW</Text>
-                  <Text style={styles.modalHeading}>{activeExtractionReport.title}</Text>
-                  <Text style={styles.modalSubHeader}>
-                    {activeExtractionReport.facility} • {activeExtractionReport.reportDate}
-                  </Text>
-                </View>
-                <TouchableOpacity onPress={() => setActiveExtractionReport(null)}>
-                  <X color={theme.colors.text} size={22} />
-                </TouchableOpacity>
-              </View>
+      {/* MODAL: LOG LIFESTYLE */}
+      <Modal visible={showLifestyleModal} transparent animationType="slide">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Log Lifestyle Activity</Text>
+              <TouchableOpacity onPress={() => setShowLifestyleModal(false)}>
+                <X color={theme.colors.text} size={22} />
+              </TouchableOpacity>
+            </View>
 
-              <ScrollView showsVerticalScrollIndicator={false}>
-                {/* Informational Guidance Banner */}
-                <View style={styles.extractionGuideBox}>
-                  <AlertTriangle color={theme.colors.accent} size={18} />
-                  <Text style={styles.extractionGuideText}>
-                    Please check the extracted test names and numbers alongside the scanned line snippet. Flagged fields have lower confidence and should be double-checked.
-                  </Text>
-                </View>
-
-                {/* Extracted Fields List */}
-                {activeExtractionReport.extractedFields.map((field) => {
-                  const isEditingThis = editingFieldId === field.id;
-                  return (
-                    <View
-                      key={field.id}
-                      style={[
-                        styles.extractedFieldCard,
-                        field.isUncertain && styles.extractedFieldCardUncertain,
-                      ]}
-                    >
-                      {/* Flagged Uncertain Banner */}
-                      {field.isUncertain && (
-                        <View style={styles.uncertainBanner}>
-                          <AlertTriangle color={theme.colors.warning} size={14} />
-                          <Text style={styles.uncertainBannerText}>
-                            Low Confidence ({field.confidence}%) • {field.uncertainReason || 'Needs Verification'}
-                          </Text>
-                        </View>
-                      )}
-
-                      <View style={styles.fieldTopRow}>
-                        <Text style={styles.fieldTestName}>{field.testName}</Text>
-                        <Text style={styles.fieldConfidence}>Match: {field.confidence}%</Text>
-                      </View>
-
-                      {/* Original Scanned Snippet */}
-                      <View style={styles.originalSnippetBox}>
-                        <Text style={styles.snippetLabel}>ORIGINAL REPORT SNIPPET:</Text>
-                        <Text style={styles.snippetText}>"{field.originalSnippet}"</Text>
-                      </View>
-
-                      {/* In-Line Field Editor */}
-                      {isEditingThis ? (
-                        <View style={styles.fieldEditRow}>
-                          <TextInput
-                            style={styles.fieldEditInput}
-                            value={editedValue}
-                            onChangeText={setEditedValue}
-                            placeholder="Value"
-                            keyboardType="numeric"
-                          />
-                          <TextInput
-                            style={styles.fieldEditUnit}
-                            value={editedUnit}
-                            onChangeText={setEditedUnit}
-                            placeholder="Unit"
-                          />
-                          <TouchableOpacity
-                            style={styles.fieldSaveBtn}
-                            onPress={() => {
-                              field.value = editedValue;
-                              field.unit = editedUnit;
-                              field.isUncertain = false;
-                              setEditingFieldId(null);
-                              showToast('Field updated');
-                            }}
-                          >
-                            <Check color={theme.colors.white} size={16} />
-                          </TouchableOpacity>
-                        </View>
-                      ) : (
-                        <View style={styles.fieldDisplayRow}>
-                          <View>
-                            <Text style={styles.fieldValueText}>
-                              {field.value} <Text style={styles.fieldUnitText}>{field.unit}</Text>
-                            </Text>
-                            <Text style={styles.fieldRefText}>Normal: {field.referenceRange} {field.unit}</Text>
-                          </View>
-                          <TouchableOpacity
-                            style={styles.fieldEditIconBtn}
-                            onPress={() => {
-                              setEditingFieldId(field.id);
-                              setEditedValue(field.value);
-                              setEditedUnit(field.unit);
-                            }}
-                          >
-                            <Edit3 color={theme.colors.primary} size={15} />
-                            <Text style={styles.fieldEditIconText}>Edit</Text>
-                          </TouchableOpacity>
-                        </View>
-                      )}
-                    </View>
-                  );
-                })}
-
+            <View style={styles.vitalTypeRow}>
+              {(['PHYSICAL_ACTIVITY', 'SLEEP', 'HYDRATION'] as const).map((cat) => (
                 <TouchableOpacity
-                  style={styles.submitQueueBtn}
-                  onPress={() => handleSubmitToPAQueue(activeExtractionReport)}
+                  key={cat}
+                  style={[styles.vitalTypeBtn, lifestyleCategory === cat && styles.vitalTypeBtnActive]}
+                  onPress={() => setLifestyleCategory(cat)}
                 >
-                  <ShieldCheck color={theme.colors.white} size={18} />
-                  <Text style={styles.submitQueueBtnText}>
-                    Confirm Extraction & Send to PA Queue →
+                  <Text style={[styles.vitalTypeBtnText, lifestyleCategory === cat && styles.vitalTypeBtnTextActive]}>
+                    {cat === 'PHYSICAL_ACTIVITY' ? 'Exercise' : cat === 'SLEEP' ? 'Sleep' : 'Hydration'}
                   </Text>
                 </TouchableOpacity>
-              </ScrollView>
+              ))}
             </View>
-          </View>
-        </Modal>
-      )}
 
-      {/* ========================================================================= */}
-      {/* SCREEN 3: PHYSICIAN-ASSISTANT (PA) REVIEW MODAL                           */}
-      {/* ========================================================================= */}
-      {activePAReport && (
-        <Modal visible={true} transparent animationType="slide">
-          <View style={styles.modalBackdrop}>
-            <View style={styles.modalSheetFull}>
-              <View style={styles.modalHeader}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.modalSuper}>STEP 3 OF 3: PA CLINICAL QUALITY GATE</Text>
-                  <Text style={styles.modalHeading}>{activePAReport.title}</Text>
-                  <Text style={styles.modalSubHeader}>
-                    Patient: {activePAReport.patientName} • {activePAReport.facility}
-                  </Text>
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>
+                {lifestyleCategory === 'PHYSICAL_ACTIVITY' ? 'Duration (Minutes)' : lifestyleCategory === 'SLEEP' ? 'Duration (Hours)' : 'Water Intake (Glasses)'}
+              </Text>
+              <TextInput
+                style={styles.textInput}
+                keyboardType="numeric"
+                placeholder={lifestyleCategory === 'PHYSICAL_ACTIVITY' ? 'e.g. 30' : lifestyleCategory === 'SLEEP' ? 'e.g. 7.5' : 'e.g. 8'}
+                value={lifestyleValue}
+                onChangeText={setLifestyleValue}
+              />
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>Activity Notes</Text>
+              <TextInput
+                style={[styles.textInput, { height: 60 }]}
+                placeholder="e.g. Evening brisk walking in garden"
+                value={lifestyleNotes}
+                onChangeText={setLifestyleNotes}
+                multiline
+              />
+            </View>
+
+            <TouchableOpacity
+              style={styles.modalSubmitBtn}
+              onPress={handleLogLifestyle}
+              disabled={submittingLifestyle}
+            >
+              {submittingLifestyle ? (
+                <ActivityIndicator color={theme.colors.white} />
+              ) : (
+                <Text style={styles.modalSubmitBtnText}>Save Lifestyle Record</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* MODAL: REVIEW OCR AND ORIGINAL MEDICAL REPORT */}
+      <Modal visible={Boolean(selectedReportForReview)} transparent animationType="slide" onRequestClose={() => setSelectedReportForReview(null)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.modalTitle}>Review Medical Report</Text>
+                <Text style={styles.reportFacility} numberOfLines={1}>{selectedReportForReview?.title}</Text>
+              </View>
+              <TouchableOpacity onPress={() => setSelectedReportForReview(null)} accessibilityRole="button" accessibilityLabel="Close report review" style={styles.modalCloseButton}><X color={theme.colors.text} size={22} /></TouchableOpacity>
+            </View>
+            {selectedReportForReview?.extractedData?.isSynthetic || selectedReportForReview?.extractedData?.provider?.includes('SYNTHETIC') ? (
+              <View style={styles.syntheticNotice}><ShieldCheck color="#92400E" size={17} /><Text style={styles.syntheticNoticeText}>Synthetic showcase OCR. Not connected to ABDM and not real patient data.</Text></View>
+            ) : null}
+            <View style={styles.reviewTabRow}>
+              <TouchableOpacity style={[styles.reviewTab, reportReviewTab === 'ocr' && styles.reviewTabActive]} onPress={() => setReportReviewTab('ocr')}><Text style={[styles.reviewTabText, reportReviewTab === 'ocr' && styles.reviewTabTextActive]}>OCR review</Text></TouchableOpacity>
+              <TouchableOpacity style={[styles.reviewTab, reportReviewTab === 'source' && styles.reviewTabActive]} onPress={() => setReportReviewTab('source')}><Text style={[styles.reviewTabText, reportReviewTab === 'source' && styles.reviewTabTextActive]}>Original file</Text></TouchableOpacity>
+            </View>
+            {reportReviewTab === 'ocr' ? (
+              <ScrollView style={styles.reviewBody} contentContainerStyle={{ gap: 12 }}>
+                <View style={styles.reviewStatusCard}><Text style={styles.reviewStatusLabel}>Extraction status</Text><Text style={styles.reviewStatusValue}>{selectedReportForReview?.processingStatus.replace(/_/g, ' ')}</Text><Text style={styles.reportFacility}>{selectedReportForReview?.extractedData?.provider || 'OCR provider'}</Text></View>
+                {selectedReportForReview?.extractedData?.error ? <Text style={styles.reportExtractionError}>{selectedReportForReview.extractedData.error}</Text> : null}
+                <Text style={styles.reviewBodyText}>{selectedReportForReview?.extractedData?.text || 'No OCR text is available yet.'}</Text>
+                <Text style={styles.reviewHelperText}>Compare this extracted text with the original file before relying on it. OCR is a reading aid, not a diagnosis.</Text>
+              </ScrollView>
+            ) : (
+              selectedReportForReview && reportPreviewToken ? (
+                <View style={styles.reportSourceFrame}>
+                  {selectedReportForReview.mimeType?.startsWith('image/') ? <Image source={{ uri: `${resolveApiBaseUrl()}/documents/${encodeURIComponent(selectedReportForReview.id)}/preview`, headers: { Authorization: `Bearer ${reportPreviewToken}` } }} style={styles.reportSourceImage} resizeMode="contain" /> : <WebView source={{ uri: `${resolveApiBaseUrl()}/documents/${encodeURIComponent(selectedReportForReview.id)}/preview`, headers: { Authorization: `Bearer ${reportPreviewToken}` } }} style={styles.reportSourceWebView} startInLoadingState />}
                 </View>
-                <TouchableOpacity onPress={() => setActivePAReport(null)}>
-                  <X color={theme.colors.text} size={22} />
+              ) : <ActivityIndicator color={theme.colors.primary} style={{ marginVertical: 40 }} />
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      {/* MODAL: UPLOAD MEDICAL REPORT */}
+      <Modal visible={showUploadModal} transparent animationType="slide">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Upload Medical Report</Text>
+              <TouchableOpacity
+                onPress={() => setShowUploadModal(false)}
+                accessibilityRole="button"
+                accessibilityLabel="Close report upload"
+                style={styles.modalCloseButton}
+              >
+                <X color={theme.colors.text} size={22} />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.reportPickerPrompt}>Take a new photo or choose a saved photo or PDF.</Text>
+            <View style={styles.filePickerRow}>
+              <TouchableOpacity
+                style={styles.filePickerButton}
+                onPress={() => void selectReportFile('camera')}
+                disabled={selectingReport || submittingUpload}
+                activeOpacity={0.75}
+                accessibilityRole="button"
+                accessibilityLabel="Take a medical report photo"
+              >
+                <Camera color={theme.colors.primary} size={20} />
+                <Text style={styles.filePickerButtonText}>Take photo</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.filePickerButton}
+                onPress={() => void selectReportFile('photos')}
+                disabled={selectingReport || submittingUpload}
+                activeOpacity={0.75}
+                accessibilityRole="button"
+                accessibilityLabel="Choose a report photo from the library"
+              >
+                <ImageIcon color={theme.colors.primary} size={20} />
+                <Text style={styles.filePickerButtonText}>Choose photo</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.filePickerButton}
+                onPress={() => void selectReportFile('pdf')}
+                disabled={selectingReport || submittingUpload}
+                activeOpacity={0.75}
+                accessibilityRole="button"
+                accessibilityLabel="Choose a medical report PDF"
+              >
+                <FileText color={theme.colors.primary} size={20} />
+                <Text style={styles.filePickerButtonText}>Choose PDF</Text>
+              </TouchableOpacity>
+            </View>
+            {selectingReport ? <ActivityIndicator color={theme.colors.primary} /> : null}
+            {selectedReportFile ? (
+              <View style={styles.selectedReportFile}>
+                <FileText color={theme.colors.primary} size={18} />
+                <Text style={styles.selectedReportFileName} numberOfLines={1}>{selectedReportFile.name}</Text>
+                <TouchableOpacity
+                  onPress={() => setSelectedReportFile(null)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Remove selected report"
+                  style={styles.modalCloseButton}
+                >
+                  <X color={theme.colors.textSecondary} size={18} />
                 </TouchableOpacity>
               </View>
+            ) : null}
 
-              <ScrollView showsVerticalScrollIndicator={false}>
-                {/* Reviewer Badge */}
-                <View style={styles.reviewerIdCard}>
-                  <ShieldCheck color={theme.colors.primary} size={20} />
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.reviewerName}>{paReviewerName}</Text>
-                    <Text style={styles.reviewerDesc}>Authorized Physician Assistant Quality Reviewer</Text>
-                  </View>
-                </View>
-
-                {/* Measurements for Verification */}
-                <Text style={styles.formSectionHeader}>MEASUREMENTS TO APPROVE</Text>
-                {activePAReport.extractedFields.map((field) => (
-                  <View key={field.id} style={styles.paFieldVerifyBox}>
-                    <View style={styles.paFieldHeader}>
-                      <Text style={styles.paTestName}>{field.testName}</Text>
-                      <Text style={styles.paTestVal}>{field.value} {field.unit}</Text>
-                    </View>
-                    <Text style={styles.paSnippet}>Document text: "{field.originalSnippet}"</Text>
-                  </View>
-                ))}
-
-                {/* PA Clinical Notes */}
-                <Text style={styles.formLabel}>Clinical Verification Notes:</Text>
-                <TextInput
-                  style={styles.modalInput}
-                  placeholder="e.g. Verified against laboratory seal. Accurate clinical data."
-                  placeholderTextColor={theme.colors.textPlaceholder}
-                  value={paNotes}
-                  onChangeText={setPaNotes}
-                />
-
-                {/* Rejection Form Box (If triggered) */}
-                {isRejecting && (
-                  <View style={styles.rejectionBox}>
-                    <Text style={styles.rejectionTitle}>Specify Reason for Rejection:</Text>
-                    <TextInput
-                      style={styles.rejectionInput}
-                      placeholder="e.g. Blurry photo, mismatched patient identity, missing stamp"
-                      placeholderTextColor={theme.colors.textPlaceholder}
-                      value={rejectionReason}
-                      onChangeText={setRejectionReason}
-                    />
-                    <TouchableOpacity
-                      style={styles.confirmRejectBtn}
-                      onPress={() => handleRejectByPA(activePAReport)}
-                    >
-                      <Text style={styles.confirmRejectBtnText}>Confirm Rejection</Text>
-                    </TouchableOpacity>
-                  </View>
-                )}
-
-                {/* Action Buttons: Approve vs Reject */}
-                {!isRejecting && (
-                  <View style={styles.paActionBtnRow}>
-                    <TouchableOpacity
-                      style={styles.rejectOutlineBtn}
-                      onPress={() => setIsRejecting(true)}
-                    >
-                      <XCircle color={theme.colors.error} size={16} />
-                      <Text style={styles.rejectOutlineText}>Reject Document</Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      style={styles.approveFillBtn}
-                      onPress={() => handleApproveByPA(activePAReport)}
-                    >
-                      <CheckCircle2 color={theme.colors.white} size={16} />
-                      <Text style={styles.approveFillText}>Approve & Sync Vault</Text>
-                    </TouchableOpacity>
-                  </View>
-                )}
-              </ScrollView>
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>Report Title</Text>
+              <TextInput
+                style={styles.textInput}
+                placeholder="e.g. Apollo HbA1c Lab Report"
+                value={uploadTitle}
+                onChangeText={setUploadTitle}
+              />
             </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>Diagnostic Facility</Text>
+              <TextInput
+                style={styles.textInput}
+                placeholder="e.g. Apollo Diagnostics, Pune"
+                value={uploadFacility}
+                onChangeText={setUploadFacility}
+              />
+            </View>
+
+            <View style={styles.uploadInfoBox}>
+              <FileUp color={theme.colors.primary} size={24} />
+              <Text style={styles.uploadInfoText}>
+                The original is retained in your private records. Google Cloud Vision extracts text only; check the extracted text against your report.
+              </Text>
+            </View>
+
+            <TouchableOpacity
+              style={styles.modalSubmitBtn}
+              onPress={handleUploadReport}
+              disabled={submittingUpload || selectingReport || !selectedReportFile}
+              accessibilityRole="button"
+            >
+              {submittingUpload ? (
+                <ActivityIndicator color={theme.colors.white} />
+              ) : (
+                <Text style={styles.modalSubmitBtnText}>Upload and Extract Text</Text>
+              )}
+            </TouchableOpacity>
           </View>
-        </Modal>
-      )}
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  emptyTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#0f172a',
-    textAlign: 'center',
-    marginTop: 8,
-  },
   safeArea: { flex: 1, backgroundColor: theme.colors.white },
   header: {
     paddingHorizontal: theme.spacing.xl,
@@ -1014,469 +1320,475 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.borderLight,
     backgroundColor: theme.colors.white,
   },
-  headerLeft: { flex: 1, marginRight: 10 },
-  headerSuper: { fontSize: 10, fontWeight: theme.typography.weights.extrabold, color: theme.colors.primary, letterSpacing: 0.8 },
-  headerTitle: { fontSize: 22, fontWeight: theme.typography.weights.black, color: theme.colors.text, marginTop: 1 },
-  uploadQuickBtn: {
-    backgroundColor: theme.colors.primary,
+  headerLeft: { flex: 1, marginRight: theme.spacing.md },
+  headerTitle: {
+    fontSize: theme.typography.sizes.heading,
+    fontWeight: theme.typography.weights.black,
+    color: theme.colors.text,
+  },
+  headerSub: {
+    fontSize: theme.typography.sizes.bodySm,
+    color: theme.colors.textMuted,
+    marginTop: 2,
+    fontWeight: theme.typography.weights.semibold,
+  },
+  verifiedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: theme.colors.primarySurface,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: theme.radius.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.primaryBorder,
+  },
+  verifiedBadgeText: {
+    fontSize: 11,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.primary,
+  },
+  // Tabs Container
+  tabsContainer: {
+    backgroundColor: theme.colors.white,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.borderLight,
+    paddingVertical: 8,
+  },
+  tabsScroll: { paddingHorizontal: theme.spacing.lg, gap: 8 },
+  tabPill: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
     paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: theme.radius.md,
+    paddingVertical: 8,
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.cardMuted,
   },
-  uploadQuickBtnText: { color: theme.colors.white, fontSize: 12, fontWeight: theme.typography.weights.bold },
-  mainSwitcherWrapper: {
-    paddingHorizontal: theme.spacing.lg,
-    paddingBottom: theme.spacing.md,
+  tabPillActive: { backgroundColor: theme.colors.primary },
+  tabPillText: {
+    fontSize: 12,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.textSecondary,
+  },
+  tabPillTextActive: { color: theme.colors.white },
+  // Content Scroll
+  contentScroll: {
+    padding: theme.spacing.lg,
+    backgroundColor: theme.colors.bg,
+  },
+  loadingContainer: {
+    paddingVertical: 60,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+  },
+  loadingText: {
+    fontSize: theme.typography.sizes.bodySm,
+    color: theme.colors.textMuted,
+  },
+  tabSection: { gap: theme.spacing.lg },
+  // Stats Row
+  statsRow: { flexDirection: 'row', gap: theme.spacing.md },
+  statBox: {
+    flex: 1,
     backgroundColor: theme.colors.white,
+    borderRadius: theme.radius.lg,
+    padding: theme.spacing.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    alignItems: 'center',
+  },
+  statBoxNum: {
+    fontSize: 24,
+    fontWeight: theme.typography.weights.black,
+    color: theme.colors.text,
+    fontVariant: ['tabular-nums'],
+  },
+  statBoxUnit: { fontSize: 10, color: theme.colors.textMuted, fontWeight: theme.typography.weights.bold },
+  statBoxLabel: {
+    fontSize: 10,
+    color: theme.colors.textSecondary,
+    fontWeight: theme.typography.weights.semibold,
+    marginTop: 4,
+  },
+  // Primary Action Button
+  primaryActionBtn: {
+    backgroundColor: theme.colors.primary,
+    borderRadius: theme.radius.lg,
+    paddingVertical: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    ...theme.shadows.card,
+  },
+  primaryActionBtnText: {
+    color: theme.colors.white,
+    fontWeight: theme.typography.weights.extrabold,
+    fontSize: theme.typography.sizes.body,
+  },
+  // Filter Chips
+  filterRow: { flexDirection: 'row', gap: 8 },
+  filterChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.white,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  filterChipActive: { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary },
+  filterChipText: { fontSize: 11, fontWeight: theme.typography.weights.bold, color: theme.colors.textSecondary },
+  filterChipTextActive: { color: theme.colors.white },
+  // Logbook List
+  logListCard: {
+    backgroundColor: theme.colors.white,
+    borderRadius: theme.radius.xl,
+    padding: theme.spacing.lg,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  sectionHeaderTitle: {
+    fontSize: theme.typography.sizes.bodyLg,
+    fontWeight: theme.typography.weights.extrabold,
+    color: theme.colors.text,
+    marginBottom: 8,
+  },
+  obsItemRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.borderLight,
   },
-  mainSwitcherControl: {
+  obsLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  obsDot: { width: 10, height: 10, borderRadius: 5 },
+  dotGreen: { backgroundColor: theme.colors.success },
+  dotAmber: { backgroundColor: '#F59E0B' },
+  dotRed: { backgroundColor: '#EF4444' },
+  obsValueText: { fontSize: 18, fontWeight: theme.typography.weights.black, color: theme.colors.text },
+  obsUnitText: { fontSize: 12, fontWeight: theme.typography.weights.bold, color: theme.colors.textMuted },
+  obsContextText: { fontSize: 11, color: theme.colors.textSecondary, marginTop: 2 },
+  obsRight: { alignItems: 'flex-end', gap: 4 },
+  statusBadge: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 4 },
+  badgeGreen: { backgroundColor: theme.colors.successBg },
+  badgeAmber: { backgroundColor: '#FEF3C7' },
+  badgeRed: { backgroundColor: '#FEE2E2' },
+  statusBadgeText: { fontSize: 10, fontWeight: theme.typography.weights.bold },
+  badgeGreenText: { color: theme.colors.success },
+  badgeAmberText: { color: '#B45309' },
+  badgeRedText: { color: '#B91C1C' },
+  obsDateText: { fontSize: 11, color: theme.colors.textMuted },
+  // Med Vault Styles
+  clinicalNoticeCard: {
     flexDirection: 'row',
-    backgroundColor: theme.colors.cardMuted,
-    borderRadius: theme.radius.md,
-    padding: 4,
+    gap: 12,
+    backgroundColor: '#F0FDF4',
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+    borderRadius: theme.radius.lg,
+    padding: theme.spacing.md,
   },
-  mainSwitchBtn: {
+  clinicalNoticeTitle: { fontSize: 13, fontWeight: theme.typography.weights.extrabold, color: '#166534' },
+  clinicalNoticeBody: { fontSize: 11, color: '#15803D', marginTop: 2, lineHeight: 16 },
+  medicationErrorCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    backgroundColor: theme.colors.errorBg,
+    borderWidth: 1,
+    borderColor: theme.colors.errorBorder,
+    borderRadius: theme.radius.lg,
+    padding: theme.spacing.md,
+  },
+  medicationErrorText: { color: theme.colors.error, fontSize: 12, lineHeight: 18 },
+  medicationRetryButton: {
+    alignSelf: 'flex-start',
+    minHeight: 44,
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.white,
+    borderWidth: 1,
+    borderColor: theme.colors.errorBorder,
+  },
+  medicationRetryText: { color: theme.colors.error, fontSize: 12, fontWeight: theme.typography.weights.bold },
+  adherenceBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: theme.colors.white,
+    padding: theme.spacing.lg,
+    borderRadius: theme.radius.lg,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    gap: 12,
+  },
+  adherenceBannerTitle: { fontSize: theme.typography.sizes.body, fontWeight: theme.typography.weights.black, color: theme.colors.text },
+  adherenceBannerSub: { fontSize: 11, color: theme.colors.textMuted, marginTop: 2 },
+  adherenceBadge: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: theme.colors.primarySurface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: theme.colors.primaryBorder,
+  },
+  adherenceBadgeText: { fontSize: 16, fontWeight: theme.typography.weights.black, color: theme.colors.primary },
+  medCard: {
+    backgroundColor: theme.colors.white,
+    borderRadius: theme.radius.xl,
+    padding: theme.spacing.lg,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    gap: 10,
+  },
+  medCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
+  medName: { fontSize: theme.typography.sizes.bodyLg, fontWeight: theme.typography.weights.black, color: theme.colors.text },
+  medDetails: { fontSize: 12, color: theme.colors.textSecondary, marginTop: 2, fontWeight: theme.typography.weights.medium },
+  medInstructions: { fontSize: 11, color: '#166534', marginTop: 4, fontWeight: theme.typography.weights.semibold },
+  verifiedPrescriptionBadge: {
+    backgroundColor: '#F0FDF4',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4,
+  },
+  verifiedPrescriptionText: { fontSize: 10, fontWeight: theme.typography.weights.bold, color: '#15803D' },
+  medPrescriberRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  prescriberText: { fontSize: 11, color: theme.colors.textMuted },
+  medActionsRow: { flexDirection: 'row', gap: 10, marginTop: 4 },
+  takeBtn: {
     flex: 1,
+    backgroundColor: '#16A34A',
+    borderRadius: theme.radius.md,
     paddingVertical: 9,
-    borderRadius: theme.radius.sm,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
   },
-  mainSwitchBtnActive: {
-    backgroundColor: theme.colors.primary,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
+  takeBtnText: { color: theme.colors.white, fontWeight: theme.typography.weights.bold, fontSize: 12 },
+  skipBtn: {
+    flex: 1,
+    backgroundColor: theme.colors.cardMuted,
+    borderRadius: theme.radius.md,
+    paddingVertical: 9,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
   },
-  mainSwitchText: { fontSize: 12, fontWeight: theme.typography.weights.bold, color: theme.colors.textMuted },
-  mainSwitchTextActive: { color: theme.colors.white },
-  queueDot: {
-    backgroundColor: theme.colors.accent,
-    width: 18,
-    height: 18,
-    borderRadius: 9,
+  skipBtnText: { color: theme.colors.textSecondary, fontWeight: theme.typography.weights.bold, fontSize: 12 },
+  // Lifestyle Styles
+  lifestyleCard: {
+    backgroundColor: theme.colors.white,
+    borderRadius: theme.radius.lg,
+    padding: theme.spacing.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  lifestyleHeader: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  lifestyleIconBox: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: '#FFFBEB',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  queueDotText: { color: theme.colors.white, fontSize: 10, fontWeight: theme.typography.weights.extrabold },
-  scrollContent: { padding: theme.spacing.lg, gap: theme.spacing.lg, backgroundColor: theme.colors.bg },
-  specialtyRibbon: { flexDirection: 'row', gap: theme.spacing.sm },
-  specialtyTab: {
-    flex: 1,
-    backgroundColor: theme.colors.white,
-    paddingVertical: 10,
-    paddingHorizontal: 6,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    alignItems: 'center',
-  },
-  specialtyTabActive: { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary },
-  specialtyTabTitle: { fontSize: 12, fontWeight: theme.typography.weights.bold, color: theme.colors.textSecondary },
-  specialtyTabTitleActive: { color: theme.colors.white },
-  specialtyBadge: { fontSize: 11, color: theme.colors.textMuted, marginTop: 2, fontWeight: theme.typography.weights.semibold },
-  specialtyBadgeActive: { color: theme.colors.primaryBorder },
-  graphCard: {
+  lifestyleCat: { fontSize: 11, fontWeight: theme.typography.weights.bold, color: '#D97706' },
+  lifestyleValue: { fontSize: 15, fontWeight: theme.typography.weights.black, color: theme.colors.text, marginTop: 1 },
+  lifestyleNotes: { fontSize: 11, color: theme.colors.textMuted, fontStyle: 'italic', marginTop: 2 },
+  lifestyleDate: { fontSize: 11, color: theme.colors.textMuted },
+  // Medical Reports Styles
+  reportCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
     backgroundColor: theme.colors.white,
     borderRadius: theme.radius.lg,
     padding: theme.spacing.lg,
     borderWidth: 1,
     borderColor: theme.colors.border,
+    gap: 12,
   },
-  graphHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 },
-  graphTitle: { fontSize: 16, fontWeight: theme.typography.weights.extrabold, color: theme.colors.text },
-  graphSub: { fontSize: 12, color: theme.colors.textMuted, marginTop: 2 },
-  deltaPillGreen: {
-    flexDirection: 'row',
+  reportIconBox: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: theme.colors.primarySurface,
     alignItems: 'center',
-    gap: 4,
-    backgroundColor: theme.colors.successBg,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: theme.radius.sm,
+    justifyContent: 'center',
   },
-  deltaPillText: { fontSize: 11, fontWeight: theme.typography.weights.bold, color: theme.colors.success },
-  legendRow: { flexDirection: 'row', gap: 16, marginBottom: 8, marginTop: 4 },
-  legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  solidLine: { width: 16, height: 3, backgroundColor: theme.colors.primary, borderRadius: 2 },
-  dashedLine: { width: 16, height: 2, backgroundColor: theme.colors.warning, borderRadius: 1 },
-  legendText: { fontSize: 11, color: theme.colors.textSecondary, fontWeight: theme.typography.weights.semibold },
-  card: { backgroundColor: theme.colors.white, borderRadius: theme.radius.lg, padding: theme.spacing.lg, borderWidth: 1, borderColor: theme.colors.border },
-  sectionTitleRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  sectionTitle: { fontSize: 16, fontWeight: theme.typography.weights.extrabold, color: theme.colors.text },
-  sectionSub: { fontSize: 12, color: theme.colors.textMuted, marginTop: 2, marginBottom: 12 },
-  verifiedTagGreen: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: theme.colors.successBg,
+  reportTitle: { fontSize: theme.typography.sizes.body, fontWeight: theme.typography.weights.black, color: theme.colors.text },
+  reportFacility: { fontSize: 11, color: theme.colors.textMuted, marginTop: 2 },
+  reportDate: { fontSize: 11, color: theme.colors.textSecondary, marginTop: 2 },
+  reportStatusBadge: {
+    backgroundColor: '#F0FDF4',
     paddingHorizontal: 8,
     paddingVertical: 3,
-    borderRadius: 6,
+    borderRadius: 4,
+    alignSelf: 'flex-start',
   },
-  verifiedTagGreenText: { fontSize: 10, fontWeight: theme.typography.weights.extrabold, color: theme.colors.success },
-  quickInputRow: { flexDirection: 'row', gap: theme.spacing.sm, marginTop: 4, marginBottom: 10 },
-  quickInput: {
-    flex: 1,
-    minHeight: theme.touchTarget.minHeight,
+  reportStatusText: { fontSize: 10, fontWeight: theme.typography.weights.bold, color: '#166534' },
+  reportStatusBadgePending: { backgroundColor: '#FEF3C7' },
+  reportStatusTextPending: { color: '#92400E' },
+  reportStatusBadgeFailed: { backgroundColor: '#FEE2E2' },
+  reportStatusTextFailed: { color: '#B91C1C' },
+  reportExtractionError: { fontSize: 11, color: '#B91C1C', lineHeight: 16 },
+  reportExtractedText: {
+    fontSize: 11,
+    color: theme.colors.textSecondary,
+    lineHeight: 16,
     backgroundColor: theme.colors.bg,
-    borderRadius: theme.radius.md,
+    borderRadius: theme.radius.sm,
+    padding: theme.spacing.sm,
+  },
+  reviewReportButton: { alignSelf: 'flex-start', marginTop: 6, backgroundColor: theme.colors.primary, borderRadius: theme.radius.sm, paddingHorizontal: 10, paddingVertical: 7 },
+  reviewReportButtonText: { color: theme.colors.white, fontSize: 11, fontWeight: theme.typography.weights.bold },
+  abhaCard: { backgroundColor: '#EEF2FF', borderColor: '#C7D2FE', borderWidth: 1, borderRadius: theme.radius.lg, padding: theme.spacing.md, gap: 8 },
+  abhaEyebrow: { color: '#3730A3', fontSize: 10, fontWeight: theme.typography.weights.black, letterSpacing: 1 },
+  abhaDescription: { color: '#312E81', fontSize: 11, lineHeight: 16 },
+  abhaActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  abhaSecondaryButton: { backgroundColor: theme.colors.white, borderColor: '#A5B4FC', borderWidth: 1, borderRadius: theme.radius.sm, paddingHorizontal: 10, paddingVertical: 8 },
+  abhaSecondaryText: { color: '#3730A3', fontSize: 11, fontWeight: theme.typography.weights.bold },
+  abhaPrimaryButton: { backgroundColor: '#4338CA', borderRadius: theme.radius.sm, paddingHorizontal: 10, paddingVertical: 8 },
+  abhaPrimaryText: { color: theme.colors.white, fontSize: 11, fontWeight: theme.typography.weights.bold },
+  abhaMessage: { backgroundColor: theme.colors.white, borderRadius: theme.radius.sm, color: '#312E81', fontSize: 11, padding: 8 },
+  abhaSummaryRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  abhaSummaryText: { color: '#3730A3', fontSize: 10, fontWeight: theme.typography.weights.bold },
+  abhaSummaryDetail: { backgroundColor: theme.colors.white, borderRadius: theme.radius.sm, gap: 4, padding: 8 },
+  abhaSummaryDetailText: { color: '#312E81', fontSize: 10, lineHeight: 15 },
+  syntheticNotice: { alignItems: 'flex-start', backgroundColor: '#FFFBEB', borderColor: '#FDE68A', borderRadius: theme.radius.sm, borderWidth: 1, flexDirection: 'row', gap: 7, padding: 9 },
+  syntheticNoticeText: { color: '#78350F', flex: 1, fontSize: 11, lineHeight: 15 },
+  reviewTabRow: { borderBottomColor: theme.colors.border, borderBottomWidth: 1, flexDirection: 'row', gap: 8, marginTop: 12 },
+  reviewTab: { borderBottomColor: 'transparent', borderBottomWidth: 2, paddingHorizontal: 10, paddingVertical: 9 },
+  reviewTabActive: { borderBottomColor: theme.colors.primary },
+  reviewTabText: { color: theme.colors.textMuted, fontSize: 12, fontWeight: theme.typography.weights.bold },
+  reviewTabTextActive: { color: theme.colors.primary },
+  reviewBody: { maxHeight: 360, marginTop: 12 },
+  reviewStatusCard: { backgroundColor: theme.colors.primarySurface, borderColor: '#99F6E4', borderRadius: theme.radius.md, borderWidth: 1, padding: 12 },
+  reviewStatusLabel: { color: theme.colors.primary, fontSize: 10, fontWeight: theme.typography.weights.black, letterSpacing: 1 },
+  reviewStatusValue: { color: theme.colors.text, fontSize: 15, fontWeight: theme.typography.weights.black, marginTop: 4 },
+  reviewBodyText: { backgroundColor: theme.colors.bg, borderColor: theme.colors.border, borderRadius: theme.radius.md, borderWidth: 1, color: theme.colors.text, fontSize: 12, lineHeight: 18, padding: 12 },
+  reviewHelperText: { color: theme.colors.textMuted, fontSize: 11, lineHeight: 16 },
+  reportSourceFrame: { backgroundColor: theme.colors.bg, borderRadius: theme.radius.md, height: 380, marginTop: 12, overflow: 'hidden' },
+  reportSourceImage: { height: '100%', width: '100%' },
+  reportSourceWebView: { flex: 1 },
+  // Timeline Styles
+  timelineRow: { flexDirection: 'row', gap: 12 },
+  timelineSpine: { alignItems: 'center', width: 16 },
+  timelineMarker: { width: 12, height: 12, borderRadius: 6, backgroundColor: theme.colors.primary, marginTop: 4 },
+  timelineLine: { width: 2, flex: 1, backgroundColor: theme.colors.borderLight, marginVertical: 2 },
+  timelineCard: {
+    flex: 1,
+    backgroundColor: theme.colors.white,
+    borderRadius: theme.radius.lg,
+    padding: theme.spacing.md,
     borderWidth: 1,
     borderColor: theme.colors.border,
-    paddingHorizontal: theme.spacing.lg,
-    fontSize: 14,
-    color: theme.colors.text,
+    marginBottom: 12,
   },
-  saveBtn: {
-    backgroundColor: theme.colors.primary,
-    borderRadius: theme.radius.md,
-    paddingHorizontal: theme.spacing.xl,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
+  timelineHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
+  timelineTypeTag: { fontSize: 10, fontWeight: theme.typography.weights.black, color: theme.colors.primary },
+  timelineTime: { fontSize: 11, color: theme.colors.textMuted },
+  timelineTitle: { fontSize: 13, fontWeight: theme.typography.weights.bold, color: theme.colors.text },
+  timelineDetails: { fontSize: 11, color: theme.colors.textSecondary, marginTop: 2 },
+  // Empty State
+  emptyContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 36, gap: 8 },
+  emptyTitle: { fontSize: theme.typography.sizes.body, fontWeight: theme.typography.weights.bold, color: theme.colors.text },
+  emptySub: { fontSize: 11, color: theme.colors.textMuted, textAlign: 'center', paddingHorizontal: 20 },
+  // Modal Styles
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  modalCard: {
+    backgroundColor: theme.colors.white,
+    borderTopLeftRadius: theme.radius.xl,
+    borderTopRightRadius: theme.radius.xl,
+    padding: theme.spacing.xl,
+    gap: 14,
   },
-  saveBtnText: { color: theme.colors.white, fontSize: 13, fontWeight: theme.typography.weights.bold },
-  mealPillRow: { flexDirection: 'row', gap: 8 },
-  mealPill: {
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  modalCloseButton: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
+  modalTitle: { fontSize: theme.typography.sizes.headingSm, fontWeight: theme.typography.weights.black, color: theme.colors.text },
+  vitalTypeRow: { flexDirection: 'row', gap: 6 },
+  vitalTypeBtn: {
     flex: 1,
-    minHeight: 40,
-    borderRadius: theme.radius.sm,
+    paddingVertical: 7,
+    borderRadius: theme.radius.md,
     backgroundColor: theme.colors.cardMuted,
     alignItems: 'center',
-    justifyContent: 'center',
   },
-  mealPillActive: { backgroundColor: theme.colors.primaryBorder },
-  mealPillText: { fontSize: 11, fontWeight: theme.typography.weights.bold, color: theme.colors.textMuted },
-  mealPillTextActive: { color: theme.colors.primary },
-  searchBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: theme.colors.bg,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    marginBottom: 12,
-    gap: 8,
-  },
-  searchInput: { flex: 1, fontSize: 13, color: theme.colors.text },
-  cardsContainer: { gap: 10 },
-  biomarkerCard: {
-    backgroundColor: theme.colors.bg,
-    borderRadius: theme.radius.md,
-    padding: theme.spacing.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-  },
-  bioTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 },
-  bioName: { fontSize: 14, fontWeight: theme.typography.weights.extrabold, color: theme.colors.text, flex: 1, marginRight: 8 },
-  bioValue: { fontSize: 18, fontWeight: theme.typography.weights.black, color: theme.colors.primary, fontVariant: ['tabular-nums'] },
-  bioUnit: { fontSize: 12, fontWeight: theme.typography.weights.semibold, color: theme.colors.textMuted },
-  bioMiddleRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  bioRef: { fontSize: 11, color: theme.colors.textMuted },
-  targetDiffRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  bioDiff: { fontSize: 11, fontWeight: theme.typography.weights.bold, fontVariant: ['tabular-nums'] },
-  textGood: { color: theme.colors.success },
-  textWarn: { color: theme.colors.warning },
-  textError: { color: theme.colors.error },
-  bioBottomRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderTopWidth: 1, borderTopColor: theme.colors.borderLight, paddingTop: 6 },
-  verifiedPill: { backgroundColor: theme.colors.successBg, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 },
-  verifiedPillText: { fontSize: 10, fontWeight: theme.typography.weights.bold, color: theme.colors.success },
-  bioDate: { fontSize: 11, color: theme.colors.textMuted },
-  emptyCard: { padding: 24, alignItems: 'center' },
-  emptyText: { fontSize: 13, color: theme.colors.textMuted, textAlign: 'center' },
-  // Dedicated Medical Reports Styles
-  reportSubHeader: { flexDirection: 'row', gap: 8, marginBottom: 10 },
-  reportSubBtn: {
-    flex: 1,
-    paddingVertical: 10,
-    backgroundColor: theme.colors.white,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexDirection: 'row',
-    gap: 6,
-  },
-  reportSubBtnActive: { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary },
-  reportSubText: { fontSize: 12, fontWeight: theme.typography.weights.bold, color: theme.colors.textSecondary },
-  reportSubTextActive: { color: theme.colors.white },
-  amberQueueDot: { backgroundColor: theme.colors.accent, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 10 },
-  amberQueueDotText: { color: theme.colors.white, fontSize: 10, fontWeight: theme.typography.weights.extrabold },
-  extractionBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    backgroundColor: theme.colors.accentLight,
-    padding: 12,
-    borderRadius: theme.radius.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.accentBorder,
-    marginBottom: 10,
-  },
-  extractionBannerTitle: { fontSize: 13, fontWeight: theme.typography.weights.extrabold, color: theme.colors.accent },
-  extractionBannerSub: { fontSize: 11, color: theme.colors.textSecondary, marginTop: 1 },
-  openReviewPill: { backgroundColor: theme.colors.accent, paddingHorizontal: 10, paddingVertical: 6, borderRadius: theme.radius.sm },
-  openReviewPillText: { color: theme.colors.white, fontSize: 11, fontWeight: theme.typography.weights.extrabold },
-  cardHeaderFlex: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-  uploadNewBtn: { backgroundColor: theme.colors.primary, flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: theme.radius.sm },
-  uploadNewBtnText: { color: theme.colors.white, fontSize: 12, fontWeight: theme.typography.weights.bold },
-  reportItemCard: {
-    backgroundColor: theme.colors.bg,
-    borderRadius: theme.radius.md,
-    padding: theme.spacing.md,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-  },
-  reportItemHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
-  fileTypeBadge: { backgroundColor: theme.colors.cardMuted, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
-  fileTypeText: { fontSize: 10, fontWeight: theme.typography.weights.bold, color: theme.colors.textSecondary },
-  statusBadge: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 },
-  badgeGood: { backgroundColor: theme.colors.successBg },
-  badgeWarn: { backgroundColor: theme.colors.warningBg },
-  badgeError: { backgroundColor: theme.colors.errorBg },
-  statusText: { fontSize: 10, fontWeight: theme.typography.weights.bold },
-  reportTitle: { fontSize: 15, fontWeight: theme.typography.weights.extrabold, color: theme.colors.text, marginTop: 2 },
-  reportFacility: { fontSize: 12, color: theme.colors.textMuted, marginTop: 1 },
-  reportSummaryText: { fontSize: 13, color: theme.colors.textSecondary, marginTop: 6, lineHeight: 18 },
-  reportActionsRow: { marginTop: 10, borderTopWidth: 1, borderTopColor: theme.colors.borderLight, paddingTop: 8 },
-  primaryActionBtn: {
-    backgroundColor: theme.colors.accent,
-    paddingVertical: 9,
-    paddingHorizontal: 12,
-    borderRadius: theme.radius.sm,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-  },
-  primaryActionBtnText: { color: theme.colors.white, fontSize: 12, fontWeight: theme.typography.weights.bold },
-  paActionBtn: {
-    backgroundColor: theme.colors.primary,
-    paddingVertical: 9,
-    paddingHorizontal: 12,
-    borderRadius: theme.radius.sm,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-  },
-  viewResultsBtn: { paddingVertical: 4 },
-  viewResultsText: { fontSize: 12, fontWeight: theme.typography.weights.bold, color: theme.colors.primary },
-  // PA Queue Styles
-  paQueueHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
-  paQueueItem: {
-    backgroundColor: theme.colors.bg,
-    borderRadius: theme.radius.md,
-    padding: theme.spacing.md,
-    marginTop: 8,
-    borderWidth: 1.5,
-    borderColor: theme.colors.warningBorder,
-  },
-  paQueueTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  paQueueTitle: { fontSize: 14, fontWeight: theme.typography.weights.extrabold, color: theme.colors.text, flex: 1, marginRight: 8 },
-  pendingTag: { backgroundColor: theme.colors.warningBg, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 },
-  pendingTagText: { fontSize: 10, fontWeight: theme.typography.weights.bold, color: theme.colors.warning },
-  paQueueMeta: { fontSize: 11, color: theme.colors.textMuted, marginTop: 3 },
-  paQueueSnippet: { fontSize: 12, color: theme.colors.primary, fontWeight: theme.typography.weights.bold, marginTop: 6 },
-  // Modal Common Styles
-  modalBackdrop: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.55)', justifyContent: 'flex-end' },
-  modalSheet: { backgroundColor: theme.colors.white, borderTopLeftRadius: theme.radius.xl, borderTopRightRadius: theme.radius.xl, padding: theme.spacing.xl, maxHeight: '88%' },
-  modalSheetFull: { backgroundColor: theme.colors.white, borderTopLeftRadius: theme.radius.xl, borderTopRightRadius: theme.radius.xl, padding: theme.spacing.xl, maxHeight: '92%' },
-  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 },
-  modalSuper: { fontSize: 10, fontWeight: theme.typography.weights.extrabold, color: theme.colors.primary, letterSpacing: 0.8 },
-  modalHeading: { fontSize: 18, fontWeight: theme.typography.weights.black, color: theme.colors.text, marginTop: 1 },
-  modalSubHeader: { fontSize: 12, color: theme.colors.textMuted, marginTop: 2 },
-  formLabel: { fontSize: 12, fontWeight: theme.typography.weights.bold, color: theme.colors.textSecondary, marginBottom: 6 },
-  formSectionHeader: { fontSize: 11, fontWeight: theme.typography.weights.extrabold, color: theme.colors.textMuted, letterSpacing: 0.8, marginVertical: 10 },
-  fileTypeRow: { flexDirection: 'row', gap: 10, marginBottom: 12 },
-  fileTypeBtn: {
-    flex: 1,
-    paddingVertical: 12,
-    backgroundColor: theme.colors.bg,
-    borderRadius: theme.radius.md,
-    borderWidth: 1.5,
-    borderColor: theme.colors.border,
-    alignItems: 'center',
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 8,
-  },
-  fileTypeBtnActive: { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary },
-  fileTypeBtnText: { fontSize: 12, fontWeight: theme.typography.weights.bold, color: theme.colors.textSecondary },
-  fileTypeBtnTextActive: { color: theme.colors.white },
-  selectedFileBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    backgroundColor: theme.colors.primarySurface,
-    padding: 12,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.primaryBorder,
-    marginBottom: 12,
-  },
-  selectedFileName: { fontSize: 13, fontWeight: theme.typography.weights.bold, color: theme.colors.text },
-  selectedFileSize: { fontSize: 11, color: theme.colors.textMuted, marginTop: 2 },
-  readyTag: { fontSize: 10, fontWeight: theme.typography.weights.extrabold, color: theme.colors.primary, backgroundColor: theme.colors.white, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
-  progressContainer: { marginBottom: 12, backgroundColor: theme.colors.bg, padding: 10, borderRadius: theme.radius.md },
-  progressTopRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
-  progressStatusText: { fontSize: 11, fontWeight: theme.typography.weights.bold, color: theme.colors.primary },
-  progressPctText: { fontSize: 11, fontWeight: theme.typography.weights.black, color: theme.colors.primary },
-  progressTrack: { height: 6, backgroundColor: theme.colors.border, borderRadius: 3, overflow: 'hidden' },
-  progressFill: { height: '100%', backgroundColor: theme.colors.primary, borderRadius: 3 },
-  modalInput: {
+  vitalTypeBtnActive: { backgroundColor: theme.colors.primary },
+  vitalTypeBtnText: { fontSize: 11, fontWeight: theme.typography.weights.bold, color: theme.colors.textSecondary },
+  vitalTypeBtnTextActive: { color: theme.colors.white },
+  inputGroup: { gap: 4 },
+  inputLabel: { fontSize: 12, fontWeight: theme.typography.weights.bold, color: theme.colors.textSecondary },
+  textInput: {
     backgroundColor: theme.colors.bg,
     borderWidth: 1,
     borderColor: theme.colors.border,
     borderRadius: theme.radius.md,
     paddingHorizontal: 12,
     paddingVertical: 10,
-    fontSize: 13,
+    fontSize: theme.typography.sizes.body,
     color: theme.colors.text,
-    marginBottom: 10,
   },
-  uploadSubmitBtn: {
-    backgroundColor: theme.colors.primary,
-    paddingVertical: 14,
-    borderRadius: theme.radius.md,
-    alignItems: 'center',
-    marginTop: 8,
-    marginBottom: 20,
+  contextGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  contextOption: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.cardMuted,
   },
-  uploadSubmitBtnDisabled: { opacity: 0.6 },
-  uploadSubmitBtnText: { color: theme.colors.white, fontSize: 14, fontWeight: theme.typography.weights.bold },
-  // Extraction Review Styles
-  extractionGuideBox: {
-    flexDirection: 'row',
-    gap: 8,
-    backgroundColor: theme.colors.accentLight,
-    padding: 12,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.accentBorder,
-    marginBottom: 12,
-  },
-  extractionGuideText: { flex: 1, fontSize: 12, color: theme.colors.textSecondary, lineHeight: 18 },
-  extractedFieldCard: {
-    backgroundColor: theme.colors.bg,
-    borderRadius: theme.radius.md,
-    padding: theme.spacing.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    marginBottom: 10,
-  },
-  extractedFieldCardUncertain: {
-    borderColor: theme.colors.warningBorder,
-    backgroundColor: '#fffdfa',
-  },
-  uncertainBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: theme.colors.warningBg,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-    marginBottom: 8,
-  },
-  uncertainBannerText: { fontSize: 11, fontWeight: theme.typography.weights.bold, color: theme.colors.warning, flex: 1 },
-  fieldTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  fieldTestName: { fontSize: 14, fontWeight: theme.typography.weights.extrabold, color: theme.colors.text },
-  fieldConfidence: { fontSize: 11, fontWeight: theme.typography.weights.bold, color: theme.colors.primary },
-  originalSnippetBox: { backgroundColor: theme.colors.white, padding: 8, borderRadius: 6, marginVertical: 6, borderWidth: 1, borderColor: theme.colors.borderLight },
-  snippetLabel: { fontSize: 9, fontWeight: theme.typography.weights.extrabold, color: theme.colors.textMuted, letterSpacing: 0.4 },
-  snippetText: { fontSize: 12, color: theme.colors.textSecondary, fontStyle: 'italic', marginTop: 2 },
-  fieldDisplayRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 },
-  fieldValueText: { fontSize: 16, fontWeight: theme.typography.weights.black, color: theme.colors.primary },
-  fieldUnitText: { fontSize: 12, fontWeight: theme.typography.weights.bold, color: theme.colors.textMuted },
-  fieldRefText: { fontSize: 11, color: theme.colors.textMuted },
-  fieldEditIconBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: theme.colors.primarySurface, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6 },
-  fieldEditIconText: { fontSize: 12, fontWeight: theme.typography.weights.bold, color: theme.colors.primary },
-  fieldEditRow: { flexDirection: 'row', gap: 8, marginTop: 6, alignItems: 'center' },
-  fieldEditInput: { flex: 2, backgroundColor: theme.colors.white, borderWidth: 1, borderColor: theme.colors.primary, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, fontSize: 14, fontWeight: theme.typography.weights.bold },
-  fieldEditUnit: { flex: 1, backgroundColor: theme.colors.white, borderWidth: 1, borderColor: theme.colors.border, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 6, fontSize: 12 },
-  fieldSaveBtn: { backgroundColor: theme.colors.primary, width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
-  submitQueueBtn: {
-    backgroundColor: theme.colors.primary,
-    paddingVertical: 14,
-    borderRadius: theme.radius.md,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    marginTop: 10,
-    marginBottom: 20,
-  },
-  submitQueueBtnText: { color: theme.colors.white, fontSize: 13, fontWeight: theme.typography.weights.bold },
-  // PA Review Styles
-  reviewerIdCard: {
+  contextOptionActive: { backgroundColor: theme.colors.primary },
+  contextOptionText: { fontSize: 11, fontWeight: theme.typography.weights.bold, color: theme.colors.textSecondary },
+  contextOptionTextActive: { color: theme.colors.white },
+  uploadInfoBox: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
     backgroundColor: theme.colors.primarySurface,
-    padding: 12,
+    padding: theme.spacing.md,
     borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.primaryBorder,
-    marginBottom: 10,
   },
-  reviewerName: { fontSize: 13, fontWeight: theme.typography.weights.extrabold, color: theme.colors.primary },
-  reviewerDesc: { fontSize: 11, color: theme.colors.textMuted, marginTop: 1 },
-  paFieldVerifyBox: {
-    backgroundColor: theme.colors.bg,
-    borderRadius: theme.radius.md,
-    padding: 10,
-    marginBottom: 8,
+  uploadInfoText: { fontSize: 11, color: theme.colors.primaryDark, flex: 1, lineHeight: 16 },
+  reportPickerPrompt: { fontSize: 12, color: theme.colors.textSecondary },
+  filePickerRow: { flexDirection: 'row', gap: 8 },
+  filePickerButton: {
+    flex: 1,
+    minHeight: 60,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
     borderWidth: 1,
     borderColor: theme.colors.border,
-  },
-  paFieldHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  paTestName: { fontSize: 13, fontWeight: theme.typography.weights.bold, color: theme.colors.text },
-  paTestVal: { fontSize: 14, fontWeight: theme.typography.weights.black, color: theme.colors.primary },
-  paSnippet: { fontSize: 11, color: theme.colors.textMuted, fontStyle: 'italic', marginTop: 3 },
-  rejectionBox: { backgroundColor: '#fff1f2', padding: 12, borderRadius: theme.radius.md, borderWidth: 1, borderColor: '#fecdd3', marginVertical: 10 },
-  rejectionTitle: { fontSize: 12, fontWeight: theme.typography.weights.bold, color: theme.colors.error, marginBottom: 6 },
-  rejectionInput: { backgroundColor: theme.colors.white, borderWidth: 1, borderColor: '#fda4af', borderRadius: 8, padding: 8, fontSize: 12, color: theme.colors.text, marginBottom: 8 },
-  confirmRejectBtn: { backgroundColor: theme.colors.error, paddingVertical: 10, borderRadius: theme.radius.sm, alignItems: 'center' },
-  confirmRejectBtnText: { color: theme.colors.white, fontSize: 12, fontWeight: theme.typography.weights.bold },
-  paActionBtnRow: { flexDirection: 'row', gap: 10, marginTop: 10, marginBottom: 20 },
-  rejectOutlineBtn: {
-    flex: 1,
-    paddingVertical: 13,
-    backgroundColor: '#fff1f2',
-    borderWidth: 1,
-    borderColor: '#fecdd3',
     borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.white,
+    paddingHorizontal: 4,
+  },
+  filePickerButtonText: { fontSize: 10, fontWeight: theme.typography.weights.bold, color: theme.colors.text },
+  selectedReportFile: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
+    gap: 8,
+    backgroundColor: theme.colors.primarySurface,
+    borderRadius: theme.radius.md,
+    paddingLeft: theme.spacing.md,
   },
-  rejectOutlineText: { fontSize: 13, fontWeight: theme.typography.weights.bold, color: theme.colors.error },
-  approveFillBtn: {
-    flex: 1.5,
-    paddingVertical: 13,
+  selectedReportFileName: { flex: 1, fontSize: 12, color: theme.colors.text, fontWeight: theme.typography.weights.semibold },
+  modalSubmitBtn: {
     backgroundColor: theme.colors.primary,
     borderRadius: theme.radius.md,
-    flexDirection: 'row',
+    paddingVertical: 14,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
+    marginTop: 6,
   },
-  approveFillText: { fontSize: 13, fontWeight: theme.typography.weights.bold, color: theme.colors.white },
+  modalSubmitBtnText: { color: theme.colors.white, fontWeight: theme.typography.weights.bold, fontSize: 14 },
 });

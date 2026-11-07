@@ -1,10 +1,10 @@
 import { Router, Request, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth';
 import { logAuditEvent } from '../audit/auditLogger';
+import { HealthInsightService } from '../services/healthInsightService';
 
 const router = Router();
-const prisma = new PrismaClient();
+import { prisma } from '../db/prisma';
 
 router.use(requireAuth);
 
@@ -53,7 +53,9 @@ async function verifyCaregiverAccess(caregiverEmail: string, patientId: string):
     permissions.includes('VIEW_OBSERVATIONS') ||
     permissions.includes('VIEW_TASKS') ||
     permissions.includes('VIEW_CARE_PLAN') ||
-    permissions.includes('VIEW_CONSULTATIONS')
+    permissions.includes('VIEW_CONSULTATIONS') ||
+    permissions.includes('VIEW_HEALTH_SUMMARY') ||
+    permissions.includes('VIEW_HEALTH_TIMELINE')
   );
 }
 
@@ -610,7 +612,57 @@ router.get('/progress', async (req: Request, res: Response): Promise<void> => {
           isEstimated: false,
         },
       },
+      summary: await HealthInsightService.getJourneyProgressSummary(patientId),
+      milestones: await HealthInsightService.generatePatientMilestones(patientId),
+      insights: await HealthInsightService.calculateHealthInsights(patientId),
     });
+  } catch (err: any) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// 3.1 GET /api/journey/insights — Health Insights Engine (Phase 7)
+// ============================================================================
+router.get('/insights', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { patientId } = await resolveJourneyTargetPatient(req);
+    const insights = await HealthInsightService.calculateHealthInsights(patientId);
+    res.json({
+      patientId,
+      totalInsights: insights.length,
+      insights,
+    });
+  } catch (err: any) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// 3.2 GET /api/journey/milestones — Personalised Care Journey Milestones (Phase 7)
+// ============================================================================
+router.get('/milestones', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { patientId } = await resolveJourneyTargetPatient(req);
+    const milestones = await HealthInsightService.generatePatientMilestones(patientId);
+    res.json({
+      patientId,
+      totalMilestones: milestones.length,
+      milestones,
+    });
+  } catch (err: any) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// 3.3 GET /api/journey/summary — Complete Progress Summary (Phase 7)
+// ============================================================================
+router.get('/summary', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { patientId } = await resolveJourneyTargetPatient(req);
+    const summary = await HealthInsightService.getJourneyProgressSummary(patientId);
+    res.json(summary);
   } catch (err: any) {
     res.status(err.status || 500).json({ error: err.message });
   }

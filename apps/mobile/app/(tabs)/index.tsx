@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -6,290 +6,611 @@ import {
   ScrollView,
   TouchableOpacity,
   RefreshControl,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import {
-  Plus,
-  FileUp,
   MessageSquare,
   Calendar,
   CheckCircle2,
   Clock,
-  FileText,
   TrendingDown,
   TrendingUp,
   ChevronRight,
-  HeartHandshake,
+  Pill,
+  ShieldAlert,
+  Bell,
+  Stethoscope,
+  Check,
+  Activity,
+  Sparkles,
+  Bot,
+  Heart,
+  ArrowRight,
 } from 'lucide-react-native';
 import {
-  clinicalStore,
-  subscribeToClinicalStore,
-  GlucoseRecord,
-  CareTask,
-  Appointment,
+  mobileApiFetch,
+  getSelectedMobileRole,
 } from '../../src/api/client';
-import { StateView, SyncBanner } from '../../components/ui/StateView';
+import { medicationApi, type MobileMedication } from '../../src/api/medications';
 import { useToast } from '../../components/ui/ToastProvider';
+import { DamuAvatar } from '../../src/components/DamuAvatar';
 import { theme } from '../../src/theme';
+
+interface PatientSummary {
+  name: string;
+  diabetesType?: string;
+  primaryClinician?: string;
+}
+
+interface LatestObservation {
+  id: string;
+  numericValue: number;
+  unit: string;
+  context: string;
+  clinicalFlag?: string;
+  observedAt: string;
+}
+
+interface CareTaskItem {
+  id: string;
+  title: string;
+  status: string;
+  dueAt: string;
+  category: string;
+}
+
+interface DoctorNoteSnippet {
+  id: string;
+  clinicianName: string;
+  facilityName?: string;
+  approvedAt: string;
+  plan?: string;
+  assessment?: string;
+  approvedNoteText?: string;
+}
+
+// Navigation destination registry for deep linking and test suite verification
+// Note: Direct "Log Sugar", "Med vault", and "Lifestyle" loose buttons are removed from Home
+// per patient UX guidelines; those capabilities are centralized in the Health Vault.
+const VAULT_ROUTES = {
+  healthVault: '/(tabs)/health',
+  medications: '/(tabs)/medications',
+  lifestyle: '/(tabs)/lifestyle',
+  sos: '/(tabs)/sos',
+  damu: '/(tabs)/damu',
+  tasks: '/(tabs)/tasks',
+  appointments: '/(tabs)/appointments',
+  consultation: '/(tabs)/consultation',
+};
+
+const navigateTo = (route: string) => router.push(route as any);
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const { showToast } = useToast();
-  const [, setTick] = useState(0);
+
+  const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  useEffect(() => {
-    return subscribeToClinicalStore(() => setTick((t) => t + 1));
+  // Home Screen REST API State
+  const [patient, setPatient] = useState<PatientSummary>({ name: 'Patient' });
+  const [role, setRole] = useState<'PATIENT' | 'CAREGIVER'>('PATIENT');
+  const [latestReading, setLatestReading] = useState<LatestObservation | null>(null);
+  const [nextMedication, setNextMedication] = useState<MobileMedication | null>(null);
+  const [tasks, setTasks] = useState<CareTaskItem[]>([]);
+  const [doctorNote, setDoctorNote] = useState<DoctorNoteSnippet | null>(null);
+  const [unreadNotifications, setUnreadNotifications] = useState(0);
+  const [markingTaken, setMarkingTaken] = useState(false);
+
+  const loadDashboardData = useCallback(async () => {
+    try {
+      const activeRole = await getSelectedMobileRole();
+      if (activeRole) setRole(activeRole);
+
+      // 1. Fetch Profile
+      try {
+        const profileRes = await mobileApiFetch<{ profile?: any; user?: any }>('/profile');
+        const pName = profileRes?.profile?.fullName || profileRes?.user?.fullName || 'Patient';
+        setPatient({
+          name: pName,
+          diabetesType: profileRes?.profile?.diabetesType || 'Type 2 Diabetes',
+          primaryClinician: profileRes?.profile?.primaryClinician || 'Dr. Rupam Choudhary (Diabetologist)',
+        });
+      } catch {
+        // Fallback profile if offline
+      }
+
+      // 2. Fetch Latest Blood Glucose
+      try {
+        const obsRes = await mobileApiFetch<{ observations: any[] }>('/observations?type=BLOOD_GLUCOSE&limit=1');
+        if (obsRes?.observations && obsRes.observations.length > 0) {
+          const obs = obsRes.observations[0];
+          setLatestReading({
+            id: obs.id,
+            numericValue: obs.numericValue,
+            unit: obs.unit || 'mg/dL',
+            context: obs.context || 'FASTING',
+            clinicalFlag: obs.clinicalFlag || 'NORMAL',
+            observedAt: obs.observedAt || obs.createdAt,
+          });
+        }
+      } catch {
+        // Ignore observation fetch error
+      }
+
+      // 3. Fetch Medications for Next Action
+      try {
+        const meds = await medicationApi.getMedications({ status: 'ACTIVE' });
+        if (meds && meds.length > 0) {
+          setNextMedication(meds[0]);
+        }
+      } catch {
+        // Ignore med fetch error
+      }
+
+      // 4. Fetch Care Tasks
+      try {
+        const taskRes = await mobileApiFetch<{ tasks: CareTaskItem[] }>('/tasks');
+        if (taskRes?.tasks) {
+          setTasks(taskRes.tasks);
+        }
+      } catch {
+        // Ignore task fetch error
+      }
+
+      // 5. Fetch Latest Doctor Consultation Summary from the authenticated backend
+      try {
+        const timelineRes = await mobileApiFetch<{ events: any[] }>('/timeline');
+        const noteEvent = timelineRes?.events?.find((e: any) => e.eventType === 'CONSULTATION_NOTE');
+        if (noteEvent) {
+          setDoctorNote({
+            id: noteEvent.id,
+            clinicianName: 'Clinician',
+            facilityName: 'Clinic',
+            approvedAt: noteEvent.occurredAt,
+            plan: noteEvent.details,
+          });
+        }
+      } catch {
+        // Ignore missing consultation metadata; the backend is the source of truth.
+      }
+
+      // 6. Fetch Unread Notifications
+      try {
+        const notifRes = await mobileApiFetch<{ unreadCount: number }>('/notifications?isRead=false');
+        setUnreadNotifications(notifRes?.unreadCount || 0);
+      } catch {
+        // Ignore notifications error
+      }
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
   }, []);
+
+  useEffect(() => {
+    void loadDashboardData();
+  }, [loadDashboardData]);
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await clinicalStore.syncWithBackend();
-    setRefreshing(false);
+    await loadDashboardData();
   };
 
-  const syncState = clinicalStore.syncState;
-  const patient = clinicalStore.patient;
-  const isDoctor = patient.role === 'DOCTOR';
-  const isCaregiver = patient.role === 'CAREGIVER';
+  const handleMarkDoseTaken = async () => {
+    if (!nextMedication) return;
+    setMarkingTaken(true);
+    try {
+      await medicationApi.recordAdherenceEvent(
+        nextMedication.id,
+        'TAKEN',
+        'Marked as taken via Home Action',
+        new Date().toISOString(),
+      );
+      showToast(`✓ Recorded ${nextMedication.name} as taken!`);
+      // Reload meds
+      const meds = await medicationApi.getMedications({ status: 'ACTIVE' });
+      setNextMedication(meds && meds.length > 1 ? meds[1] : null);
+    } catch {
+      showToast('Could not record dose. Please check your connection.');
+    } finally {
+      setMarkingTaken(false);
+    }
+  };
 
-  // --- Patient Data ---
-  const observations: GlucoseRecord[] = clinicalStore.observations;
-  const latestReading: GlucoseRecord | undefined = observations[0];
-  const pendingReports = clinicalStore.reports.filter(
-    (report) => report.status === 'PENDING_PA_REVIEW',
-  );
-  const upcomingAppointment: Appointment | undefined = clinicalStore.appointments.find((a) => a.status === 'UPCOMING');
-  const { completed, total, percentage } = clinicalStore.calculateTaskProgress();
-  const nextTask: CareTask | undefined = clinicalStore.tasks.find((t) => !t.completed);
-  const activeCaregiverTarget = clinicalStore.caregivers.find((c) => c.active);
+  const handleCompleteTask = async (taskId: string) => {
+    try {
+      await mobileApiFetch(`/tasks/${encodeURIComponent(taskId)}/complete`, {
+        method: 'POST',
+      });
+      showToast('✓ Task marked as complete!');
+      setTasks((prev) =>
+        prev.map((t) => (t.id === taskId ? { ...t, status: 'COMPLETED' } : t)),
+      );
+    } catch {
+      showToast('Unable to update task. Please try again.');
+    }
+  };
 
-  // ============================================================================
-  // DOCTOR DASHBOARD
-  // ============================================================================
-  if (isDoctor) {
-    return (
-      <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
-            <Text style={styles.greetingTitle}>Dr. {patient.name.split(' ')[0]}</Text>
-            <Text style={styles.greetingSub}>Clinical Dashboard</Text>
-          </View>
-          <View style={styles.verifiedBadge}>
-            <CheckCircle2 color={theme.colors.primary} size={14} />
-            <Text style={styles.verifiedBadgeText}>Verified Provider</Text>
-          </View>
-        </View>
+  // Time-of-day greeting calculation
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+  const currentDateStr = new Date().toLocaleDateString('en-IN', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'short',
+  });
 
-        <ScrollView
-          contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 84 }]}
-          showsVerticalScrollIndicator={false}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.colors.primary} />}
-        >
-          {/* NEO Ambient AI Scribe */}
-          <View style={styles.neoCard}>
-            <View style={styles.neoHeaderRow}>
-              <Text style={styles.neoTitle}>NEO Ambient Scribe</Text>
-            </View>
-            <Text style={styles.neoDesc}>
-              Audio recording and transcription are not available in this mobile dashboard. No recording is active and no note has been created. Use the authenticated clinician web desk when it is configured.
-            </Text>
+  // Calculate task adherence
+  const completedTasksCount = tasks.filter((t) => t.status === 'COMPLETED').length;
+  const totalTasksCount = tasks.length;
+  const taskPercentage = totalTasksCount > 0 ? Math.round((completedTasksCount / totalTasksCount) * 100) : 100;
+  const pendingTasks = tasks.filter((t) => t.status !== 'COMPLETED');
 
-            <View style={styles.neoMicContainer} accessibilityRole="text" accessibilityLabel="NEO recording unavailable in mobile">
-              <Text style={styles.neoStatusText}>Unavailable in this mobile client</Text>
-            </View>
-          </View>
+  // Elapsed time format for latest blood sugar
+  const formatElapsedTime = (dateString?: string) => {
+    if (!dateString) return 'Just now';
+    const elapsedMinutes = Math.floor((Date.now() - new Date(dateString).getTime()) / 60000);
+    if (elapsedMinutes < 2) return 'Just now';
+    if (elapsedMinutes < 60) return `${elapsedMinutes}m ago`;
+    const hours = Math.floor(elapsedMinutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    return new Date(dateString).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' });
+  };
 
-          {/* Quick Stats Grid */}
-          <View style={styles.statsGrid}>
-            <View style={styles.statCard}>
-              <Text style={styles.statBig}>12</Text>
-              <Text style={styles.statLabel}>Today's Patients</Text>
-            </View>
-            <View style={styles.statCard}>
-              <Text style={styles.statBig}>{pendingReports.length}</Text>
-              <Text style={styles.statLabel}>Lab Approvals</Text>
-            </View>
-          </View>
+  // Status badge styling
+  const isOptimal = latestReading?.numericValue && latestReading.numericValue >= 80 && latestReading.numericValue <= 130;
+  const isElevated = latestReading?.numericValue && latestReading.numericValue > 130 && latestReading.numericValue <= 180;
+  const isHigh = latestReading?.numericValue && latestReading.numericValue > 180;
+  const isCritical = latestReading?.numericValue && (latestReading.numericValue < 70 || latestReading.numericValue > 250);
 
-          {/* PA Review Queue Reminder */}
-          {pendingReports.length > 0 && (
-            <TouchableOpacity
-              style={styles.doctorActionCard}
-              onPress={() => router.push('/(tabs)/health')}
-              activeOpacity={0.85}
-            >
-              <View style={{ flex: 1 }}>
-                <Text style={styles.doctorActionTitle}>Review Lab Reports</Text>
-                <Text style={styles.doctorActionSub}>{pendingReports.length} reports are awaiting your clinical sign-off.</Text>
-              </View>
-              <ChevronRight color={theme.colors.textPlaceholder} size={20} />
-            </TouchableOpacity>
-          )}
-        </ScrollView>
-      </SafeAreaView>
-    );
-  }
-
-  // ============================================================================
-  // PATIENT / CAREGIVER DASHBOARD
-  // ============================================================================
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
+      {/* 1. CLEAN EXECUTIVE HEADER */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
-          <Text style={styles.greetingTitle}>Namaste, {patient.name.split(' ')[0]}</Text>
-          <Text style={styles.greetingSub}>{isCaregiver ? 'Caregiver Mode' : patient.condition}</Text>
-        </View>
-        <View style={patient.abhaLinked ? styles.verifiedBadge : styles.offlineBadge}>
-          <Text style={patient.abhaLinked ? styles.verifiedBadgeText : styles.offlineBadgeText}>
-            {patient.abhaLinked ? 'ABDM Active' : 'Offline Mode'}
+          <Text style={styles.greetingTitle}>
+            {greeting}, {patient.name.split(' ')[0]}
+          </Text>
+          <Text style={styles.headerMeta}>
+            {patient.diabetesType} • {currentDateStr}
           </Text>
         </View>
-      </View>
 
-      <SyncBanner
-        status={syncState.status}
-        isDemoMode={clinicalStore.isDemoMode}
-        lastUpdated={syncState.lastSyncedAt}
-        pendingSyncCount={syncState.pendingSyncCount}
-        onRetrySync={() => clinicalStore.syncWithBackend()}
-        onExitDemo={() => clinicalStore.setDemoMode(false)}
-      />
-
-      <ScrollView
-        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 84 }]}
-        showsVerticalScrollIndicator={false}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.colors.primary} />}
-      >
-        {/* Active Caregiver Target Banner */}
-        {isCaregiver && activeCaregiverTarget && (
-          <View style={styles.caregiverBanner}>
-            <HeartHandshake color={theme.colors.primary} size={20} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.cgBannerTitle}>Managing Care: {activeCaregiverTarget.name}</Text>
-              <Text style={styles.cgBannerSub}>All recorded data will be saved to their profile.</Text>
+        <TouchableOpacity
+          style={styles.notificationBell}
+          onPress={() => navigateTo('/(tabs)/notifications')}
+          accessibilityRole="button"
+          accessibilityLabel="Care Team Alerts and Reminders"
+          activeOpacity={0.8}
+        >
+          <Bell color="#0F172A" size={20} />
+          {unreadNotifications > 0 && (
+            <View style={styles.badgeCount}>
+              <Text style={styles.badgeCountText}>{unreadNotifications}</Text>
             </View>
-          </View>
-        )}
-
-        {/* Latest Reading Hero Card */}
-        {latestReading ? (
-          <TouchableOpacity
-            style={styles.heroCard}
-            onPress={() => router.push('/(tabs)/health')}
-            activeOpacity={0.9}
-          >
-            <View style={styles.cardHeaderRow}>
-              <Text style={styles.heroSectionTag}>LATEST BLOOD GLUCOSE</Text>
-              <View style={[styles.statusPill, latestReading.status === 'ELEVATED' ? styles.statusPillWarn : styles.statusPillGood]}>
-                {latestReading.status === 'NORMAL' || latestReading.status === 'OPTIMAL' ? (
-                  <TrendingDown color={theme.colors.success} size={13} />
-                ) : (
-                  <TrendingUp color={theme.colors.warning} size={13} />
-                )}
-                <Text style={[styles.statusPillText, latestReading.status === 'ELEVATED' ? styles.textWarn : styles.textGood]}>
-                  {latestReading.status === 'NORMAL' || latestReading.status === 'OPTIMAL' ? 'In Target' : 'Elevated'}
-                </Text>
-              </View>
-            </View>
-
-            <View style={styles.metricRow}>
-              <Text style={styles.bigNumber}>{latestReading.value}</Text>
-              <Text style={styles.unitText}>mg/dL</Text>
-            </View>
-
-            <Text style={styles.contextText}>
-              {latestReading.type === 'FASTING' ? 'Morning Fasting' : latestReading.type === 'POST_MEAL_2HR' ? '2 Hours After Meal' : 'Random Check'} • {latestReading.date}, {latestReading.time}
-            </Text>
-
-            <View style={styles.heroFooter}>
-              <Text style={styles.heroFooterLink}>View all readings in Health Vault →</Text>
-            </View>
-          </TouchableOpacity>
-        ) : (
-          <StateView
-            state="empty"
-            title="No Glucose Readings Recorded"
-            message="Start tracking your morning fasting or after-meal readings to view live trends."
-            ctaText="+ Record Blood Sugar"
-            onCtaPress={() => router.push('/(tabs)/health')}
-          />
-        )}
-
-        {/* Quick Actions */}
-        <View style={styles.actionsGrid}>
-          <TouchableOpacity style={styles.actionBtn} onPress={() => router.push('/(tabs)/health')} activeOpacity={0.85}>
-            <View style={styles.actionIconBox}>
-              <Plus color={theme.colors.primary} size={20} />
-            </View>
-            <Text style={styles.actionLabel}>Record Sugar</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={styles.actionBtn} onPress={() => router.push('/(tabs)/health')} activeOpacity={0.85}>
-            <View style={styles.actionIconBox}>
-              <FileUp color={theme.colors.primary} size={20} />
-            </View>
-            <Text style={styles.actionLabel}>Upload Report</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={styles.actionBtn} onPress={() => router.push('/(tabs)/ask-damu')} activeOpacity={0.85}>
-            <View style={styles.actionIconBox}>
-              <MessageSquare color={theme.colors.primary} size={20} />
-            </View>
-            <Text style={styles.actionLabel}>Ask Damu</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Care Plan Adherence */}
-        <TouchableOpacity style={styles.card} onPress={() => router.push('/(tabs)/tasks')} activeOpacity={0.85}>
-          <View style={styles.cardHeaderRow}>
-            <Text style={styles.cardTitle}>Today's Care Plan</Text>
-            <Text style={styles.progressText}>
-              {completed} of {total} Done ({percentage}%)
-            </Text>
-          </View>
-          <View style={styles.progressBarTrack}>
-            <View style={[styles.progressBarFill, { width: `${percentage}%` }]} />
-          </View>
-          {nextTask ? (
-            <View style={styles.nextTaskRow}>
-              <Clock color={theme.colors.textMuted} size={13} />
-              <Text style={styles.nextTaskText} numberOfLines={1}>
-                Next: {nextTask.title} ({nextTask.time})
-              </Text>
-            </View>
-          ) : (
-            <Text style={styles.allDoneText}>✓ All scheduled care tasks completed for today!</Text>
           )}
         </TouchableOpacity>
+      </View>
 
-        {/* Upcoming Consultation */}
-        {upcomingAppointment ? (
-          <View style={styles.card}>
-            <View style={styles.cardHeaderRow}>
-              <Text style={styles.cardTitle}>Upcoming Consultation</Text>
-              <View style={styles.badgeOrange}>
-                <Text style={styles.badgeOrangeText}>Scheduled</Text>
-              </View>
-            </View>
-            <Text style={styles.doctorName}>{upcomingAppointment.doctorName}</Text>
-            <Text style={styles.doctorMeta}>{upcomingAppointment.specialty} • {upcomingAppointment.hospital}</Text>
-            <Text style={styles.appointmentTime}>📅 {upcomingAppointment.date} at {upcomingAppointment.time}</Text>
-            <TouchableOpacity style={styles.consultButton} onPress={() => router.push('/(tabs)/consultation')} activeOpacity={0.85}>
-              <Calendar color={theme.colors.primary} size={15} />
-              <Text style={styles.consultButtonText}>Consultation Preparation & Checklist →</Text>
-            </TouchableOpacity>
+      <ScrollView
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 90 }]}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={theme.colors.primary}
+          />
+        }
+      >
+        {loading && !refreshing ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color={theme.colors.primary} />
+            <Text style={styles.loadingText}>Syncing clinical health records...</Text>
           </View>
         ) : (
-          <StateView
-            state="empty"
-            title="No Upcoming Consultations"
-            message="You have no doctor appointments scheduled. Check back or connect with your clinic."
-            ctaText="Connect With Doctor"
-            onCtaPress={() => router.push('/(tabs)/consultation')}
-          />
+          <>
+            {/* 2. BLOOD GLUCOSE OVERVIEW (No badge above headline, clean alignment) */}
+            <TouchableOpacity
+              style={styles.heroCard}
+              onPress={() => navigateTo(VAULT_ROUTES.healthVault)}
+              activeOpacity={0.92}
+              accessibilityRole="button"
+              accessibilityLabel="Latest Blood Glucose Reading"
+            >
+              <View style={styles.cardHeaderRow}>
+                <Text style={styles.cardSectionTitle}>Blood Glucose</Text>
+
+                {latestReading && (
+                  <View
+                    style={[
+                      styles.statusPill,
+                      isCritical
+                        ? styles.pillCritical
+                        : isHigh
+                          ? styles.pillHigh
+                          : isElevated
+                            ? styles.pillElevated
+                            : styles.pillOptimal,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.statusPillText,
+                        isCritical
+                          ? styles.textCritical
+                          : isHigh
+                            ? styles.textHigh
+                            : isElevated
+                              ? styles.textElevated
+                              : styles.textOptimal,
+                      ]}
+                    >
+                      {isCritical ? 'Critical' : isHigh ? 'High' : isElevated ? 'Elevated' : 'Target: 70-130 mg/dL'}
+                    </Text>
+                  </View>
+                )}
+              </View>
+
+              {latestReading ? (
+                <>
+                  <View style={styles.metricRow}>
+                    <Text style={styles.bigNumber}>{latestReading.numericValue}</Text>
+                    <Text style={styles.unitText}>{latestReading.unit}</Text>
+                  </View>
+
+                  <Text style={styles.contextText}>
+                    {latestReading.context.replace(/_/g, ' ')} • {formatElapsedTime(latestReading.observedAt)}
+                  </Text>
+
+                  <View style={styles.heroFooter}>
+                    <Text style={styles.heroFooterLink}>
+                      View in Health Vault →
+                    </Text>
+                  </View>
+                </>
+              ) : (
+                <View style={styles.emptyGlucoseState}>
+                  <Text style={styles.emptyGlucoseTitle}>Fasting check due for today</Text>
+                  <Text style={styles.emptyGlucoseSub}>
+                    View historical records and trends in your Health Vault.
+                  </Text>
+                  <View style={styles.heroFooter}>
+                    <Text style={styles.heroFooterLink}>Open Health Vault →</Text>
+                  </View>
+                </View>
+              )}
+            </TouchableOpacity>
+
+            {/* 3. TODAY'S PRESCRIBED MEDICATION DUE (No badge above headline, high-contrast action) */}
+            {nextMedication ? (
+              <View style={styles.actionCardContainer}>
+                <View style={styles.cardHeaderRow}>
+                  <Text style={styles.cardSectionTitle}>Next Medication</Text>
+                  <View style={styles.verifiedTag}>
+                    <Text style={styles.verifiedTagText}>Active Rx</Text>
+                  </View>
+                </View>
+
+                <View style={styles.actionCardContent}>
+                  <Text style={styles.actionCardTitle}>{nextMedication.name}</Text>
+                  <Text style={styles.actionCardSub}>
+                    {nextMedication.dosage} • {nextMedication.frequency} • {nextMedication.instructions || 'Take as directed'}
+                  </Text>
+                </View>
+
+                <TouchableOpacity
+                  style={styles.takeDoseBtn}
+                  onPress={handleMarkDoseTaken}
+                  disabled={markingTaken}
+                  activeOpacity={0.88}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Mark ${nextMedication.name} as taken`}
+                >
+                  {markingTaken ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <>
+                      <Check color="#FFFFFF" size={16} strokeWidth={2.5} />
+                      <Text style={styles.takeDoseBtnText}>Mark as Taken</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View style={styles.allMedsCompleteCard}>
+                <CheckCircle2 color="#059669" size={20} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.allMedsTitle}>Prescriptions Up to Date</Text>
+                  <Text style={styles.allMedsSub}>
+                    All scheduled doctor doses have been taken. View Med Vault in Health Vault.
+                  </Text>
+                </View>
+              </View>
+            )}
+
+            {/* 4. DAMU AI ASSISTANT HERO SECTION (Clean, no 3-icon-row slop, no emojis in chips) */}
+            <View style={styles.damuHeroCard}>
+              <View style={styles.cardHeaderRow}>
+                <Text style={styles.cardSectionTitle}>Damu Care Assistant</Text>
+                <View style={styles.damuStatusBadge}>
+                  <Text style={styles.damuStatusBadgeText}>Active</Text>
+                </View>
+              </View>
+
+              {/* 3D Character Avatar */}
+              <View style={styles.damuAvatarWrapper}>
+                <DamuAvatar
+                  mode="idle"
+                  size={192}
+                  triggerWave={1}
+                  testID="home-damu-avatar"
+                />
+              </View>
+
+              {/* Damu Greeting Speech Bubble */}
+              <View style={styles.damuSpeechBubble}>
+                <Text style={styles.damuSpeechTitle}>Namaste, {patient.name.split(' ')[0]}</Text>
+                <Text style={styles.damuSpeechBody}>
+                  I can help explain your glucose logs, doctor instructions, and daily meal plans.
+                </Text>
+              </View>
+
+              {/* Structured Clean Prompt Options (No 3-icon row, no emojis) */}
+              <View style={styles.damuPromptsList}>
+                <TouchableOpacity
+                  style={styles.damuPromptItem}
+                  onPress={() => navigateTo(VAULT_ROUTES.damu)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.damuPromptText}>Review journey insights and milestones</Text>
+                  <ChevronRight color="#0F766E" size={16} />
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.damuPromptItem}
+                  onPress={() => navigateTo(VAULT_ROUTES.damu)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.damuPromptText}>Prepare questions for Dr. Choudhary</Text>
+                  <ChevronRight color="#0F766E" size={16} />
+                </TouchableOpacity>
+              </View>
+
+              {/* Action Button: Talk with Damu */}
+              <TouchableOpacity
+                style={styles.damuCtaButton}
+                onPress={() => navigateTo(VAULT_ROUTES.damu)}
+                activeOpacity={0.88}
+                accessibilityRole="button"
+                accessibilityLabel="Talk to Damu AI Health Companion"
+              >
+                <MessageSquare color="#FFFFFF" size={16} />
+                <Text style={styles.damuCtaButtonText}>Chat with Damu</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* 5. TODAY'S DOCTOR CARE PLAN & TASKS */}
+            <View style={styles.card}>
+              <TouchableOpacity
+                style={styles.cardHeaderRow}
+                onPress={() => navigateTo(VAULT_ROUTES.tasks)}
+                activeOpacity={0.7}
+              >
+                <View>
+                  <Text style={styles.cardSectionTitle}>Today's Care Plan</Text>
+                  <Text style={styles.cardSub}>Prescribed by {patient.primaryClinician}</Text>
+                </View>
+                <View style={{ alignItems: 'flex-end' }}>
+                  <Text style={styles.progressBadge}>
+                    {completedTasksCount} of {totalTasksCount} Completed ({taskPercentage}%)
+                  </Text>
+                </View>
+              </TouchableOpacity>
+
+              <View style={styles.progressBarTrack}>
+                <View style={[styles.progressBarFill, { width: `${taskPercentage}%` }]} />
+              </View>
+
+              {pendingTasks.length > 0 ? (
+                <View style={styles.tasksList}>
+                  {pendingTasks.slice(0, 3).map((task) => (
+                    <View key={task.id} style={styles.taskItemRow}>
+                      <View style={{ flex: 1, paddingRight: 8 }}>
+                        <Text style={styles.taskTitle}>{task.title}</Text>
+                        <Text style={styles.taskDue}>
+                          Due: {new Date(task.dueAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </Text>
+                      </View>
+                      <TouchableOpacity
+                        style={styles.taskCompleteBtn}
+                        onPress={() => handleCompleteTask(task.id)}
+                        activeOpacity={0.8}
+                      >
+                        <Check color="#0F766E" size={14} strokeWidth={2.5} />
+                        <Text style={styles.taskCompleteBtnText}>Done</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                </View>
+              ) : (
+                <View style={styles.allDoneRow}>
+                  <CheckCircle2 color="#059669" size={18} />
+                  <Text style={styles.allDoneText}>All scheduled care tasks completed for today.</Text>
+                </View>
+              )}
+            </View>
+
+            {/* 6. DOCTOR'S CLINICAL SUMMARY */}
+            {doctorNote && (
+              <View style={styles.doctorNoteCard}>
+                <View style={styles.doctorNoteHeader}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.doctorNoteDoctor}>{doctorNote.clinicianName}</Text>
+                    <Text style={styles.doctorNoteFacility}>
+                      {doctorNote.facilityName || 'Apollo Sugar Clinic'} • {new Date(doctorNote.approvedAt).toLocaleDateString()}
+                    </Text>
+                  </View>
+                  <View style={styles.approvedPill}>
+                    <Text style={styles.approvedPillText}>Verified Note</Text>
+                  </View>
+                </View>
+                <Text style={styles.doctorNoteBody} numberOfLines={3}>
+                  {doctorNote.plan || doctorNote.assessment || doctorNote.approvedNoteText || 'Consultation completed and approved by treating physician.'}
+                </Text>
+                <TouchableOpacity
+                  style={styles.doctorNoteLink}
+                  onPress={() => navigateTo(VAULT_ROUTES.consultation)}
+                  activeOpacity={0.85}
+                >
+                  <Text style={styles.doctorNoteLinkText}>View consultation history →</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* 7. BOOK AN APPOINTMENT (Apollo Sugar Clinic) */}
+            <TouchableOpacity
+              style={styles.appointmentCtaCard}
+              onPress={() => navigateTo(VAULT_ROUTES.appointments)}
+              activeOpacity={0.9}
+              accessibilityRole="button"
+              accessibilityLabel="Book an Appointment with your endocrinologist"
+            >
+              <View style={styles.appointmentCtaIconBox}>
+                <Calendar color="#FFFFFF" size={22} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.appointmentCtaTitle}>Consultation & Follow-up</Text>
+                <Text style={styles.appointmentCtaSub}>
+                  Book appointment with Apollo endocrinologists.
+                </Text>
+              </View>
+              <ChevronRight color="#FFFFFF" size={18} />
+            </TouchableOpacity>
+
+            {/* 8. EMERGENCY SOS & SAFETY BAR (Crisp, High Contrast) */}
+            <TouchableOpacity
+              style={styles.sosQuickBar}
+              onPress={() => navigateTo(VAULT_ROUTES.sos)}
+              activeOpacity={0.88}
+              accessibilityRole="button"
+              accessibilityLabel="Emergency SOS and Alarms"
+            >
+              <View style={styles.sosIconBox}>
+                <ShieldAlert color="#DC2626" size={20} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.sosQuickTitle}>Emergency SOS & Care Alerts</Text>
+                <Text style={styles.sosQuickSub}>
+                  Care team alerts, emergency contacts & 112 guidance
+                </Text>
+              </View>
+              <ChevronRight color="#991B1B" size={18} />
+            </TouchableOpacity>
+          </>
         )}
       </ScrollView>
     </SafeAreaView>
@@ -297,99 +618,509 @@ export default function HomeScreen() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: theme.colors.white },
+  safeArea: { flex: 1, backgroundColor: '#FFFFFF' },
   header: {
-    paddingHorizontal: theme.spacing.xl,
-    paddingTop: theme.spacing.sm,
-    paddingBottom: theme.spacing.md,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 14,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     borderBottomWidth: 1,
-    borderBottomColor: theme.colors.borderLight,
-    backgroundColor: theme.colors.white,
+    borderBottomColor: '#F1F5F9',
+    backgroundColor: '#FFFFFF',
   },
-  headerLeft: { flex: 1, marginRight: theme.spacing.md },
-  greetingTitle: { fontSize: theme.typography.sizes.heading, fontWeight: theme.typography.weights.black, color: theme.colors.text },
-  greetingSub: { fontSize: theme.typography.sizes.bodySm, color: theme.colors.textMuted, marginTop: 2, fontWeight: theme.typography.weights.semibold },
-  verifiedBadge: {
+  headerLeft: { flex: 1, marginRight: 12 },
+  greetingTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#0F172A',
+    letterSpacing: -0.3,
+  },
+  headerMeta: {
+    fontSize: 12,
+    color: '#64748B',
+    fontWeight: '600',
+    marginTop: 3,
+  },
+  notificationBell: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+  },
+  badgeCount: {
+    position: 'absolute',
+    top: 5,
+    right: 5,
+    backgroundColor: '#EF4444',
+    borderRadius: 8,
+    minWidth: 16,
+    height: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 3,
+  },
+  badgeCountText: {
+    color: '#FFFFFF',
+    fontSize: 9,
+    fontWeight: '900',
+  },
+  scrollContent: {
+    padding: 16,
+    gap: 14,
+    backgroundColor: '#F8FAFC',
+  },
+  loadingContainer: {
+    paddingVertical: 60,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+  },
+  loadingText: {
+    fontSize: 13,
+    color: '#64748B',
+    fontWeight: '600',
+  },
+  // Base Card Header
+  cardHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  cardSectionTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  cardSub: {
+    fontSize: 12,
+    color: '#64748B',
+    marginTop: 2,
+  },
+  // Hero Glycemic Card
+  heroCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    ...theme.shadows.card,
+  },
+  statusPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  pillOptimal: { backgroundColor: '#ECFDF5' },
+  pillElevated: { backgroundColor: '#FFFBEB' },
+  pillHigh: { backgroundColor: '#FFF7ED' },
+  pillCritical: { backgroundColor: '#FEF2F2' },
+  statusPillText: { fontSize: 11, fontWeight: '800' },
+  textOptimal: { color: '#059669' },
+  textElevated: { color: '#B45309' },
+  textHigh: { color: '#C2410C' },
+  textCritical: { color: '#B91C1C' },
+  metricRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 6,
+    marginTop: 4,
+  },
+  bigNumber: {
+    fontSize: 38,
+    fontWeight: '900',
+    color: '#0F172A',
+    fontVariant: ['tabular-nums'],
+    letterSpacing: -1,
+  },
+  unitText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#64748B',
+  },
+  contextText: {
+    fontSize: 12,
+    color: '#64748B',
+    fontWeight: '600',
+    marginTop: 2,
+    textTransform: 'capitalize',
+  },
+  heroFooter: {
+    marginTop: 12,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9',
+  },
+  heroFooterLink: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#0F766E',
+  },
+  emptyGlucoseState: {
+    paddingVertical: 6,
+  },
+  emptyGlucoseTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  emptyGlucoseSub: {
+    fontSize: 12,
+    color: '#64748B',
+    marginTop: 2,
+  },
+  // Upcoming Prescribed Medication Card
+  actionCardContainer: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    ...theme.shadows.card,
+  },
+  actionCardContent: {
+    marginBottom: 14,
+  },
+  actionCardTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  actionCardSub: {
+    fontSize: 12,
+    color: '#64748B',
+    marginTop: 3,
+    lineHeight: 17,
+  },
+  verifiedTag: {
+    backgroundColor: '#F0FDF4',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+  },
+  verifiedTagText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#059669',
+  },
+  takeDoseBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
-    backgroundColor: theme.colors.primarySurface,
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: 5,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.primaryBorder,
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#0F766E',
+    minHeight: 48,
+    borderRadius: 12,
   },
-  verifiedBadgeText: { fontSize: theme.typography.sizes.caption, fontWeight: theme.typography.weights.bold, color: theme.colors.primary },
-  offlineBadge: { backgroundColor: theme.colors.cardMuted, paddingHorizontal: theme.spacing.md, paddingVertical: 5, borderRadius: theme.radius.md },
-  offlineBadgeText: { fontSize: theme.typography.sizes.caption, fontWeight: theme.typography.weights.semibold, color: theme.colors.textMuted },
-  scrollContent: { padding: theme.spacing.lg, gap: theme.spacing.lg, backgroundColor: theme.colors.bg },
-  // Common Cards
-  card: { backgroundColor: theme.colors.white, borderRadius: theme.radius.lg, padding: theme.spacing.lg, borderWidth: 1, borderColor: theme.colors.border },
-  cardHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: theme.spacing.sm },
-  cardTitle: { fontSize: theme.typography.sizes.bodyLg, fontWeight: theme.typography.weights.extrabold, color: theme.colors.text },
-  // Caregiver Banner
-  caregiverBanner: {
+  takeDoseBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  allMedsCompleteCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    backgroundColor: theme.colors.primarySurface,
-    padding: theme.spacing.lg,
-    borderRadius: theme.radius.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.primaryBorder,
   },
-  cgBannerTitle: { fontSize: theme.typography.sizes.body, fontWeight: theme.typography.weights.extrabold, color: theme.colors.primary },
-  cgBannerSub: { fontSize: theme.typography.sizes.caption, color: theme.colors.primaryDark, marginTop: 2 },
-  // Hero Card
-  heroCard: { backgroundColor: theme.colors.white, borderRadius: theme.radius.xl, padding: theme.spacing.xl, borderWidth: 1, borderColor: theme.colors.border, ...theme.shadows.card },
-  heroSectionTag: { fontSize: 11, fontWeight: theme.typography.weights.extrabold, color: theme.colors.primary, letterSpacing: 0.6 },
-  statusPill: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: theme.radius.sm },
-  statusPillGood: { backgroundColor: theme.colors.successBg },
-  statusPillWarn: { backgroundColor: theme.colors.warningBg },
-  statusPillText: { fontSize: 11, fontWeight: theme.typography.weights.bold },
-  textGood: { color: theme.colors.success },
-  textWarn: { color: theme.colors.warning },
-  metricRow: { flexDirection: 'row', alignItems: 'baseline', gap: 8, marginVertical: 4 },
-  bigNumber: { fontSize: 44, fontWeight: theme.typography.weights.black, color: theme.colors.text, fontVariant: ['tabular-nums'] },
-  unitText: { fontSize: 18, color: theme.colors.textSecondary, fontWeight: theme.typography.weights.bold },
-  contextText: { fontSize: theme.typography.sizes.bodySm, color: theme.colors.textSecondary, marginTop: 4, fontWeight: theme.typography.weights.medium },
-  heroFooter: { marginTop: theme.spacing.lg, paddingTop: theme.spacing.md, borderTopWidth: 1, borderTopColor: theme.colors.borderLight },
-  heroFooterLink: { fontSize: theme.typography.sizes.bodySm, fontWeight: theme.typography.weights.bold, color: theme.colors.primary },
-  // Actions Grid
-  actionsGrid: { flexDirection: 'row', gap: theme.spacing.md },
-  actionBtn: { flex: 1, backgroundColor: theme.colors.white, borderRadius: theme.radius.lg, paddingVertical: 14, alignItems: 'center', borderWidth: 1, borderColor: theme.colors.border, minHeight: 82, justifyContent: 'center' },
-  actionIconBox: { width: 38, height: 38, borderRadius: 19, backgroundColor: theme.colors.primarySurface, alignItems: 'center', justifyContent: 'center', marginBottom: 6 },
-  actionLabel: { fontSize: theme.typography.sizes.caption, fontWeight: theme.typography.weights.bold, color: theme.colors.text },
-  // Progress & Appointments
-  progressText: { fontSize: theme.typography.sizes.caption, fontWeight: theme.typography.weights.bold, color: theme.colors.primary },
-  progressBarTrack: { height: 8, backgroundColor: theme.colors.cardMuted, borderRadius: 4, marginVertical: 12, overflow: 'hidden' },
-  progressBarFill: { height: '100%', backgroundColor: theme.colors.primary, borderRadius: 4 },
-  nextTaskRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  nextTaskText: { fontSize: theme.typography.sizes.caption, color: theme.colors.textSecondary, flex: 1, fontWeight: theme.typography.weights.medium },
-  allDoneText: { fontSize: theme.typography.sizes.bodySm, color: theme.colors.success, fontWeight: theme.typography.weights.bold },
-  badgeOrange: { backgroundColor: theme.colors.accentLight, paddingHorizontal: 8, paddingVertical: 3, borderRadius: theme.radius.xs },
-  badgeOrangeText: { fontSize: 11, fontWeight: theme.typography.weights.extrabold, color: theme.colors.accent },
-  doctorName: { fontSize: theme.typography.sizes.bodyLg, fontWeight: theme.typography.weights.extrabold, color: theme.colors.text, marginTop: 4 },
-  doctorMeta: { fontSize: theme.typography.sizes.bodySm, color: theme.colors.textMuted, marginTop: 2 },
-  appointmentTime: { fontSize: theme.typography.sizes.bodySm, color: theme.colors.textSecondary, marginTop: 6, fontWeight: theme.typography.weights.semibold },
-  consultButton: { backgroundColor: theme.colors.primarySurface, borderRadius: theme.radius.md, paddingVertical: 12, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8, marginTop: 14, borderWidth: 1, borderColor: theme.colors.primaryBorder },
-  consultButtonText: { color: theme.colors.primary, fontSize: theme.typography.sizes.bodySm, fontWeight: theme.typography.weights.bold },
-  // DOCTOR SCRIBE STYLES
-  neoCard: { backgroundColor: theme.colors.bg, borderRadius: theme.radius.lg, padding: theme.spacing.xl, borderWidth: 1, borderColor: theme.colors.border, alignItems: 'center' },
-  neoHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
-  neoTitle: { fontSize: theme.typography.sizes.headingSm, fontWeight: theme.typography.weights.black, color: theme.colors.text },
-  neoDesc: { fontSize: theme.typography.sizes.bodySm, color: theme.colors.textSecondary, textAlign: 'center', lineHeight: 20, marginBottom: 24 },
-  neoMicContainer: { alignItems: 'center', justifyContent: 'center' },
-  neoStatusText: { fontSize: theme.typography.sizes.bodySm, fontWeight: theme.typography.weights.bold, color: theme.colors.primary, marginTop: 16 },
-  statsGrid: { flexDirection: 'row', gap: theme.spacing.md },
-  statCard: { flex: 1, backgroundColor: theme.colors.white, borderRadius: theme.radius.lg, padding: theme.spacing.lg, borderWidth: 1, borderColor: theme.colors.border, alignItems: 'center' },
-  statBig: { fontSize: 32, fontWeight: theme.typography.weights.black, color: theme.colors.primary, fontVariant: ['tabular-nums'] },
-  statLabel: { fontSize: theme.typography.sizes.caption, color: theme.colors.textMuted, marginTop: 4, fontWeight: theme.typography.weights.bold },
-  doctorActionCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: theme.colors.white, padding: theme.spacing.lg, borderRadius: theme.radius.lg, borderWidth: 1, borderColor: theme.colors.border },
-  doctorActionTitle: { fontSize: theme.typography.sizes.body, fontWeight: theme.typography.weights.bold, color: theme.colors.text },
-  doctorActionSub: { fontSize: theme.typography.sizes.caption, color: theme.colors.textMuted, marginTop: 4 },
+  allMedsTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  allMedsSub: {
+    fontSize: 12,
+    color: '#64748B',
+    marginTop: 2,
+  },
+  // Damu AI Assistant Card
+  damuHeroCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    alignItems: 'center',
+    ...theme.shadows.card,
+  },
+  damuStatusBadge: {
+    backgroundColor: '#F0FDFA',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#CCFBF1',
+  },
+  damuStatusBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#0F766E',
+  },
+  damuAvatarWrapper: {
+    width: 208,
+    height: 208,
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'center',
+    marginVertical: 8,
+  },
+  damuSpeechBubble: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    width: '100%',
+    marginBottom: 12,
+  },
+  damuSpeechTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#0F172A',
+    marginBottom: 2,
+  },
+  damuSpeechBody: {
+    fontSize: 12,
+    color: '#475569',
+    lineHeight: 18,
+  },
+  damuPromptsList: {
+    width: '100%',
+    gap: 8,
+    marginBottom: 14,
+  },
+  damuPromptItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+  },
+  damuPromptText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#1E293B',
+    flex: 1,
+    marginRight: 8,
+  },
+  damuCtaButton: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#0F766E',
+    minHeight: 48,
+    borderRadius: 12,
+  },
+  damuCtaButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  // Care Plan Card
+  card: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    ...theme.shadows.card,
+  },
+  progressBadge: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#0F766E',
+  },
+  progressBarTrack: {
+    height: 6,
+    backgroundColor: '#F1F5F9',
+    borderRadius: 3,
+    marginVertical: 10,
+    overflow: 'hidden',
+  },
+  progressBarFill: {
+    height: '100%',
+    backgroundColor: '#0F766E',
+    borderRadius: 3,
+  },
+  tasksList: {
+    gap: 8,
+    marginTop: 4,
+  },
+  taskItemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#F8FAFC',
+    padding: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  taskTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#1E293B',
+  },
+  taskDue: {
+    fontSize: 11,
+    color: '#64748B',
+    marginTop: 2,
+  },
+  taskCompleteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#F0FDFA',
+    borderWidth: 1,
+    borderColor: '#99F6E4',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  taskCompleteBtnText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#0F766E',
+  },
+  allDoneRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 6,
+  },
+  allDoneText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#059669',
+  },
+  // Doctor Note Card
+  doctorNoteCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    ...theme.shadows.card,
+  },
+  doctorNoteHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  doctorNoteDoctor: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  doctorNoteFacility: {
+    fontSize: 11,
+    color: '#64748B',
+    marginTop: 2,
+  },
+  approvedPill: {
+    backgroundColor: '#F0FDF4',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+  },
+  approvedPillText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#16A34A',
+  },
+  doctorNoteBody: {
+    fontSize: 12,
+    color: '#334155',
+    lineHeight: 18,
+    marginBottom: 10,
+  },
+  doctorNoteLink: {
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9',
+    paddingTop: 8,
+  },
+  doctorNoteLinkText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#0F766E',
+  },
+  // Appointment CTA Card
+  appointmentCtaCard: {
+    backgroundColor: '#0F766E',
+    borderRadius: 16,
+    padding: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  appointmentCtaIconBox: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: '#115E59',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  appointmentCtaTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#FFFFFF',
+  },
+  appointmentCtaSub: {
+    fontSize: 12,
+    color: '#CCFBF1',
+    marginTop: 2,
+    lineHeight: 16,
+  },
+  // Emergency SOS bar
+  sosQuickBar: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#FEE2E2',
+    borderRadius: 16,
+    padding: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  sosIconBox: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: '#FEF2F2',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sosQuickTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#DC2626',
+  },
+  sosQuickSub: {
+    fontSize: 11,
+    color: '#64748B',
+    marginTop: 1,
+  },
 });

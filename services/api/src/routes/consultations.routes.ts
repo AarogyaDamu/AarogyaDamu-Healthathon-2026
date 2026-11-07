@@ -1,12 +1,11 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
-import { PrismaClient } from '@prisma/client';
 import { requireAuth } from '../middleware/auth';
 import { validateRequest } from '../middleware/validate';
 import { resolvePatientContext } from '../permissions/evaluator';
 
 const router = Router();
-const prisma = new PrismaClient();
+import { prisma } from '../db/prisma';
 
 const prepSchema = z.object({
   concernsAndQuestions: z.string().min(3),

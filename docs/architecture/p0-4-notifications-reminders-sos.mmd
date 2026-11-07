@@ -1,0 +1,90 @@
+```mermaid
+flowchart TD
+  subgraph PresentationLayer["Presentation Layer (Two-Product Architecture)"]
+    subgraph MobileApp["Patient / Caregiver Mobile App (Expo / React Native)"]
+      M_SOS_BTN["2-Step Deliberate SOS Trigger\n(Explicit Confirmation Checkbox)"]
+      M_ACT_SOS["Active SOS Status Card\n(In-App Dispatched, Carrier Status)"]
+      M_CANCEL_MODAL["SOS Cancellation Modal\n(Mandatory Audit Reason >= 3 chars)"]
+      M_DISCLAIMER["Emergency Limitation Notice\n(NOT 112 / 108 Emergency Substitute)"]
+      M_CONTACTS["Emergency Contacts Manager\n(Primary, Relationship, Phone, Notify on SOS)"]
+      M_REMINDERS["Care Reminders Screen\n(Daily/Weekly Alarms, Acknowledge Action)"]
+      M_NOTIF_INBOX["In-App Notification Inbox\n(Unread Count, Mark Read, Preferences)"]
+    end
+
+    subgraph WebPortal["Doctor Web Portal (React / Vite)"]
+      W_SOS_BANNER["Critical Active SOS Alert Banner\n(Immediate Visibility on Patient Selection)"]
+      W_SAFETY_TAB["Safety & SOS Drawer Tab\n(Active Emergency, Contacts, Care Reminders)"]
+      W_GOV_BADGE["Clinical Governance Banner\n(PENDING_CLINICIAN_APPROVAL)"]
+    end
+  end
+
+  subgraph ServiceLayer["Backend API Service Layer (services/api)"]
+    FF["Feature Flag Middleware\nP0_4_NOTIFICATIONS_SOS (dev=enabled)"]
+    
+    subgraph SecurityRBAC["Authorization & RBAC Engine (permissions/evaluator.ts)"]
+      AUTH_PATIENT["Patient Self-Ownership Check"]
+      AUTH_CAREGIVER["Active Caregiver Consent Validator\n(VIEW/MANAGE_REMINDERS, VIEW/MANAGE_EMERGENCY, VIEW_NOTIFICATIONS)"]
+      AUTH_DOCTOR["Active Doctor-Patient Assignment Validator\n(DoctorPatientAssignment status=ACTIVE)"]
+    end
+
+    subgraph Routes["HTTP Endpoints"]
+      R_NOTIF["/api/notifications\nGET, PATCH /:id/read, POST /read-all, GET/PUT /preferences"]
+      R_REMIND["/api/reminders\nGET, POST, PATCH /:id, POST /:id/acknowledge, DELETE /:id"]
+      R_EMERG["/api/emergency\nGET/POST/PATCH/DELETE /contacts, GET /sos/active, POST /sos/activate, POST /sos/:id/cancel"]
+    end
+
+    subgraph AuditEngine["Audit & Logging Engine"]
+      AUDIT_LOG["AuditLogger (Structured AuditLog Table)"]
+      CLINICAL_LOG["ClinicalAuditLogger (safeClinicalLog with PHI Sanitization)"]
+    end
+  end
+
+  subgraph PersistenceLayer["Persistence Layer (SQLite / Prisma - 16 Migrations)"]
+    DB_PREF[("NotificationPreference\npushEnabled, emailEnabled, smsEnabled,\nquietHours, reminderTiming")]
+    DB_REMIND[("Reminder\ntitle, category, scheduledTime, recurrence,\nstatus, entityId, acknowledgedAt, cancelledAt")]
+    DB_CONTACT[("EmergencyContact\nname, relationship, phoneNumber, email,\nisPrimary, notifyOnSos")]
+    DB_SOS[("EmergencySosEvent\nstatus, reason, locationConsent, lat/lng,\nlocationStatus, deliveryStatus, externalCarrierStatus,\ncancelledAt, cancelledReason, resolvedAt")]
+    DB_AUDIT[("AuditLog\nActor, Action, Entity, Diff, Timestamp")]
+  end
+
+  subgraph ClinicalGuardrails["Clinical Safety & Compliance Guardrails"]
+    CG1["Deliberate SOS Confirmation\n(confirmEmergency: true required)"]
+    CG2["Emergency Limitation Notice\n(Clear disclaimers across mobile & web: NOT 112/108 substitute)"]
+    CG3["Delivery Transparency\n(IN_APP_DISPATCHED; externalCarrierStatus: UNCONFIGURED)"]
+    CG4["Location Consent & Zero Fabrication\n(PERMISSION_DENIED if consent=false, no fake GPS)"]
+    CG5["Non-Prescribing Reminder Rule\n(Never alter dosage, never auto-mark taken, unreviewed med warning)"]
+    CG6["Role-Based Isolation\n(Strict 403 Forbidden for unassigned doctors or unconsented caregivers)"]
+  end
+
+  M_SOS_BTN -->|POST /api/emergency/sos/activate| FF
+  M_ACT_SOS -->|POST /api/emergency/sos/:id/cancel| FF
+  M_CONTACTS -->|GET/POST /api/emergency/contacts| FF
+  M_REMINDERS -->|GET/POST /api/reminders| FF
+  M_NOTIF_INBOX -->|GET /api/notifications| FF
+
+  W_SOS_BANNER -->|GET /api/emergency/sos/active| FF
+  W_SAFETY_TAB -->|GET /api/emergency/contacts, /reminders| FF
+
+  FF --> SecurityRBAC
+  SecurityRBAC --> AUTH_PATIENT
+  SecurityRBAC --> AUTH_CAREGIVER
+  SecurityRBAC --> AUTH_DOCTOR
+
+  AUTH_PATIENT --> Routes
+  AUTH_CAREGIVER --> Routes
+  AUTH_DOCTOR --> Routes
+
+  R_NOTIF --> DB_PREF
+  R_REMIND --> DB_REMIND
+  R_EMERG --> DB_CONTACT
+  R_EMERG --> DB_SOS
+
+  R_NOTIF --> AuditEngine
+  R_REMIND --> AuditEngine
+  R_EMERG --> AuditEngine
+
+  AuditEngine --> DB_AUDIT
+
+  Routes -.-> ClinicalGuardrails
+```
+

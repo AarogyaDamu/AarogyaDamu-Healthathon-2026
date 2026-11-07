@@ -1,159 +1,223 @@
-export interface ExtractedLabItem {
-  testName: string;
-  value: number;
-  unit: string;
-  referenceRange?: string;
-  flag?: 'NORMAL' | 'HIGH' | 'LOW';
+import { randomUUID } from 'crypto';
+import { ImageAnnotatorClient } from '@google-cloud/vision';
+import { Storage } from '@google-cloud/storage';
+import { env } from '../config/env';
+
+export type OcrErrorCode = 'CONFIGURATION' | 'CREDENTIALS' | 'ACCESS' | 'PROVIDER' | 'CLEANUP';
+
+export class MedicalReportOcrError extends Error {
+  constructor(
+    public readonly code: OcrErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'MedicalReportOcrError';
+  }
 }
 
-export interface ExtractedReportData {
-  reportTitle: string;
-  category: 'LAB_REPORT' | 'PRESCRIPTION' | 'DISCHARGE_SUMMARY' | 'IMAGING';
-  issuingFacility: string;
-  reportDate: string; // ISO string
-  confidenceScore: number;
-  items: ExtractedLabItem[];
-  rawSummaryText: string;
+export interface MedicalReportOcrResult {
+  provider: 'GOOGLE_CLOUD_VISION' | 'SYNTHETIC_DEMO_OCR';
+  text: string;
 }
 
-export function parseClinicalText(rawText: string, fallbackFileName: string): ExtractedReportData {
-  const text = rawText.replace(/\r\n/g, '\n');
-  const lower = text.toLowerCase();
-
-  // 1. Detect Issuing Facility
-  let facility = 'Diagnostic Pathology Laboratory';
-  const facilityMatches: Array<{ pattern: RegExp; name: string }> = [
-    { pattern: /metropolis/i, name: 'Metropolis Healthcare' },
-    { pattern: /dr\.?\s*lal\s*path/i, name: 'Dr. Lal PathLabs' },
-    { pattern: /srl\s*diagnostics/i, name: 'SRL Diagnostics' },
-    { pattern: /suburban\s*diagnostics/i, name: 'Suburban Diagnostics' },
-    { pattern: /apollo\s*clinic/i, name: 'Apollo Clinic & Diagnostics' },
-    { pattern: /sahyadri/i, name: 'Sahyadri Specialty Hospital' },
-    { pattern: /khem/i, name: 'KEM Hospital Diagnostics' },
-    { pattern: /ruby\s*hall/i, name: 'Ruby Hall Clinic' },
-  ];
-
-  for (const f of facilityMatches) {
-    if (f.pattern.test(text)) {
-      facility = f.name;
-      break;
-    }
-  }
-
-  // 2. Detect Report Date
-  let reportDate = new Date().toISOString();
-  const dateMatch = text.match(/(\d{1,2})[\/\.-](\d{1,2})[\/\.-](\d{2,4})/);
-  if (dateMatch) {
-    const d = parseInt(dateMatch[1], 10);
-    const m = parseInt(dateMatch[2], 10) - 1;
-    let y = parseInt(dateMatch[3], 10);
-    if (y < 100) y += 2000;
-    const parsedDate = new Date(y, m, d);
-    if (!isNaN(parsedDate.getTime())) {
-      reportDate = parsedDate.toISOString();
-    }
-  }
-
-  // 3. Extract Test Metrics
-  const items: ExtractedLabItem[] = [];
-
-  // HbA1c Extraction (e.g., HbA1c: 6.3%, Glycated Hemoglobin: 7.1)
-  const hba1cMatch = text.match(/(?:hba1c|glycated\s*hemoglobin|a1c)[^\d\n]*[:=]?\s*(\d{1,2}(?:\.\d{1,2})?)\s*%/i);
-  if (hba1cMatch) {
-    const val = parseFloat(hba1cMatch[1]);
-    items.push({
-      testName: 'Glycated Hemoglobin (HbA1c)',
-      value: val,
-      unit: '%',
-      referenceRange: '4.0 - 5.6 % (Non-diabetic)',
-      flag: val > 6.5 ? 'HIGH' : val < 4.0 ? 'LOW' : 'NORMAL',
-    });
-  }
-
-  // Fasting Blood Glucose (e.g., Fasting Glucose: 118 mg/dL, FBS 122)
-  const fastingMatch = text.match(/(?:fasting\s*(?:blood\s*)?(?:sugar|glucose)|fbs)[^\d\n]*[:=]?\s*(\d{2,3}(?:\.\d{1,2})?)\s*(?:mg\/dl)?/i);
-  if (fastingMatch) {
-    const val = parseFloat(fastingMatch[1]);
-    items.push({
-      testName: 'Fasting Blood Glucose',
-      value: val,
-      unit: 'mg/dL',
-      referenceRange: '70 - 99 mg/dL',
-      flag: val > 125 ? 'HIGH' : val < 70 ? 'LOW' : 'NORMAL',
-    });
-  }
-
-  // Post-Prandial Blood Glucose (e.g., PPBS, Post Meal: 156 mg/dL)
-  const ppMatch = text.match(/(?:post\s*(?:prandial|meal)\s*(?:sugar|glucose)|ppbs)[^\d\n]*[:=]?\s*(\d{2,3}(?:\.\d{1,2})?)\s*(?:mg\/dl)?/i);
-  if (ppMatch) {
-    const val = parseFloat(ppMatch[1]);
-    items.push({
-      testName: 'Post-Meal Glucose (2hr PP)',
-      value: val,
-      unit: 'mg/dL',
-      referenceRange: '< 140 mg/dL',
-      flag: val > 180 ? 'HIGH' : val < 70 ? 'LOW' : 'NORMAL',
-    });
-  }
-
-  // Total Cholesterol
-  const cholMatch = text.match(/(?:total\s*cholesterol)[^\d\n]*[:=]?\s*(\d{2,3}(?:\.\d{1,2})?)\s*(?:mg\/dl)?/i);
-  if (cholMatch) {
-    const val = parseFloat(cholMatch[1]);
-    items.push({
-      testName: 'Total Cholesterol',
-      value: val,
-      unit: 'mg/dL',
-      referenceRange: '< 200 mg/dL',
-      flag: val > 200 ? 'HIGH' : 'NORMAL',
-    });
-  }
-
-  // Serum Creatinine
-  const creatMatch = text.match(/(?:serum\s*creatinine|creatinine)[^\d\n]*[:=]?\s*(\d{1,2}(?:\.\d{1,2})?)\s*(?:mg\/dl)?/i);
-  if (creatMatch) {
-    const val = parseFloat(creatMatch[1]);
-    items.push({
-      testName: 'Serum Creatinine',
-      value: val,
-      unit: 'mg/dL',
-      referenceRange: '0.7 - 1.3 mg/dL',
-      flag: val > 1.3 ? 'HIGH' : 'NORMAL',
-    });
-  }
-
-  // Fallback if no specific values detected: create default structured estimate
-  if (items.length === 0) {
-    items.push({
-      testName: 'Blood Glucose (Fasting)',
-      value: 118,
-      unit: 'mg/dL',
-      referenceRange: '70 - 99 mg/dL',
-      flag: 'HIGH',
-    });
-    items.push({
-      testName: 'Glycated Hemoglobin (HbA1c)',
-      value: 6.3,
-      unit: '%',
-      referenceRange: '4.0 - 5.6 %',
-      flag: 'NORMAL',
-    });
-  }
-
-  let reportTitle = fallbackFileName.replace(/\.[^/.]+$/, '').replace(/[_-]/g, ' ');
-  if (items.some((i) => i.testName.includes('HbA1c'))) {
-    reportTitle = `Quarterly Glycemic Panel (HbA1c: ${items.find((i) => i.testName.includes('HbA1c'))?.value}%)`;
-  } else if (items.some((i) => i.testName.includes('Glucose'))) {
-    reportTitle = `Blood Glucose Evaluation Report`;
-  }
-
+function extractSyntheticDemoText(mimeType: string, byteLength: number): MedicalReportOcrResult {
+  const fileKind = mimeType === 'application/pdf' ? 'PDF' : 'image';
   return {
-    reportTitle,
-    category: lower.includes('prescription') ? 'PRESCRIPTION' : 'LAB_REPORT',
-    issuingFacility: facility,
-    reportDate,
-    confidenceScore: 0.94,
-    items,
-    rawSummaryText: `OCR identified ${items.length} biochemical parameters from ${facility}.`,
+    provider: 'SYNTHETIC_DEMO_OCR',
+    text: [
+      'SYNTHETIC DEMO OCR — NOT REAL PATIENT DATA',
+      'AarogyaDamu sample medical report',
+      `Source format: ${fileKind} (${byteLength} bytes)`,
+      'Patient: Synthetic Demo Patient',
+      'Report date: 06 Nov 2026',
+      '',
+      'HbA1c: 6.8 %',
+      'Fasting glucose: 112 mg/dL',
+      'Blood pressure: 128/82 mmHg',
+      'Clinical note: Continue the documented care plan and review with the assigned clinician.',
+      '',
+      'This text is generated by the local synthetic OCR provider for product demonstration only.',
+      'It is not a clinical interpretation and must not be used for diagnosis or treatment.',
+    ].join('\n'),
   };
+}
+
+function providerError(error: unknown): MedicalReportOcrError {
+  if (error instanceof MedicalReportOcrError) return error;
+
+  const message = error instanceof Error ? error.message : String(error);
+  if (/default credentials|application default credentials|credential/i.test(message)) {
+    return new MedicalReportOcrError(
+      'CREDENTIALS',
+      'Google Cloud credentials are unavailable. Configure GOOGLE_APPLICATION_CREDENTIALS or Application Default Credentials.',
+    );
+  }
+  if (/permission|forbidden|unauthorized|403/i.test(message)) {
+    return new MedicalReportOcrError(
+      'ACCESS',
+      'Google Cloud denied access to the Vision API or temporary storage. Check the service account permissions.',
+    );
+  }
+  return new MedicalReportOcrError(
+    'PROVIDER',
+    'Google Cloud Vision could not process this report. Confirm the Vision API is enabled and try again.',
+  );
+}
+
+function getTextsFromVisionOutput(content: Buffer): string[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content.toString('utf8')) as unknown;
+  } catch {
+    throw new MedicalReportOcrError('PROVIDER', 'Google Cloud Vision returned an unreadable OCR result.');
+  }
+
+  if (!parsed || typeof parsed !== 'object') return [];
+  const responses = (parsed as { responses?: unknown }).responses;
+  if (!Array.isArray(responses)) return [];
+
+  const texts: string[] = [];
+  for (const response of responses) {
+    if (!response || typeof response !== 'object') continue;
+    const result = response as {
+      error?: { message?: string };
+      fullTextAnnotation?: { text?: string };
+    };
+    if (result.error?.message) {
+      throw new MedicalReportOcrError(
+        'PROVIDER',
+        'Google Cloud Vision could not read one or more pages. Check the PDF and try again.',
+      );
+    }
+    if (typeof result.fullTextAnnotation?.text === 'string') {
+      texts.push(result.fullTextAnnotation.text);
+    }
+  }
+  return texts;
+}
+
+async function extractPdfText(
+  vision: ImageAnnotatorClient,
+  storage: Storage,
+  bucketName: string,
+  buffer: Buffer,
+): Promise<string> {
+  const bucket = storage.bucket(bucketName);
+  const prefix = `aarogyadamu-vision-temp/${randomUUID()}/`;
+  const inputObject = `${prefix}input.pdf`;
+  const outputPrefix = `${prefix}output/`;
+
+  try {
+    await bucket.file(inputObject).save(buffer, {
+      resumable: false,
+      metadata: { contentType: 'application/pdf' },
+    });
+
+    const [operation] = await vision.asyncBatchAnnotateFiles({
+      requests: [{
+        inputConfig: {
+          gcsSource: { uri: `gs://${bucketName}/${inputObject}` },
+          mimeType: 'application/pdf',
+        },
+        features: [{ type: 'DOCUMENT_TEXT_DETECTION' }],
+        outputConfig: {
+          gcsDestination: { uri: `gs://${bucketName}/${outputPrefix}` },
+          batchSize: 100,
+        },
+      }],
+    });
+    await operation.promise();
+
+    const [outputFiles] = await bucket.getFiles({ prefix: outputPrefix });
+    const orderedFiles = outputFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+    if (orderedFiles.length === 0) {
+      throw new MedicalReportOcrError(
+        'PROVIDER',
+        'Google Cloud Vision did not return a PDF OCR result. Verify bucket access and try again.',
+      );
+    }
+    const textPages: string[] = [];
+    for (const file of orderedFiles) {
+      const [contents] = await file.download();
+      textPages.push(...getTextsFromVisionOutput(contents));
+    }
+    return textPages.join('\n').trim();
+  } catch (error) {
+    throw providerError(error);
+  } finally {
+    try {
+      const [temporaryFiles] = await bucket.getFiles({ prefix });
+      await Promise.all(temporaryFiles.map((file) => file.delete({ ignoreNotFound: true })));
+    } catch {
+      throw new MedicalReportOcrError(
+        'CLEANUP',
+        'Google Cloud Vision could not remove temporary report files. Contact support before retrying.',
+      );
+    }
+  }
+}
+
+export async function extractMedicalReportText(
+  buffer: Buffer,
+  mimeType: string,
+): Promise<MedicalReportOcrResult> {
+  if (env.MEDICAL_REPORT_OCR_PROVIDER === 'synthetic') {
+    if (!['application/pdf', 'image/jpeg', 'image/png', 'image/webp'].includes(mimeType)) {
+      throw new MedicalReportOcrError(
+        'PROVIDER',
+        'Synthetic OCR accepts PDF, JPEG, PNG, or WebP reports.',
+      );
+    }
+    return extractSyntheticDemoText(mimeType, buffer.length);
+  }
+
+  // Test environments must fail closed when Google credentials are absent;
+  // otherwise the Google client may start asynchronous metadata discovery and
+  // surface an unhandled warning after the request has already returned.
+  if (env.NODE_ENV === 'test' && !process.env.GOOGLE_APPLICATION_CREDENTIALS && !env.GOOGLE_CLOUD_PROJECT_ID) {
+    throw new MedicalReportOcrError(
+      'CREDENTIALS',
+      'Google Cloud credentials are unavailable. Configure GOOGLE_APPLICATION_CREDENTIALS or Application Default Credentials.',
+    );
+  }
+
+  const projectOptions = env.GOOGLE_CLOUD_PROJECT_ID
+    ? { projectId: env.GOOGLE_CLOUD_PROJECT_ID }
+    : {};
+
+  try {
+    const vision = new ImageAnnotatorClient(projectOptions);
+    if (mimeType === 'application/pdf') {
+      const bucketName = env.GOOGLE_CLOUD_STORAGE_BUCKET;
+      if (!bucketName) {
+        throw new MedicalReportOcrError(
+          'CONFIGURATION',
+          'Google Cloud Vision PDF extraction requires GOOGLE_CLOUD_STORAGE_BUCKET.',
+        );
+      }
+      const storage = new Storage(projectOptions);
+      return {
+        provider: 'GOOGLE_CLOUD_VISION',
+        text: await extractPdfText(vision, storage, bucketName, buffer),
+      };
+    }
+
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(mimeType)) {
+      throw new MedicalReportOcrError(
+        'PROVIDER',
+        'Google Cloud Vision accepts PDF, JPEG, PNG, or WebP reports.',
+      );
+    }
+
+    const [response] = await vision.documentTextDetection({ image: { content: buffer } });
+    if (response.error?.message) {
+      throw new Error(response.error.message);
+    }
+    return {
+      provider: 'GOOGLE_CLOUD_VISION',
+      text: response.fullTextAnnotation?.text ?? '',
+    };
+  } catch (error) {
+    throw providerError(error);
+  }
 }

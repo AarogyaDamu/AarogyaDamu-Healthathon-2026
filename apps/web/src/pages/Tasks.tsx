@@ -163,7 +163,7 @@ export default function Tasks() {
     { title: 'Check morning fasting sugar (FBS)', cat: 'LAB_TEST' },
     { title: 'Take evening Tab Metformin 500mg SR with dinner', cat: 'MEDICATION' },
     { title: '30-minute post-lunch gentle walk', cat: 'LIFESTYLE' },
-    { title: 'Review repeat HbA1c test with Dr. Kulkarni', cat: 'FOLLOW_UP' },
+    { title: 'Review repeat HbA1c test with Dr. Choudhary', cat: 'FOLLOW_UP' },
   ];
 
   const now = new Date();
@@ -361,10 +361,10 @@ export default function Tasks() {
               onChange={(e) => setCategory(e.target.value)}
               className="w-full bg-slate-50 border border-slate-200 focus:bg-white focus:border-teal-700 focus:outline-none rounded-xl px-3 py-2.5 text-xs text-slate-900 font-medium transition"
             >
-              <option value="FOLLOW_UP">🩺 Doctor Follow-Up</option>
-              <option value="MEDICATION">💊 Medication Refill / Dose</option>
-              <option value="LAB_TEST">🧪 Lab Test / Blood Draw</option>
-              <option value="LIFESTYLE">👟 Diet & Lifestyle Habit</option>
+              <option value="FOLLOW_UP">Doctor Follow-Up</option>
+              <option value="MEDICATION">Medication Refill / Dose</option>
+              <option value="LAB_TEST">Lab Test / Blood Draw</option>
+              <option value="LIFESTYLE">Diet & Lifestyle Habit</option>
             </select>
           </div>
 

@@ -1,4 +1,6 @@
 import request from 'supertest';
+import jwt from 'jsonwebtoken';
+import bcrypt from 'bcryptjs';
 import { app, prisma } from '../server';
 
 describe('AarogyaDamu Clinical Security & Authorization Suite', () => {
@@ -7,14 +9,17 @@ describe('AarogyaDamu Clinical Security & Authorization Suite', () => {
   let patientBToken: string;
   let patientBId: string;
   let patientBObservationId: string;
+  let doctorToken: string;
+  let doctorId: string;
 
   beforeAll(async () => {
     // Clean test accounts
     await prisma.caregiverConsent.deleteMany();
     await prisma.healthObservation.deleteMany();
     await prisma.careTask.deleteMany();
+    await prisma.doctorPatientAssignment.deleteMany();
     await prisma.user.deleteMany({
-      where: { email: { in: ['alice.test@aarogyadamu.local', 'bob.test@aarogyadamu.local'] } },
+      where: { email: { in: ['alice.test@aarogyadamu.local', 'bob.test@aarogyadamu.local', 'doc.api.test@aarogyadamu.local'] } },
     });
 
     // 1. Register Patient A (Alice)
@@ -50,6 +55,34 @@ describe('AarogyaDamu Clinical Security & Authorization Suite', () => {
         notes: 'Bob private reading',
       });
     patientBObservationId = obsRes.body.observation.id;
+
+    // 4. Register Doctor and assign to Patient A
+    const doctorUser = await prisma.user.create({
+      data: {
+        email: 'doc.api.test@aarogyadamu.local',
+        passwordHash: await bcrypt.hash('Password123!', 10),
+        isClinician: true,
+        profile: {
+          create: {
+            fullName: 'Dr. API Test Clinician',
+          },
+        },
+      },
+    });
+    doctorId = doctorUser.id;
+    const loginRes = await request(app).post('/api/auth/login').send({
+      email: 'doc.api.test@aarogyadamu.local',
+      password: 'Password123!',
+    });
+    doctorToken = loginRes.body.token;
+
+    await prisma.doctorPatientAssignment.create({
+      data: {
+        doctorId: doctorUser.id,
+        patientId: patientAId,
+        status: 'ACTIVE',
+      },
+    });
   });
 
   afterAll(async () => {
@@ -147,11 +180,12 @@ describe('AarogyaDamu Clinical Security & Authorization Suite', () => {
   test('IDEMPOTENCY: Repeated submission with identical key does not duplicate tasks', async () => {
     const idempotencyKey = `idemp_${Date.now()}_test_task`;
 
-    // First attempt
+    // First attempt (doctor assigns task to Patient A)
     const res1 = await request(app)
       .post('/api/tasks')
-      .set('Authorization', `Bearer ${patientAToken}`)
+      .set('Authorization', `Bearer ${doctorToken}`)
       .send({
+        patientId: patientAId,
         title: 'Check Fasting Glucose Tomorrow',
         category: 'FOLLOW_UP',
         dueAt: new Date(Date.now() + 86400000).toISOString(),
@@ -164,8 +198,9 @@ describe('AarogyaDamu Clinical Security & Authorization Suite', () => {
     // Duplicate attempt (e.g. mobile network retry)
     const res2 = await request(app)
       .post('/api/tasks')
-      .set('Authorization', `Bearer ${patientAToken}`)
+      .set('Authorization', `Bearer ${doctorToken}`)
       .send({
+        patientId: patientAId,
         title: 'Check Fasting Glucose Tomorrow',
         category: 'FOLLOW_UP',
         dueAt: new Date(Date.now() + 86400000).toISOString(),

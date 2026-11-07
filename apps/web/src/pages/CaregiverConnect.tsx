@@ -14,7 +14,6 @@ import {
   Send,
   Lock,
   Unlock,
-  Heart,
   Activity,
   Bell,
 } from 'lucide-react';
@@ -204,33 +203,25 @@ export default function CaregiverConnect({ onNavigate: _onNavigate }: Props) {
   return (
     <div className="space-y-6 max-w-6xl mx-auto pb-12">
       {/* Caregiver Portal Hero */}
-      <div className="bg-gradient-to-r from-teal-900 via-slate-900 to-teal-950 rounded-2xl p-6 text-white shadow-sm border border-teal-800">
+      <div className="bg-slate-900 rounded-2xl p-6 text-white shadow-sm border border-slate-800">
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <div>
-            <div className="flex items-center gap-2">
-              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold tracking-wider bg-teal-400/20 text-teal-300 border border-teal-400/30 uppercase">
-                Caregiver Connect Portal
-              </span>
-              <span className="flex items-center gap-1 text-[11px] text-teal-300 font-medium">
-                <Heart className="h-3.5 w-3.5 fill-teal-400 text-teal-400" /> Family Support Mode
-              </span>
-            </div>
-            <h1 className="text-xl sm:text-2xl font-black mt-1">
+            <h1 className="text-xl sm:text-2xl font-black">
               Coordinated Care for {activeDependent ? activeDependent.patientName : 'Family Members'}
             </h1>
-            <p className="text-xs text-slate-300 mt-0.5">
-              Assisting with daily diabetes tasks, care-plan routines, doctor appointments, and medication schedules.
+            <p className="text-xs text-slate-300 mt-1">
+              Caregiver Connect: Assisting with daily diabetes tasks, care-plan routines, doctor appointments, and medication schedules.
             </p>
           </div>
 
           {/* Dependent Switcher */}
           {dependents.length > 1 && (
-            <div className="bg-white/10 backdrop-blur-md p-2 rounded-xl border border-white/20">
-              <label className="block text-[10px] text-teal-200 font-bold uppercase mb-1">Select Loved One</label>
+            <div className="bg-slate-800 p-2.5 rounded-xl border border-slate-700">
+              <label className="block text-[10px] text-teal-300 font-bold uppercase mb-1">Select Dependent</label>
               <select
                 value={selectedPatientId}
                 onChange={(e) => setSelectedPatientId(e.target.value)}
-                className="bg-slate-900 text-white border border-teal-500/50 rounded-lg px-3 py-1.5 text-xs font-bold"
+                className="bg-slate-900 text-white border border-slate-600 rounded-lg px-3 py-1.5 text-xs font-bold"
               >
                 {dependents.map((d) => (
                   <option key={d.consentId} value={d.patientId}>
@@ -580,7 +571,7 @@ export default function CaregiverConnect({ onNavigate: _onNavigate }: Props) {
 
       {/* Request Access Modal */}
       {showRequestModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4">
           <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-xl border border-slate-200 space-y-4">
             <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
               <ShieldCheck className="h-4 w-4 text-teal-700" />

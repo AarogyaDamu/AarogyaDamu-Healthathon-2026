@@ -8,14 +8,19 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
+    "start": "node dist/services/api/src/server.js",
     "prisma:generate": "prisma generate",
+    "prisma:validate": "prisma validate",
     "prisma:migrate": "node scripts/prisma-command.cjs migrate dev --name init",
     "prisma:deploy": "node scripts/prisma-command.cjs migrate deploy",
+    "prisma:status": "node scripts/prisma-command.cjs migrate status",
     "prisma:seed": "tsx prisma/seed.ts",
     "test": "node scripts/run-tests.cjs"
   },
   "dependencies": {
     "@aarogyadamu/contracts": "file:../../packages/contracts",
+    "@google-cloud/storage": "^7.22.0",
+    "@google-cloud/vision": "^5.3.7",
     "@prisma/client": "^5.14.0",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",

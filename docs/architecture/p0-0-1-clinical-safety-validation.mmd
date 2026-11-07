@@ -1,0 +1,275 @@
+%% =========================================================================
+%% AAROGYADAMU PROJECT 3 — P0.0.1 CLINICAL SAFETY VALIDATION ARCHITECTURE
+%% Updated Deterministic Clinical Decision Architecture & Emergency Triage
+%% Generated: 2026-11-02
+%% Governance: Clinical Safety Validation (ADA 2026 & ACC/AHA 2017)
+%% =========================================================================
+
+%% -------------------------------------------------------------------------
+%% DIAGRAM 1: HIGH-LEVEL CLINICAL SAFETY ARCHITECTURE
+%% -------------------------------------------------------------------------
+```mermaid
+graph TB
+    subgraph ClientLayer ["Separated Product Clients"]
+        MobileApp["Mobile App (Patient & Caregiver) <br/> React Native / Expo Router"]
+        DoctorWeb["Doctor Web Portal (Clinicians Only) <br/> React / Vite"]
+    end
+
+    subgraph SecurityGateway ["Security & Context Gateway"]
+        AuthMid["requireAuth <br/> (JWT + Refresh Cookie Rotation + Revocation)"]
+        ContextResolver["resolvePatientContext <br/> (Patient Self / Caregiver Consent / Clinician)"]
+        FeatureGuard["requireFeature('P0_0_SAFETY_FOUNDATION') <br/> (P0.1-P0.8 Locked by Default)"]
+    end
+
+    subgraph DeterministicEngine ["Deterministic Clinical Safety Engine (P0.0.1)"]
+        TargetResolver["Profile Target Resolver <br/> (Loads Fasting, Post-Meal, HbA1c, BP Goals)"]
+        SafetyEvaluator["Deterministic Clinical Safety Evaluator <br/> (ADA 2026 Standards of Care / ACC AHA)"]
+        EmergencyTriage["Emergency & Urgency Triage Matrix <br/> (Separates isCritical vs requiresEmergencyEscalation)"]
+        StaticGuidance["Approved Static Guidance Engine <br/> (Zero-LLM Hallucination / Deterministic Guidance)"]
+    end
+
+    subgraph MedicalAuditSubsystem ["Medical Audit & PHI Redaction Subsystem"]
+        PHISanitizer["sanitizePhi <br/> (Recursive Credential, Auth & JWT Redaction)"]
+        AuditLogger["logClinicalMutationEvent & logClinicalAccessEvent <br/> (Async AuditLog Persistence)"]
+    end
+
+    subgraph PersistenceLayer ["Persistence Layer (SQLite / Prisma)"]
+        DB_Obs[("HealthObservation <br/> +clinicalFlag, secondaryValue, idempotencyKey")]
+        DB_Profile[("PatientProfile <br/> +targetFastingMin, targetFastingMax, targetPostMealMax")]
+        DB_Consent[("CaregiverConsent <br/> +permissions, status, expiresAt")]
+        DB_Audit[("AuditLog <br/> +redacted PHI metadata")]
+    end
+
+    MobileApp --> AuthMid
+    DoctorWeb --> AuthMid
+    AuthMid --> FeatureGuard
+    FeatureGuard --> ContextResolver
+
+    ContextResolver --> TargetResolver
+    ContextResolver --> DB_Consent
+    TargetResolver --> DB_Profile
+    TargetResolver --> SafetyEvaluator
+
+    SafetyEvaluator --> EmergencyTriage
+    EmergencyTriage --> StaticGuidance
+    StaticGuidance --> DB_Obs
+    StaticGuidance --> PHISanitizer
+    PHISanitizer --> AuditLogger
+    AuditLogger --> DB_Audit
+```
+
+%% -------------------------------------------------------------------------
+%% DIAGRAM 2: CLINICAL EVALUATOR FLOW (ADA 2026 ALGORITHMIC PATHWAYS)
+%% -------------------------------------------------------------------------
+```mermaid
+flowchart TD
+    Start([Vital Observation Intake: type, value, context, symptoms, assistance]) --> TypeCheck{Observation Type?}
+
+    %% GLUCOSE PATHWAY
+    TypeCheck -- "BLOOD_GLUCOSE" --> CheckHypo{Glucose < 70 mg/dL?}
+    CheckHypo -- Yes --> CheckL2{Glucose < 54 mg/dL?}
+    CheckL2 -- Yes --> CheckAssistance{requiresAssistance OR severeSymptoms?}
+    CheckAssistance -- Yes --> L3Hypo["Level 3 Hypoglycemia <br/> clinicalFlag: CRITICAL_LOW <br/> isCritical: true <br/> requiresEmergencyEscalation: true <br/> Action: Glucagon + Emergency Dispatch (108/911)"]
+    CheckAssistance -- No --> L2Hypo["Level 2 Hypoglycemia (Conscious) <br/> clinicalFlag: CRITICAL_LOW <br/> isCritical: true <br/> requiresEmergencyEscalation: false <br/> Action: 15-20g Rapid Glucose, Sit, Recheck 15m"]
+
+    CheckL2 -- No --> L1Hypo["Level 1 Hypoglycemia (54-69 mg/dL) <br/> clinicalFlag: LOW <br/> isCritical: false <br/> requiresEmergencyEscalation: false <br/> Action: Rule of 15 (15g Carbs, Recheck 15m)"]
+
+    CheckHypo -- No --> CheckHyper{Glucose > 250 mg/dL?}
+    CheckHyper -- Yes --> CheckDka{hasSevereSymptoms? <br/> (Vomiting, confusion, fruity breath)}
+    CheckDka -- Yes --> DkaEmerg["Hyperglycemic Emergency (DKA/HHS) <br/> clinicalFlag: CRITICAL_HIGH <br/> isCritical: true <br/> requiresEmergencyEscalation: true <br/> Action: Emergency Medical Care"]
+    CheckDka -- No --> HyperAlert["Marked Hyperglycemia Alert <br/> clinicalFlag: CRITICAL_HIGH <br/> isCritical: true <br/> requiresEmergencyEscalation: false <br/> Action: Hydration, Check Ketones, Review Regimen"]
+
+    CheckHyper -- No --> EvalProfileTargets{Context & Profile Targets}
+    EvalProfileTargets -- "Fasting/Pre-Meal (80-130 or Custom)" --> FastingTarget["clinicalFlag: IN_TARGET <br/> isCritical: false <br/> requiresEmergencyEscalation: false"]
+    EvalProfileTargets -- "Fasting 70-79 mg/dL" --> LowNormalFasting["clinicalFlag: IN_TARGET (Low-Normal)"]
+    EvalProfileTargets -- "Post-Meal <= 180 (or Custom)" --> PostMealTarget["clinicalFlag: IN_TARGET"]
+    EvalProfileTargets -- "Above Fasting or Post-Meal Target" --> ElevatedGlucose["clinicalFlag: HIGH"]
+
+    %% BLOOD PRESSURE PATHWAY
+    TypeCheck -- "BLOOD_PRESSURE" --> CheckBPCrisis{Sys >= 180 OR Dia >= 120?}
+    CheckBPCrisis -- Yes --> CheckBPSymptoms{hasSevereSymptoms? <br/> (Chest pain, dyspnea, neuro deficit)}
+    CheckBPSymptoms -- Yes --> BPEmergency["Hypertensive Emergency <br/> clinicalFlag: HYPERTENSIVE_CRISIS <br/> isCritical: true <br/> requiresEmergencyEscalation: true <br/> Action: Call Emergency Services (108/911/112)"]
+    CheckBPSymptoms -- No --> BPUrgency["Severe Hypertension (Asymptomatic) <br/> clinicalFlag: HYPERTENSIVE_CRISIS <br/> isCritical: true <br/> requiresEmergencyEscalation: false <br/> Action: Rest 5 min, repeat measurement"]
+
+    CheckBPCrisis -- No --> CheckStage2{Sys >= 140 OR Dia >= 90?}
+    CheckStage2 -- Yes --> Stage2BP["Stage 2 Hypertension Range <br/> clinicalFlag: STAGE_2_HYPERTENSION"]
+    CheckStage2 -- No --> CheckStage1{(Sys 130-139) OR (Dia 80-89)?}
+    CheckStage1 -- Yes --> Stage1BP["Stage 1 Hypertension Range <br/> clinicalFlag: STAGE_1_HYPERTENSION"]
+    CheckStage1 -- No --> CheckElevated{Sys 120-129 AND Dia < 80?}
+    CheckElevated -- Yes --> ElevatedBP["Elevated Blood Pressure <br/> clinicalFlag: ELEVATED"]
+    CheckElevated -- No --> NormalBP["Normal Blood Pressure <br/> Sys < 120 AND Dia < 80 <br/> clinicalFlag: NORMAL"]
+
+    %% HBA1C PATHWAY
+    TypeCheck -- "HBA1C" --> CheckA1cHigh{HbA1c > 8.5%?}
+    CheckA1cHigh -- Yes --> A1cCritical["Poor Glycemic Control <br/> clinicalFlag: CRITICAL_HIGH <br/> isCritical: true <br/> requiresEmergencyEscalation: false (Chronic)"]
+    CheckA1cHigh -- No --> CheckA1cTarget{HbA1c > Target (7.0% or Custom)?}
+    CheckA1cTarget -- Yes --> A1cHigh["Above Clinical Goal <br/> clinicalFlag: HIGH"]
+    CheckA1cTarget -- No --> CheckA1cDiabetes{HbA1c >= 6.5%?}
+    CheckA1cDiabetes -- Yes --> A1cInTarget["Diabetes Target Met <br/> clinicalFlag: IN_TARGET"]
+    CheckA1cDiabetes -- No --> CheckPrediabetes{HbA1c >= 5.7%?}
+    CheckPrediabetes -- Yes --> A1cPrediabetes["Prediabetes Category <br/> clinicalFlag: ELEVATED"]
+    CheckPrediabetes -- No --> A1cNormal["Normal Non-Diabetic <br/> clinicalFlag: NORMAL"]
+```
+
+%% -------------------------------------------------------------------------
+%% DIAGRAM 3: API & DATABASE FLOW (IDEMPOTENCY & TARGET RESOLUTION)
+%% -------------------------------------------------------------------------
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client as Patient / Caregiver App
+    participant Route as Express API (/api/observations)
+    participant Perm as Context & Permission Evaluator
+    participant ProfileDB as PatientProfile Store
+    participant Evaluator as Deterministic Clinical Evaluator
+    participant ObsDB as HealthObservation Store
+    participant Audit as Clinical Audit Logger
+
+    Client->>Route: POST /api/observations {type, numericValue, secondaryValue, context, idempotencyKey, symptoms, requiresAssistance}
+    Route->>Perm: resolvePatientContext(req, 'MANAGE_OBSERVATIONS')
+    Perm-->>Route: Context Verified (effectivePatientId)
+
+    alt Idempotency Key Exists
+        Route->>ObsDB: findUnique({ where: { idempotencyKey } })
+        opt Found Record
+            ObsDB-->>Route: Existing Observation
+            Route-->>Client: 200 OK { observation, isIdempotentReplay: true }
+        end
+    end
+
+    Route->>ProfileDB: findUnique({ where: { userId: effectivePatientId } })
+    ProfileDB-->>Route: Clinician Targets (targetFastingMin, targetFastingMax, targetPostMealMax)
+
+    Route->>Evaluator: evaluateClinicalSafety(input + individualizedTargets + clinicalContext)
+    Note over Evaluator: Deterministic guideline evaluation.<br/>Separates isCritical from requiresEmergencyEscalation.
+    Evaluator-->>Route: SafetyEvaluationResult {clinicalFlag, isCritical, requiresEmergencyEscalation, guidance}
+
+    Route->>ObsDB: create({ clinicalFlag, numericValue, secondaryValue, sourceProvenance, ... })
+    ObsDB-->>Route: Persisted Observation
+
+    Route->>Audit: logClinicalMutationEvent(sanitizedBefore, sanitizedAfter, metadata)
+    Audit-->>Route: Audit Logged Asynchronously
+
+    Route-->>Client: 201 Created { observation, safetyEvaluation }
+```
+
+%% -------------------------------------------------------------------------
+%% DIAGRAM 4: PERMISSION, CONSENT AND APPROVAL FLOW
+%% -------------------------------------------------------------------------
+```mermaid
+stateDiagram-v2
+    [*] --> RequestSubmitted
+
+    state RequestSubmitted {
+        [*] --> CheckActorRole
+        CheckActorRole --> PatientSelf: Actor ID == Patient ID
+        CheckActorRole --> ClinicianDirect: Actor isClinician == true
+        CheckActorRole --> CaregiverConsentCheck: Actor is Caregiver
+    }
+
+    state CaregiverConsentCheck {
+        [*] --> QueryConsent
+        QueryConsent --> ConsentValid: status == 'ACTIVE' && not expired
+        QueryConsent --> ConsentRevokedOrExpired: status != 'ACTIVE' || expired
+        ConsentRevokedOrExpired --> ForbiddenResponse: 403 Access Denied
+        ConsentValid --> VerifyScope: Check permissions JSON
+        VerifyScope --> ScopeGranted: 'MANAGE_OBSERVATIONS' in permissions
+        VerifyScope --> ScopeDenied: Permission missing
+        ScopeDenied --> ForbiddenResponse: 403 Permission Denied
+    }
+
+    PatientSelf --> AuthorizeAction
+    ClinicianDirect --> AuthorizeAction
+    ScopeGranted --> AuthorizeAction
+
+    state AuthorizeAction {
+        [*] --> ActionTypeRouter
+        ActionTypeRouter --> DirectObservationLog: Observation Intake
+        ActionTypeRouter --> AgentProposalTriage: AI Proposal
+    }
+
+    state AgentProposalTriage {
+        [*] --> ClassifyTier
+        ClassifyTier --> LowRisk: Informational -> AUTO_EXECUTED
+        ClassifyTier --> MediumRisk: Task / Follow-up -> PENDING (Patient Confirms)
+        ClassifyTier --> HighRisk: Medication / Note Draft -> PENDING (Doctor Approves)
+        ClassifyTier --> Prohibited: Autonomous Prescribing / Diagnosis -> REJECTED (400)
+    }
+
+    ForbiddenResponse --> [*]
+    DirectObservationLog --> [*]
+```
+
+%% -------------------------------------------------------------------------
+%% DIAGRAM 5: EMERGENCY DECISION FLOW
+%% -------------------------------------------------------------------------
+```mermaid
+flowchart TD
+    subgraph TriggerConditions ["Incoming Severe Measurement"]
+        InHypo["Glucose < 54 mg/dL"]
+        InHyper["Glucose > 250 mg/dL"]
+        InBP["BP >= 180 Sys OR >= 120 Dia"]
+    end
+
+    subgraph ClinicalUrgencyGate ["Clinical Urgency Assessment"]
+        GateHypo["isCritical: true <br/> (Patient at acute risk of neuroglycopenia)"]
+        GateHyper["isCritical: true <br/> (Patient at risk of dehydration / ketosis)"]
+        GateBP["isCritical: true <br/> (Patient at risk of vascular complications)"]
+    end
+
+    subgraph AcuteEmergencyTriage ["Contextual Emergency Escalation Screening"]
+        CheckHypoAssistance{"Requires Third-Party Assistance <br/> OR Altered Mental Status?"}
+        CheckDkaSigns{"Severe DKA/HHS Signs Present? <br/> (Vomiting, fruity breath, dyspnea)"}
+        CheckEndOrgan{"Acute Target-Organ Symptoms? <br/> (Chest pain, dyspnea, focal neuro)"}
+    end
+
+    subgraph FinalDispatchProtocols ["Final Dispatch Protocol"]
+        EscalateEMS["requiresEmergencyEscalation: true <br/> 1. Immediate EMS dispatch guidance (108/911/112) <br/> 2. Alert Primary Caregiver SOS <br/> 3. Fast emergency instructions (Glucagon / Recovery Pos)"]
+        SelfManagement["requiresEmergencyEscalation: false <br/> 1. Immediate Self-Management Protocol <br/> 2. Rule of 15 / 15-20g glucose OR 5-min rest seated <br/> 3. Repeat measurement mandate <br/> 4. No emergency ambulance false alarm"]
+    end
+
+    InHypo --> GateHypo --> CheckHypoAssistance
+    CheckHypoAssistance -- Yes --> EscalateEMS
+    CheckHypoAssistance -- No (Conscious) --> SelfManagement
+
+    InHyper --> GateHyper --> CheckDkaSigns
+    CheckDkaSigns -- Yes --> EscalateEMS
+    CheckDkaSigns -- No (Asymptomatic) --> SelfManagement
+
+    InBP --> GateBP --> CheckEndOrgan
+    CheckEndOrgan -- Yes --> EscalateEMS
+    CheckEndOrgan -- No (Asymptomatic) --> SelfManagement
+```
+
+%% -------------------------------------------------------------------------
+%% DIAGRAM 6: ERROR-HANDLING AND RECOVERY PIPELINE
+%% -------------------------------------------------------------------------
+```mermaid
+flowchart LR
+    subgraph IngestionError ["Request Error Catch"]
+        NegVal["Negative / Zero Measurement"]
+        BadAuth["Expired / Stale Token"]
+        ConsentRev["Revoked Caregiver Consent"]
+        DuplicateKey["Duplicate idempotencyKey"]
+    end
+
+    subgraph Handler ["Healthcare Error Middleware"]
+        RouterTriage{Error Type}
+        IdemHandler["Idempotency Lookup Handler"]
+        SanitizePayload["sanitizePhi & safeClinicalLog"]
+    end
+
+    subgraph ResponseEmission ["Deterministic Clinical Responses"]
+        Resp400["400 Bad Request <br/> 'Reading must be a positive number'"]
+        Resp401["401 Unauthorized <br/> 'Authentication required'"]
+        Resp403["403 Forbidden <br/> 'Access denied / Permission revoked'"]
+        Resp200Replay["200 OK <br/> { observation, isIdempotentReplay: true }"]
+    end
+
+    NegVal --> RouterTriage --> Resp400
+    BadAuth --> RouterTriage --> Resp401
+    ConsentRev --> RouterTriage --> Resp403
+    DuplicateKey --> IdemHandler --> Resp200Replay
+
+    RouterTriage -.-> SanitizePayload
+```

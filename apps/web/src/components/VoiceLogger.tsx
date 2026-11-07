@@ -54,7 +54,7 @@ export function VoiceLogger({ onParsedReading, onClose }: VoiceLoggerProps) {
         return;
       }
     }
-    setParseStatus('Could not detect sugar number. Please try speaking clearly or use simulation below.');
+    setParseStatus('Could not detect a glucose value. Please try again clearly or enter the reading manually.');
   };
 
   const startListening = () => {
@@ -64,7 +64,7 @@ export function VoiceLogger({ onParsedReading, onClose }: VoiceLoggerProps) {
 
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) {
-      setParseStatus('Browser speech recognition not supported. Use demo simulation buttons below.');
+      setParseStatus('Browser speech recognition is not supported. Please enter the reading manually.');
       setIsListening(false);
       return;
     }
@@ -82,7 +82,7 @@ export function VoiceLogger({ onParsedReading, onClose }: VoiceLoggerProps) {
     };
 
     recognition.onerror = () => {
-      setParseStatus('Microphone error or permission denied. Use demo buttons below.');
+      setParseStatus('Microphone error or permission denied. Please enter the reading manually.');
       setIsListening(false);
     };
 
@@ -95,21 +95,6 @@ export function VoiceLogger({ onParsedReading, onClose }: VoiceLoggerProps) {
     } catch {
       setIsListening(false);
     }
-  };
-
-  // Live Hackathon Demo Simulations
-  const simulateVoiceDemo = (lang: string) => {
-    let sample = '';
-    if (lang === 'mr') {
-      sample = 'सकाळी उपाशीपोटी साखर 122 आहे';
-    } else if (lang === 'hi') {
-      sample = 'खाना खाने के बाद शुगर 158 है';
-    } else {
-      sample = 'Fasting sugar reading is 114 milligrams';
-    }
-
-    setTranscript(sample);
-    parseSpeechText(sample);
   };
 
   return (
@@ -133,7 +118,7 @@ export function VoiceLogger({ onParsedReading, onClose }: VoiceLoggerProps) {
         </div>
 
         <p className="text-xs text-slate-600">
-          Powered by Sarvam AI multilingual voice model simulation. Speak naturally in your preferred language.
+          Uses your browser microphone permission for speech recognition. Speak naturally in your preferred language.
         </p>
 
         {/* Language Selector */}
@@ -188,35 +173,6 @@ export function VoiceLogger({ onParsedReading, onClose }: VoiceLoggerProps) {
           </p>
         )}
 
-        {/* Live Demo Simulation Buttons */}
-        <div className="pt-2 border-t border-slate-100 space-y-2">
-          <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wide">
-            Live Hackathon Demo Simulators:
-          </p>
-          <div className="grid grid-cols-3 gap-2">
-            <button
-              type="button"
-              onClick={() => simulateVoiceDemo('mr')}
-              className="py-1.5 px-2 rounded bg-slate-100 hover:bg-teal-50 text-slate-700 hover:text-teal-800 text-[11px] font-medium border border-slate-200 transition text-center"
-            >
-              Marathi Demo
-            </button>
-            <button
-              type="button"
-              onClick={() => simulateVoiceDemo('hi')}
-              className="py-1.5 px-2 rounded bg-slate-100 hover:bg-teal-50 text-slate-700 hover:text-teal-800 text-[11px] font-medium border border-slate-200 transition text-center"
-            >
-              Hindi Demo
-            </button>
-            <button
-              type="button"
-              onClick={() => simulateVoiceDemo('en')}
-              className="py-1.5 px-2 rounded bg-slate-100 hover:bg-teal-50 text-slate-700 hover:text-teal-800 text-[11px] font-medium border border-slate-200 transition text-center"
-            >
-              English Demo
-            </button>
-          </div>
-        </div>
       </div>
     </div>
   );

@@ -8,7 +8,6 @@ import {
   AlertCircle,
   Stethoscope,
   Target,
-  Sparkles,
   ChevronRight,
   Plus,
   FileText,
@@ -315,7 +314,7 @@ export default function CarePlanPage({ onNavigate }: { onNavigate?: (tab: string
 
       {/* 2. CARE PLAN OVERVIEW CARD (IF ACTIVE PLAN EXISTS) */}
       {activePlan ? (
-        <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-white via-teal-50/20 to-slate-50 p-5 shadow-xs space-y-4">
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-5 space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
             <div>
               <span className="text-[10px] font-black uppercase tracking-wider text-teal-700">
@@ -556,11 +555,11 @@ export default function CarePlanPage({ onNavigate }: { onNavigate?: (tab: string
         )}
       </div>
 
-      {/* 5. DAMU ASSISTANT HELPER CARDS */}
-      <div className="rounded-2xl border border-teal-200 bg-gradient-to-r from-teal-50 via-emerald-50 to-amber-50 p-5 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-4">
+      {/* 5. CARE PLAN GUIDANCE */}
+      <div className="rounded-xl border border-slate-200 bg-slate-50 p-5 flex flex-col sm:flex-row items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <div className="h-10 w-10 rounded-xl bg-teal-700 text-white flex items-center justify-center shrink-0">
-            <Sparkles className="h-5 w-5" />
+            <Activity className="h-5 w-5" />
           </div>
           <div>
             <h4 className="text-sm font-bold text-slate-900">Need Help with Your Care Plan?</h4>

@@ -68,8 +68,8 @@ export default function TabLayout() {
         <Tabs.Screen
           name="health"
           options={{
-            title: 'Sugar Checks',
-            tabBarAccessibilityLabel: 'Blood Sugar Logs & Lab Trends',
+            title: 'Health Vault',
+            tabBarAccessibilityLabel: 'Health Vault - Sugar, Meds, Lifestyle, Reports, Timeline',
             tabBarIcon: ({ color, size }) => (
               <Activity color={color} size={size - 2} />
             ),
@@ -99,19 +99,19 @@ export default function TabLayout() {
         />
 
         <Tabs.Screen
-          name="appointments"
+          name="profile"
           options={{
-            title: 'Care Team',
-            tabBarAccessibilityLabel: 'Doctor Appointments and Care Team',
+            title: 'Profile',
+            tabBarAccessibilityLabel: 'Patient Profile, Caregiver Access, Settings',
             tabBarIcon: ({ color, size }) => (
               <User color={color} size={size - 2} />
             ),
           }}
         />
 
-        {/* Sub-screens accessible from Home and Profile */}
+        {/* Sub-screens accessible from Home, Health Vault and Profile */}
         <Tabs.Screen
-          name="profile"
+          name="appointments"
           options={{
             href: null,
           }}
@@ -126,6 +126,41 @@ export default function TabLayout() {
 
         <Tabs.Screen
           name="consultation"
+          options={{
+            href: null,
+          }}
+        />
+
+        <Tabs.Screen
+          name="medications"
+          options={{
+            href: null,
+          }}
+        />
+
+        <Tabs.Screen
+          name="lifestyle"
+          options={{
+            href: null,
+          }}
+        />
+
+        <Tabs.Screen
+          name="sos"
+          options={{
+            href: null,
+          }}
+        />
+
+        <Tabs.Screen
+          name="damu"
+          options={{
+            href: null,
+          }}
+        />
+
+        <Tabs.Screen
+          name="notifications"
           options={{
             href: null,
           }}

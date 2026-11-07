@@ -37,6 +37,8 @@ services/api/prisma/backups/
 # File Uploads Storage
 services/api/uploads/*
 !services/api/uploads/.gitkeep
+services/api/uploads/private/*
+!services/api/uploads/private/.gitkeep
 
 # Mobile & Expo Artifacts
 .expo/
@@ -74,3 +76,5 @@ coverage/
 
 # Archives
 *.zip
+
+git-diff-summary.txt

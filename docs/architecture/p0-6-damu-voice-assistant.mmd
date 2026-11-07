@@ -1,0 +1,83 @@
+%% AarogyaDamu Project 3 - Phase P0.6 Groq Multilingual Voice Assistant (Damu) Architecture
+%% High-integrity Mermaid Architecture & Dataflow Diagram
+
+flowchart TD
+    classDef client fill:#E0F2FE,stroke:#0284C7,stroke-width:2px,color:#0369A1;
+    classDef security fill:#FEF3C7,stroke:#D97706,stroke-width:2px,color:#B45309;
+    classDef provider fill:#F3E8FF,stroke:#9333EA,stroke-width:2px,color:#6B21A8;
+    classDef database fill:#DCFCE7,stroke:#16A34A,stroke-width:2px,color:#15803D;
+    classDef safety fill:#FEE2E2,stroke:#DC2626,stroke-width:2px,color:#991B1B;
+
+    subgraph MobileClient ["Patient Mobile Voice Companion (apps/mobile)"]
+        DamuTab["Damu Tab Screen (app/(tabs)/damu.tsx)"]
+        ConsentCheck["Explicit Informed Consent Checkbox\n(consentObtained: true, consentVersion: 'v1.0-mobile')\nVoice input strictly locked until checked"]
+        LangSelector["Regional Language Selector\n(hi-IN, te-IN, ta-IN, kn-IN, bn-IN, mr-IN, gu-IN, en-IN)"]
+        VoiceState["Voice Interaction State Machine\n(idle -> listening -> processing -> responding -> completed / error)"]
+        AudioCapture["Microphone Capture & Text Fallback\n(Base64 Audio WebM/WAV or Text Prompt)"]
+        SpeechSynth["Client-Side Speech Synthesis\n(expo-speech / Web Speech API\nPrivate, offline vocalization)"]
+        DisclaimerUI["Non-Doctor Disclaimer & Emergency Banner\n(Informational only • Not 112/108 substitute)"]
+    end
+
+    subgraph ApiGateway ["API Gateway & Security Controls (services/api)"]
+        AuthMiddleware["requireAuth & Patient Ownership Guard\n(resolvePatientContext 'VIEW_OBSERVATIONS')"]
+        FeatureFlagGate["requireFeature('P0_6_GROQ_VOICE_ASSISTANT')\n(Aliases: P0_6_GROQ_DAMU_ASSISTANT\nReturns 403 FEATURE_DISABLED if off)"]
+        RateLimiter["Distributed Rate Limiter\n(createRateLimitStore: 30 requests / 15 min per user)"]
+        PayloadGuard["Audio Payload Validation\n(10MB max limit, Base64 integrity verification)"]
+        AuditLogging["Clinical Audit Logger\n(DAMU_VOICE_INTERACTION\nStrict PHI Redaction: Voice audio & transcripts purged)"]
+    end
+
+    subgraph ZeroRetentionAudio ["Zero-Retention In-Memory Pipeline (0 Days)"]
+        MemoryBuffer["In-Memory Audio Buffer\n(SESSION_ONLY_ZERO_RETENTION)\nHeld in volatile memory during transcription only\nExplicitly purged on completion / error"]
+    end
+
+    subgraph ClinicalSafetyEngine ["Clinical Safety Guardrails & Rules Engine"]
+        ProhibitedGuard["Prohibited Clinical Intent Guard\n(Refusal to diagnose, prescribe, or alter insulin dosage\nclassifyAgentIntent -> PROHIBITED_ACTION_REFUSAL)"]
+        EmergencyDetector["Acute Hypoglycemia & Emergency Detector\n(Blood glucose < 54 mg/dL or severe distress keywords\nTriggers 112 / 108 emergency escalation notice)"]
+        NonMutationGuard["Non-Mutation Guarantee\n(Zero DB writes to prescriptions, care plans, or vitals)"]
+    end
+
+    subgraph ProviderLayer ["Voice Assistant Provider Abstraction (damuVoiceService)"]
+        ProviderInterface["DamuVoiceProvider Interface\n(transcribeAudio, generateResponse, getProviderStatus)"]
+        GroqProvider["GroqDamuProvider\nSTT: Whisper Large v3 Turbo (whisper-large-v3-turbo)\nLLM: Llama 3.3 70B Versatile (llama-3.3-70b-versatile)"]
+        MockProvider["MockDamuProvider\n(Deterministic testing, offline fallback, intent classification)"]
+    end
+
+    subgraph DataContext ["Patient Metabolic Context & Persistence (Prisma / SQLite)"]
+        ObsContext["Recent Blood Glucose & Profile Context\n(Read-only metabolic history for alert precision)"]
+        AuditDB["AuditLog Model\n(Action: DAMU_VOICE_INTERACTION, metadata with zero audio)"]
+    end
+
+    %% Flow connections
+    ConsentCheck --> VoiceState
+    LangSelector --> VoiceState
+    VoiceState --> AudioCapture
+    AudioCapture -->|POST /api/damu/interact| FeatureFlagGate
+    FeatureFlagGate --> AuthMiddleware
+    AuthMiddleware --> RateLimiter
+    RateLimiter --> PayloadGuard
+    PayloadGuard --> MemoryBuffer
+
+    MemoryBuffer --> ProviderInterface
+    ProviderInterface --> GroqProvider
+    ProviderInterface --> MockProvider
+
+    ProviderInterface --> ProhibitedGuard
+    ProviderInterface --> EmergencyDetector
+    EmergencyDetector --> ObsContext
+    ProhibitedGuard --> NonMutationGuard
+
+    ProviderInterface -->|Immediate Memory Purge| MemoryBuffer
+    ProviderInterface --> AuditLogging
+    AuditLogging --> AuditDB
+
+    ProviderInterface -->|DamuInteractResponse| VoiceState
+    VoiceState --> SpeechSynth
+    EmergencyDetector -.->|Emergency Alert Banner| DisclaimerUI
+
+    class DamuTab,AudioCapture,VoiceState,SpeechSynth,LangSelector,ConsentCheck,DisclaimerUI client;
+    class AuthMiddleware,FeatureFlagGate,RateLimiter,PayloadGuard,AuditLogging security;
+    class ProviderInterface,GroqProvider,MockProvider provider;
+    class MemoryBuffer,ZeroRetentionAudio provider;
+    class ObsContext,AuditDB database;
+    class ProhibitedGuard,EmergencyDetector,NonMutationGuard safety;
+

@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
 import { z } from 'zod';
+import { PRE_VISIT_QUESTIONNAIRE_QUESTIONS } from '@aarogyadamu/contracts';
 
 import {
   requireAuth,
@@ -10,7 +10,7 @@ import {
 import { requireClinician } from '../middleware/requireClinician';
 
 const router = Router();
-const prisma = new PrismaClient();
+import { prisma } from '../db/prisma';
 
 router.use(requireAuth);
 
@@ -20,12 +20,29 @@ const appointmentSchema = z.object({
   scheduledAt: z.string().datetime({ offset: true }),
   durationMinutes: z.number().int().min(10).max(120).optional(),
   reason: z.string().trim().min(3).max(2000),
-  visitType: z.enum(['CHECKUP', 'FOLLOW_UP', 'DIABETES_REVIEW', 'OTHER']).optional(),
+  visitType: z.enum([
+    'CHECKUP',
+    'FOLLOW_UP',
+    'DIABETES_REVIEW',
+    'EMERGENCY',
+    'OTHER',
+    'IN_PERSON',
+    'VIDEO_CONSULT',
+    'HOME_VISIT',
+    'EMERGENCY_TRIAGE',
+  ]).optional(),
+  clinicName: z.string().trim().max(150).optional(),
+  clinicFacilityId: z.string().trim().max(100).optional(),
+  questionnaireResponse: z.union([z.record(z.string(), z.any()), z.string()]).optional(),
   idempotencyKey: z.string().min(16).max(128).optional(),
 }).strict();
 
 const appointmentStatusSchema = z.object({
-  status: z.enum(['CONFIRMED', 'DECLINED', 'CANCELLED', 'COMPLETED']),
+  status: z.enum(['CONFIRMED', 'DECLINED', 'CANCELLED', 'COMPLETED', 'RESCHEDULED', 'MISSED']),
+  rejectionReason: z.string().trim().max(500).optional(),
+  cancellationReason: z.string().trim().max(500).optional(),
+  newScheduledAt: z.string().datetime({ offset: true }).optional(),
+  newDurationMinutes: z.number().int().min(10).max(120).optional(),
 }).strict();
 
 function getActor(req: Request) {
@@ -75,8 +92,9 @@ const appointmentInclude = {
   patient: {
     select: {
       id: true,
+      email: true,
       profile: {
-        select: { fullName: true },
+        select: { fullName: true, dateOfBirth: true, diabetesType: true },
       },
     },
   },
@@ -91,21 +109,43 @@ const appointmentInclude = {
   },
 } as const;
 
-function presentAppointment(appointment: any) {
+function presentAppointment(appointment: any, isCaregiver: boolean = false) {
+  let parsedQuestionnaire = null;
+  if (!isCaregiver && appointment.questionnaireResponse) {
+    try {
+      parsedQuestionnaire = typeof appointment.questionnaireResponse === 'string'
+        ? JSON.parse(appointment.questionnaireResponse)
+        : appointment.questionnaireResponse;
+    } catch {
+      parsedQuestionnaire = appointment.questionnaireResponse;
+    }
+  }
+
   return {
     id: appointment.id,
     patientId: appointment.patientId,
     doctorId: appointment.doctorId,
     patientName: appointment.patient?.profile?.fullName ?? 'Patient',
+    patientEmail: appointment.patient?.email ?? undefined,
+    patientDateOfBirth: appointment.patient?.profile?.dateOfBirth ?? null,
+    patientDiabetesType: appointment.patient?.profile?.diabetesType ?? 'UNKNOWN',
     doctorName:
       appointment.doctor?.profile?.fullName ??
       appointment.doctor?.email ??
       'Doctor',
+    doctorEmail: appointment.doctor?.email ?? undefined,
     scheduledAt: appointment.scheduledAt.toISOString(),
     durationMinutes: appointment.durationMinutes,
     reason: appointment.reason,
     visitType: appointment.visitType,
     status: appointment.status,
+    clinicName: appointment.clinicName ?? 'Apollo Sugar Clinic, Pune',
+    clinicFacilityId: appointment.clinicFacilityId ?? null,
+    questionnaireResponse: isCaregiver ? null : parsedQuestionnaire,
+    rejectionReason: appointment.rejectionReason ?? null,
+    cancellationReason: appointment.cancellationReason ?? null,
+    rescheduledFromId: appointment.rescheduledFromId ?? null,
+    completedAt: appointment.completedAt ? appointment.completedAt.toISOString() : null,
     createdAt: appointment.createdAt.toISOString(),
     updatedAt: appointment.updatedAt.toISOString(),
   };
@@ -118,6 +158,10 @@ function respondWithError(
 ) {
   if (String(error).includes('APPOINTMENT_OVERLAP')) {
     res.status(409).json({ error: 'The doctor already has an overlapping appointment.' });
+    return;
+  }
+  if (String(error).includes('DOCTOR_ON_LEAVE')) {
+    res.status(409).json({ error: 'The doctor is on leave during the selected time.' });
     return;
   }
   if (error instanceof z.ZodError) {
@@ -228,6 +272,16 @@ router.get('/doctors', async (_req: Request, res: Response) => {
         profile: {
           select: { fullName: true },
         },
+        doctorAvailabilities: {
+          where: { isActive: true },
+          select: {
+            dayOfWeek: true,
+            startTime: true,
+            endTime: true,
+            slotDurationMinutes: true,
+            clinicName: true,
+          },
+        },
       },
       orderBy: { email: 'asc' },
     });
@@ -237,12 +291,342 @@ router.get('/doctors', async (_req: Request, res: Response) => {
         id: doctor.id,
         name: doctor.profile?.fullName ?? doctor.email,
         email: doctor.email,
+        clinicName: doctor.doctorAvailabilities[0]?.clinicName ?? 'Apollo Sugar Clinic, Pune',
+        availableDays: doctor.doctorAvailabilities.length > 0
+          ? doctor.doctorAvailabilities.map((a) => a.dayOfWeek)
+          : [1, 2, 3, 4, 5],
+        availabilities: doctor.doctorAvailabilities,
       })),
     });
   } catch (error) {
     respondWithError(res, error, 'Unable to load the doctor directory.');
   }
 });
+
+// ------------------------------------------------------
+// GET /api/coordination/questionnaire
+// Exposes the 18-question pre-visit clinical assessment
+// protocol aligned with Apollo Sugar Clinics standards.
+// ------------------------------------------------------
+router.get('/questionnaire', async (_req: Request, res: Response) => {
+  res.json({
+    protocol: 'AarogyaDamu Configurable Pre-Consultation Diabetes Assessment Protocol',
+    version: '1.0',
+    alignment: 'Apollo Sugar Clinics Clinical Intake Framework',
+    disclaimer:
+      'This pre-consultation assessment collects clinical intake context to prepare your treating physician. It does not provide medical diagnosis, dosage advice, or treatment directives. If experiencing severe hypoglycemia, chest pain, or ketoacidosis symptoms, seek emergency medical care immediately.',
+    totalQuestions: PRE_VISIT_QUESTIONNAIRE_QUESTIONS.length,
+    questions: PRE_VISIT_QUESTIONNAIRE_QUESTIONS,
+  });
+});
+
+// ------------------------------------------------------
+// GET /api/coordination/doctors/:doctorId/availability
+// Calculates real-time available appointment slots for a given date.
+// ------------------------------------------------------
+router.get('/doctors/:doctorId/availability', async (req: Request, res: Response) => {
+  try {
+    const { doctorId } = req.params;
+    const dateStr = typeof req.query.date === 'string' ? req.query.date : '';
+
+    if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+      res.status(400).json({ error: 'Valid date parameter (YYYY-MM-DD) is required.' });
+      return;
+    }
+
+    const doctor = await prisma.user.findFirst({
+      where: { id: doctorId, isClinician: true },
+      include: {
+        profile: { select: { fullName: true } },
+      },
+    });
+
+    if (!doctor) {
+      res.status(404).json({ error: 'Doctor not found or not an active clinician.' });
+      return;
+    }
+
+    const [year, month, day] = dateStr.split('-').map(Number);
+    const dateObj = new Date(Date.UTC(year, month - 1, day, 0, 0, 0));
+    const dayOfWeek = dateObj.getUTCDay();
+
+    const availability = await prisma.doctorAvailability.findUnique({
+      where: {
+        doctorId_dayOfWeek: {
+          doctorId: doctor.id,
+          dayOfWeek,
+        },
+      },
+    });
+
+    let startTime = '09:00';
+    let endTime = '17:00';
+    let slotDurationMinutes = 30;
+    let clinicName = 'Apollo Sugar Clinic, Pune';
+    let isWorkingDay = true;
+
+    if (availability) {
+      if (!availability.isActive) {
+        isWorkingDay = false;
+      } else {
+        startTime = availability.startTime;
+        endTime = availability.endTime;
+        slotDurationMinutes = availability.slotDurationMinutes;
+        clinicName = availability.clinicName || clinicName;
+      }
+    } else {
+      if (dayOfWeek === 0 || dayOfWeek === 6) {
+        isWorkingDay = false;
+      }
+    }
+
+    if (!isWorkingDay) {
+      res.json({
+        date: dateStr,
+        doctorId: doctor.id,
+        doctorName: doctor.profile?.fullName ?? doctor.email,
+        clinicName,
+        isWorkingDay: false,
+        message: 'Doctor is not available on this day.',
+        slots: [],
+      });
+      return;
+    }
+
+    const startOfDay = new Date(Date.UTC(year, month - 1, day, 0, 0, 0));
+    const endOfDay = new Date(Date.UTC(year, month - 1, day, 23, 59, 59, 999));
+
+    const timeOffs = await prisma.doctorTimeOff.findMany({
+      where: {
+        doctorId: doctor.id,
+        startDate: { lte: endOfDay },
+        endDate: { gte: startOfDay },
+      },
+    });
+
+    const existingAppointments = await prisma.appointment.findMany({
+      where: {
+        doctorId: doctor.id,
+        status: { in: ['REQUESTED', 'CONFIRMED', 'RESCHEDULED'] },
+        scheduledAt: { gte: startOfDay, lte: endOfDay },
+      },
+      select: {
+        id: true,
+        scheduledAt: true,
+        durationMinutes: true,
+        status: true,
+      },
+    });
+
+    const [startH, startM] = startTime.split(':').map(Number);
+    const [endH, endM] = endTime.split(':').map(Number);
+    let currentMin = startH * 60 + startM;
+    const endMin = endH * 60 + endM;
+    const now = new Date();
+
+    const slots: Array<{
+      startTime: string;
+      endTime: string;
+      scheduledAt: string;
+      available: boolean;
+      reason?: string;
+    }> = [];
+
+    while (currentMin + slotDurationMinutes <= endMin) {
+      const sH = Math.floor(currentMin / 60);
+      const sM = currentMin % 60;
+      const eTotal = currentMin + slotDurationMinutes;
+      const eH = Math.floor(eTotal / 60);
+      const eM = eTotal % 60;
+
+      const startTimeStr = `${String(sH).padStart(2, '0')}:${String(sM).padStart(2, '0')}`;
+      const endTimeStr = `${String(eH).padStart(2, '0')}:${String(eM).padStart(2, '0')}`;
+      const slotDate = new Date(Date.UTC(year, month - 1, day, sH, sM, 0));
+      const slotEndDate = new Date(Date.UTC(year, month - 1, day, eH, eM, 0));
+
+      let available = true;
+      let reason: string | undefined = undefined;
+
+      if (slotDate.getTime() < now.getTime()) {
+        available = false;
+        reason = 'Past slot';
+      } else if (timeOffs.some((to) => to.startDate <= slotEndDate && to.endDate >= slotDate)) {
+        available = false;
+        reason = 'Doctor on leave';
+      } else {
+        const overlap = existingAppointments.some((a) => {
+          const aStart = a.scheduledAt.getTime();
+          const aEnd = aStart + a.durationMinutes * 60000;
+          return slotDate.getTime() < aEnd && aStart < slotEndDate.getTime();
+        });
+        if (overlap) {
+          available = false;
+          reason = 'Booked';
+        }
+      }
+
+      slots.push({
+        startTime: startTimeStr,
+        endTime: endTimeStr,
+        scheduledAt: slotDate.toISOString(),
+        available,
+        reason,
+      });
+
+      currentMin += slotDurationMinutes;
+    }
+
+    res.json({
+      date: dateStr,
+      doctorId: doctor.id,
+      doctorName: doctor.profile?.fullName ?? doctor.email,
+      clinicName,
+      slotDurationMinutes,
+      isWorkingDay: true,
+      slots,
+    });
+  } catch (error) {
+    respondWithError(res, error, 'Unable to calculate doctor availability.');
+  }
+});
+
+// ------------------------------------------------------
+// Doctor Availability Configuration Endpoints
+// ------------------------------------------------------
+router.get(
+  '/doctor/availability',
+  requireClinician,
+  async (req: Request, res: Response) => {
+    try {
+      const actor = getActor(req)!;
+      const availabilities = await prisma.doctorAvailability.findMany({
+        where: { doctorId: actor.id },
+        orderBy: { dayOfWeek: 'asc' },
+      });
+      const timeOffs = await prisma.doctorTimeOff.findMany({
+        where: { doctorId: actor.id, endDate: { gte: new Date() } },
+        orderBy: { startDate: 'asc' },
+      });
+      res.json({ availabilities, timeOffs });
+    } catch (error) {
+      respondWithError(res, error, 'Unable to load doctor schedule configuration.');
+    }
+  },
+);
+
+router.put(
+  '/doctor/availability',
+  requireClinician,
+  async (req: Request, res: Response) => {
+    try {
+      const actor = getActor(req)!;
+      const schema = z.object({
+        schedules: z.array(
+          z.object({
+            dayOfWeek: z.number().int().min(0).max(6),
+            startTime: z.string().regex(/^\d{2}:\d{2}$/),
+            endTime: z.string().regex(/^\d{2}:\d{2}$/),
+            slotDurationMinutes: z.number().int().min(10).max(120).default(30),
+            isActive: z.boolean().default(true),
+            clinicName: z.string().trim().max(150).optional(),
+          }),
+        ),
+      });
+
+      const { schedules } = schema.parse(req.body);
+
+      await prisma.$transaction(
+        schedules.map((s) =>
+          prisma.doctorAvailability.upsert({
+            where: {
+              doctorId_dayOfWeek: {
+                doctorId: actor.id,
+                dayOfWeek: s.dayOfWeek,
+              },
+            },
+            create: {
+              doctorId: actor.id,
+              dayOfWeek: s.dayOfWeek,
+              startTime: s.startTime,
+              endTime: s.endTime,
+              slotDurationMinutes: s.slotDurationMinutes,
+              isActive: s.isActive,
+              clinicName: s.clinicName,
+            },
+            update: {
+              startTime: s.startTime,
+              endTime: s.endTime,
+              slotDurationMinutes: s.slotDurationMinutes,
+              isActive: s.isActive,
+              clinicName: s.clinicName,
+            },
+          }),
+        ),
+      );
+
+      res.json({ success: true, message: 'Availability schedule updated.' });
+    } catch (error) {
+      respondWithError(res, error, 'Unable to update availability schedule.');
+    }
+  },
+);
+
+router.post(
+  '/doctor/time-off',
+  requireClinician,
+  async (req: Request, res: Response) => {
+    try {
+      const actor = getActor(req)!;
+      const schema = z.object({
+        startDate: z.string().datetime({ offset: true }),
+        endDate: z.string().datetime({ offset: true }),
+        reason: z.string().trim().max(300).optional(),
+      });
+      const input = schema.parse(req.body);
+      const start = new Date(input.startDate);
+      const end = new Date(input.endDate);
+
+      if (end <= start) {
+        res.status(400).json({ error: 'End date must be after start date.' });
+        return;
+      }
+
+      const created = await prisma.doctorTimeOff.create({
+        data: {
+          doctorId: actor.id,
+          startDate: start,
+          endDate: end,
+          reason: input.reason,
+        },
+      });
+
+      res.status(201).json({ timeOff: created });
+    } catch (error) {
+      respondWithError(res, error, 'Unable to schedule time off.');
+    }
+  },
+);
+
+router.delete(
+  '/doctor/time-off/:id',
+  requireClinician,
+  async (req: Request, res: Response) => {
+    try {
+      const actor = getActor(req)!;
+      const existing = await prisma.doctorTimeOff.findFirst({
+        where: { id: req.params.id, doctorId: actor.id },
+      });
+      if (!existing) {
+        res.status(404).json({ error: 'Time off record not found.' });
+        return;
+      }
+      await prisma.doctorTimeOff.delete({ where: { id: existing.id } });
+      res.json({ success: true, message: 'Time off deleted.' });
+    } catch (error) {
+      respondWithError(res, error, 'Unable to delete time off.');
+    }
+  },
+);
 
 // ------------------------------------------------------
 // GET /api/coordination/doctor/patients
@@ -364,8 +748,9 @@ router.get('/caregiver/patients', async (req: Request, res: Response) => {
 // ------------------------------------------------------
 // GET /api/coordination/appointments
 // Doctors see their appointments. Patients see their own.
-// Caregivers need explicit appointment-management consent
-// to view another patient's appointments.
+// Caregivers need VIEW_APPOINTMENTS or MANAGE_CONSULTATIONS
+// permission to view their dependent's appointments.
+// Supports filters: ?status=..., ?visitType=..., ?filter=TODAY|UPCOMING|REQUESTS|HISTORY, ?date=YYYY-MM-DD
 // ------------------------------------------------------
 router.get('/appointments', async (req: Request, res: Response) => {
   try {
@@ -376,10 +761,14 @@ router.get('/appointments', async (req: Request, res: Response) => {
       return;
     }
 
-    let where: { doctorId?: string; patientId?: string };
+    let where: any = {};
+    let isCaregiver = false;
 
     if (actor.isClinician) {
-      where = { doctorId: actor.id };
+      where.doctorId = actor.id;
+      if (typeof req.query.patientId === 'string') {
+        where.patientId = req.query.patientId;
+      }
     } else {
       const requestedPatientId =
         typeof req.query.patientId === 'string'
@@ -387,11 +776,17 @@ router.get('/appointments', async (req: Request, res: Response) => {
           : actor.id;
 
       if (requestedPatientId !== actor.id) {
-        const allowed = await caregiverHasPermission(
-          requestedPatientId,
-          actor.email,
-          'MANAGE_CONSULTATIONS',
-        );
+        const allowed =
+          (await caregiverHasPermission(
+            requestedPatientId,
+            actor.email,
+            'VIEW_APPOINTMENTS',
+          )) ||
+          (await caregiverHasPermission(
+            requestedPatientId,
+            actor.email,
+            'MANAGE_CONSULTATIONS',
+          ));
 
         if (!allowed) {
           res.status(403).json({
@@ -399,9 +794,49 @@ router.get('/appointments', async (req: Request, res: Response) => {
           });
           return;
         }
+        isCaregiver = true;
       }
 
-      where = { patientId: requestedPatientId };
+      where.patientId = requestedPatientId;
+    }
+
+    // Filter by specific status (comma-separated or single)
+    if (typeof req.query.status === 'string') {
+      const statuses = req.query.status.split(',').map((s) => s.trim());
+      where.status = statuses.length === 1 ? statuses[0] : { in: statuses };
+    }
+
+    // Filter by visitType
+    if (typeof req.query.visitType === 'string') {
+      where.visitType = req.query.visitType;
+    }
+
+    // Filter preset: TODAY, UPCOMING, REQUESTS, HISTORY
+    const filter = req.query.filter as string | undefined;
+    const now = new Date();
+    if (filter === 'TODAY') {
+      const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+      const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+      where.scheduledAt = { gte: startOfDay, lte: endOfDay };
+    } else if (filter === 'UPCOMING') {
+      where.scheduledAt = { gte: now };
+      if (!where.status) {
+        where.status = { in: ['CONFIRMED', 'REQUESTED', 'RESCHEDULED'] };
+      }
+    } else if (filter === 'REQUESTS') {
+      where.status = 'REQUESTED';
+    } else if (filter === 'HISTORY') {
+      if (!where.status) {
+        where.status = { in: ['COMPLETED', 'CANCELLED', 'DECLINED', 'MISSED'] };
+      }
+    }
+
+    // Filter by specific date (YYYY-MM-DD)
+    if (typeof req.query.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date)) {
+      const [y, m, d] = req.query.date.split('-').map(Number);
+      const start = new Date(Date.UTC(y, m - 1, d, 0, 0, 0));
+      const end = new Date(Date.UTC(y, m - 1, d, 23, 59, 59, 999));
+      where.scheduledAt = { gte: start, lte: end };
     }
 
     const appointments = await prisma.appointment.findMany({
@@ -411,7 +846,7 @@ router.get('/appointments', async (req: Request, res: Response) => {
     });
 
     res.json({
-      appointments: appointments.map(presentAppointment),
+      appointments: appointments.map((a) => presentAppointment(a, isCaregiver)),
     });
   } catch (error) {
     respondWithError(res, error, 'Unable to load appointments.');
@@ -420,9 +855,9 @@ router.get('/appointments', async (req: Request, res: Response) => {
 
 // ------------------------------------------------------
 // POST /api/coordination/appointments
-// Patient/caregiver booking creates REQUESTED.
-// Doctor can schedule only an ACTIVE assigned patient;
-// those appointments are immediately CONFIRMED.
+// Patient/caregiver booking creates REQUESTED with questionnaire.
+// Doctor scheduling creates CONFIRMED.
+// Transaction-safe conflict check guarantees no double-booking.
 // ------------------------------------------------------
 router.post('/appointments', async (req: Request, res: Response) => {
   try {
@@ -461,11 +896,17 @@ router.post('/appointments', async (req: Request, res: Response) => {
 
     // When a caregiver books for someone else, check their consent.
     if (!actor.isClinician && patientId !== actor.id) {
-      const allowed = await caregiverHasPermission(
-        patientId,
-        actor.email,
-        'MANAGE_CONSULTATIONS',
-      );
+      const allowed =
+        (await caregiverHasPermission(
+          patientId,
+          actor.email,
+          'VIEW_APPOINTMENTS',
+        )) ||
+        (await caregiverHasPermission(
+          patientId,
+          actor.email,
+          'MANAGE_CONSULTATIONS',
+        ));
 
       if (!allowed) {
         res.status(403).json({
@@ -477,7 +918,7 @@ router.post('/appointments', async (req: Request, res: Response) => {
 
     const patient = await prisma.user.findUnique({
       where: { id: patientId },
-      select: { id: true },
+      select: { id: true, email: true, profile: { select: { fullName: true } } },
     });
 
     const doctor = await prisma.user.findFirst({
@@ -485,7 +926,7 @@ router.post('/appointments', async (req: Request, res: Response) => {
         id: doctorId,
         isClinician: true,
       },
-      select: { id: true },
+      select: { id: true, email: true, profile: { select: { fullName: true } } },
     });
 
     if (!patient || !doctor) {
@@ -537,18 +978,65 @@ router.post('/appointments', async (req: Request, res: Response) => {
     }
 
     const status = actor.isClinician ? 'CONFIRMED' : 'REQUESTED';
+    const durationMinutes = input.durationMinutes ?? 30;
 
     const created = await prisma.$transaction(async (tx) => {
+      // 1. Transaction-safe conflict check to eliminate double-booking
+      const start = scheduledAt;
+      const end = new Date(start.getTime() + durationMinutes * 60000);
+
+      const candidates = await tx.appointment.findMany({
+        where: {
+          doctorId,
+          status: { in: ['REQUESTED', 'CONFIRMED', 'RESCHEDULED'] },
+          scheduledAt: { lt: end },
+        },
+        select: { id: true, scheduledAt: true, durationMinutes: true },
+      });
+
+      const hasOverlap = candidates.some((c) => {
+        const cEnd = new Date(c.scheduledAt.getTime() + c.durationMinutes * 60000);
+        return start.getTime() < cEnd.getTime() && c.scheduledAt.getTime() < end.getTime();
+      });
+
+      if (hasOverlap) {
+        throw new Error('APPOINTMENT_OVERLAP');
+      }
+
+      // 2. Check doctor time-off / blocked days
+      const timeOff = await tx.doctorTimeOff.findFirst({
+        where: {
+          doctorId,
+          startDate: { lte: end },
+          endDate: { gte: start },
+        },
+      });
+
+      if (timeOff) {
+        throw new Error('DOCTOR_ON_LEAVE');
+      }
+
+      let serializedQuestionnaire: string | null = null;
+      if (input.questionnaireResponse) {
+        serializedQuestionnaire =
+          typeof input.questionnaireResponse === 'string'
+            ? input.questionnaireResponse
+            : JSON.stringify(input.questionnaireResponse);
+      }
+
       const appointment = await tx.appointment.create({
         data: {
           patientId,
           doctorId,
           bookedById: actor.id,
           scheduledAt,
-          durationMinutes: input.durationMinutes ?? 30,
+          durationMinutes,
           reason: input.reason,
           visitType: input.visitType ?? 'CHECKUP',
           status,
+          clinicName: input.clinicName ?? 'Apollo Sugar Clinic, Pune',
+          clinicFacilityId: input.clinicFacilityId,
+          questionnaireResponse: serializedQuestionnaire,
           idempotencyKey: input.idempotencyKey,
         },
         include: appointmentInclude,
@@ -584,11 +1072,46 @@ router.post('/appointments', async (req: Request, res: Response) => {
           action: 'APPOINTMENT_BOOKED',
           entityType: 'Appointment',
           entityId: appointment.id,
-          metadata: JSON.stringify({ status, visitType: appointment.visitType }),
+          metadata: JSON.stringify({
+            status,
+            visitType: appointment.visitType,
+            hasQuestionnaire: !!serializedQuestionnaire,
+          }),
           ipAddress: req.ip,
           userAgent: req.get('user-agent') ?? null,
         },
       });
+
+      // Dispatch Notifications
+      if (!actor.isClinician) {
+        await tx.careNotification.create({
+          data: {
+            userId: doctorId,
+            patientId,
+            actorId: actor.id,
+            type: 'APPOINTMENT_REQUEST',
+            category: 'APPOINTMENT',
+            title: 'New Appointment Request',
+            message: `${patient.profile?.fullName || 'Patient'} requested a ${appointment.visitType} appointment on ${scheduledAt.toLocaleDateString()}.`,
+            link: '/doctor/appointments',
+          },
+        }).catch(() => {});
+      }
+
+      await tx.careNotification.create({
+        data: {
+          userId: patientId,
+          patientId,
+          actorId: actor.id,
+          type: 'APPOINTMENT_UPDATE',
+          category: 'APPOINTMENT',
+          title: actor.isClinician ? 'Appointment Scheduled' : 'Appointment Requested',
+          message: actor.isClinician
+            ? `Your consultation with Dr. ${doctor.profile?.fullName || doctor.email} has been scheduled for ${scheduledAt.toLocaleDateString()}.`
+            : `Your appointment request with Dr. ${doctor.profile?.fullName || doctor.email} for ${scheduledAt.toLocaleDateString()} has been submitted.`,
+          link: '/appointments',
+        },
+      }).catch(() => {});
 
       return appointment;
     });
@@ -597,8 +1120,6 @@ router.post('/appointments', async (req: Request, res: Response) => {
       appointment: presentAppointment(created),
     });
   } catch (error) {
-    // Prisma maps SQLite trigger aborts to P2003 without preserving the trigger
-    // message. Verify a real overlapping slot before returning a conflict.
     if ((error as { code?: string })?.code === 'P2003') {
       const actor = getActor(req);
       const parsed = appointmentSchema.safeParse(req.body);
@@ -607,8 +1128,15 @@ router.post('/appointments', async (req: Request, res: Response) => {
         const start = new Date(parsed.data.scheduledAt);
         const end = new Date(start.getTime() + (parsed.data.durationMinutes ?? 30) * 60000);
         if (doctorId) {
-          const candidates = await prisma.appointment.findMany({ where: { doctorId, status: { in: ['REQUESTED', 'CONFIRMED'] }, scheduledAt: { lt: end } }, select: { scheduledAt: true, durationMinutes: true } });
-          if (candidates.some(a => a.scheduledAt.getTime() + a.durationMinutes * 60000 > start.getTime())) {
+          const candidates = await prisma.appointment.findMany({
+            where: {
+              doctorId,
+              status: { in: ['REQUESTED', 'CONFIRMED', 'RESCHEDULED'] },
+              scheduledAt: { lt: end },
+            },
+            select: { scheduledAt: true, durationMinutes: true },
+          });
+          if (candidates.some((a) => a.scheduledAt.getTime() + a.durationMinutes * 60000 > start.getTime())) {
             res.status(409).json({ error: 'The doctor already has an overlapping appointment.' });
             return;
           }
@@ -621,8 +1149,10 @@ router.post('/appointments', async (req: Request, res: Response) => {
 
 // ------------------------------------------------------
 // PATCH /api/coordination/appointments/:id/status
-// Doctor confirms/declines/completes their own bookings.
-// Patient/caregiver may cancel an authorized booking.
+// Clinician confirms, declines (with reason), reschedules,
+// completes, or marks missed.
+// Patient or authorized caregiver can cancel (with reason)
+// or request reschedule.
 // ------------------------------------------------------
 router.patch(
   '/appointments/:id/status',
@@ -635,7 +1165,8 @@ router.patch(
         return;
       }
 
-      const { status } = appointmentStatusSchema.parse(req.body);
+      const input = appointmentStatusSchema.parse(req.body);
+      const { status } = input;
 
       const appointment = await prisma.appointment.findUnique({
         where: { id: req.params.id },
@@ -647,6 +1178,9 @@ router.patch(
         return;
       }
 
+      let newScheduledAt: Date | undefined;
+      let newDurationMinutes: number | undefined;
+
       if (actor.isClinician) {
         if (appointment.doctorId !== actor.id) {
           res.status(403).json({
@@ -656,11 +1190,12 @@ router.patch(
         }
 
         const validTransition =
-          (status === 'CONFIRMED' && appointment.status === 'REQUESTED') ||
+          (status === 'CONFIRMED' && ['REQUESTED', 'RESCHEDULED'].includes(appointment.status)) ||
           (status === 'DECLINED' && appointment.status === 'REQUESTED') ||
           (status === 'COMPLETED' && appointment.status === 'CONFIRMED') ||
-          (status === 'CANCELLED' &&
-            ['REQUESTED', 'CONFIRMED'].includes(appointment.status));
+          (status === 'MISSED' && appointment.status === 'CONFIRMED') ||
+          (status === 'RESCHEDULED' && ['REQUESTED', 'CONFIRMED'].includes(appointment.status)) ||
+          (status === 'CANCELLED' && ['REQUESTED', 'CONFIRMED', 'RESCHEDULED'].includes(appointment.status));
 
         if (!validTransition) {
           res.status(409).json({
@@ -668,41 +1203,129 @@ router.patch(
           });
           return;
         }
+
+        if (status === 'RESCHEDULED') {
+          if (!input.newScheduledAt) {
+            res.status(400).json({ error: 'A new scheduled time (newScheduledAt) is required to reschedule.' });
+            return;
+          }
+          newScheduledAt = new Date(input.newScheduledAt);
+          if (newScheduledAt.getTime() < Date.now() + 60_000) {
+            res.status(400).json({ error: 'New appointment time must be in the future.' });
+            return;
+          }
+          newDurationMinutes = input.newDurationMinutes ?? appointment.durationMinutes;
+        }
       } else {
-        if (status !== 'CANCELLED') {
+        // Patient or caregiver
+        if (appointment.patientId !== actor.id) {
+          const allowed =
+            (await caregiverHasPermission(
+              appointment.patientId,
+              actor.email,
+              'VIEW_APPOINTMENTS',
+            )) ||
+            (await caregiverHasPermission(
+              appointment.patientId,
+              actor.email,
+              'MANAGE_CONSULTATIONS',
+            ));
+
+          if (!allowed) {
+            res.status(403).json({
+              error: 'You do not have permission to modify this patient’s appointment.',
+            });
+            return;
+          }
+        }
+
+        if (!['CANCELLED', 'RESCHEDULED'].includes(status)) {
           res.status(403).json({
             error: 'Only the assigned doctor can confirm, decline or complete an appointment.',
           });
           return;
         }
 
-        if (appointment.patientId !== actor.id) {
-          const allowed = await caregiverHasPermission(
-            appointment.patientId,
-            actor.email,
-            'MANAGE_CONSULTATIONS',
-          );
-
-          if (!allowed) {
-            res.status(403).json({
-              error: 'You cannot cancel this patient’s appointment.',
-            });
-            return;
-          }
-        }
-
-        if (!['REQUESTED', 'CONFIRMED'].includes(appointment.status)) {
+        if (!['REQUESTED', 'CONFIRMED', 'RESCHEDULED'].includes(appointment.status)) {
           res.status(409).json({
-            error: 'Only requested or confirmed appointments can be cancelled.',
+            error: 'Only requested, confirmed, or rescheduled appointments can be changed.',
           });
           return;
+        }
+
+        if (status === 'RESCHEDULED') {
+          if (!input.newScheduledAt) {
+            res.status(400).json({ error: 'A new scheduled time (newScheduledAt) is required to reschedule.' });
+            return;
+          }
+          newScheduledAt = new Date(input.newScheduledAt);
+          if (newScheduledAt.getTime() < Date.now() + 60_000) {
+            res.status(400).json({ error: 'New appointment time must be in the future.' });
+            return;
+          }
+          newDurationMinutes = input.newDurationMinutes ?? appointment.durationMinutes;
         }
       }
 
       const updated = await prisma.$transaction(async (tx) => {
+        // If rescheduling, check conflict at new time
+        if (newScheduledAt) {
+          const duration = newDurationMinutes ?? appointment.durationMinutes;
+          const end = new Date(newScheduledAt.getTime() + duration * 60000);
+
+          const candidates = await tx.appointment.findMany({
+            where: {
+              doctorId: appointment.doctorId,
+              id: { not: appointment.id },
+              status: { in: ['REQUESTED', 'CONFIRMED', 'RESCHEDULED'] },
+              scheduledAt: { lt: end },
+            },
+            select: { id: true, scheduledAt: true, durationMinutes: true },
+          });
+
+          const hasOverlap = candidates.some((c) => {
+            const cEnd = new Date(c.scheduledAt.getTime() + c.durationMinutes * 60000);
+            return newScheduledAt!.getTime() < cEnd.getTime() && c.scheduledAt.getTime() < end.getTime();
+          });
+
+          if (hasOverlap) {
+            throw new Error('APPOINTMENT_OVERLAP');
+          }
+
+          const timeOff = await tx.doctorTimeOff.findFirst({
+            where: {
+              doctorId: appointment.doctorId,
+              startDate: { lte: end },
+              endDate: { gte: newScheduledAt },
+            },
+          });
+
+          if (timeOff) {
+            throw new Error('DOCTOR_ON_LEAVE');
+          }
+        }
+
+        const updateData: any = { status };
+        if (status === 'DECLINED') {
+          updateData.rejectionReason = input.rejectionReason || 'Declined by doctor';
+        }
+        if (status === 'CANCELLED') {
+          updateData.cancellationReason =
+            input.cancellationReason || (actor.isClinician ? 'Cancelled by doctor' : 'Cancelled by patient');
+        }
+        if (status === 'COMPLETED') {
+          updateData.completedAt = new Date();
+        }
+        if (newScheduledAt) {
+          updateData.scheduledAt = newScheduledAt;
+          if (newDurationMinutes) {
+            updateData.durationMinutes = newDurationMinutes;
+          }
+        }
+
         const result = await tx.appointment.update({
           where: { id: appointment.id },
-          data: { status },
+          data: updateData,
           include: appointmentInclude,
         });
 
@@ -735,24 +1358,70 @@ router.patch(
             action: `APPOINTMENT_${status}`,
             entityType: 'Appointment',
             entityId: appointment.id,
-            metadata: JSON.stringify({ status }),
+            metadata: JSON.stringify({
+              status,
+              rejectionReason: updateData.rejectionReason,
+              cancellationReason: updateData.cancellationReason,
+              newScheduledAt: newScheduledAt ? newScheduledAt.toISOString() : undefined,
+            }),
             ipAddress: req.ip,
             userAgent: req.get('user-agent') ?? null,
           },
         });
 
-        // Notify patient of appointment status update
+        // Notifications
+        let notifTitle = `Appointment ${status}`;
+        let notifMessage = `Your appointment has been updated to ${status.toLowerCase()}.`;
+
+        if (status === 'CONFIRMED') {
+          notifTitle = 'Appointment Confirmed';
+          notifMessage = `Your appointment with Dr. ${appointment.doctor?.profile?.fullName || 'the doctor'} on ${new Date(result.scheduledAt).toLocaleDateString()} has been confirmed.`;
+        } else if (status === 'DECLINED') {
+          notifTitle = 'Appointment Declined';
+          notifMessage = `Your appointment request was declined. Reason: ${updateData.rejectionReason}`;
+        } else if (status === 'RESCHEDULED') {
+          notifTitle = 'Appointment Rescheduled';
+          notifMessage = `Your appointment is rescheduled to ${new Date(result.scheduledAt).toLocaleString()}.`;
+        } else if (status === 'COMPLETED') {
+          notifTitle = 'Consultation Completed';
+          notifMessage = `Your visit with Dr. ${appointment.doctor?.profile?.fullName || 'the doctor'} was marked completed. Clinical summary is updated.`;
+        } else if (status === 'MISSED') {
+          notifTitle = 'Appointment Missed';
+          notifMessage = `You missed your scheduled consultation on ${new Date(appointment.scheduledAt).toLocaleDateString()}. Please reschedule.`;
+        } else if (status === 'CANCELLED') {
+          notifTitle = 'Appointment Cancelled';
+          notifMessage = `Your appointment on ${new Date(appointment.scheduledAt).toLocaleDateString()} was cancelled. Reason: ${updateData.cancellationReason}`;
+        }
+
+        // Notify patient
         await tx.careNotification.create({
           data: {
             userId: appointment.patientId,
             patientId: appointment.patientId,
             actorId: actor.id,
             type: 'APPOINTMENT_UPDATE',
-            title: `Appointment ${status === 'CONFIRMED' ? 'Confirmed' : status === 'CANCELLED' ? 'Cancelled' : status === 'DECLINED' ? 'Declined' : 'Updated'}`,
-            message: `Your appointment with ${appointment.doctor?.profile?.fullName || 'the doctor'} scheduled for ${new Date(appointment.scheduledAt).toLocaleDateString()} has been ${status.toLowerCase()}.`,
-            link: '/consultation',
+            category: 'APPOINTMENT',
+            title: notifTitle,
+            message: notifMessage,
+            link: '/appointments',
           },
         }).catch(() => {});
+
+        // If patient cancelled or rescheduled, notify doctor
+        if (!actor.isClinician) {
+          await tx.careNotification.create({
+            data: {
+              userId: appointment.doctorId,
+              patientId: appointment.patientId,
+              actorId: actor.id,
+              type: 'APPOINTMENT_UPDATE',
+              category: 'APPOINTMENT',
+              title: `Patient ${notifTitle}`,
+              message: `${appointment.patient?.profile?.fullName || 'Patient'} has ${status.toLowerCase()} their appointment for ${new Date(result.scheduledAt).toLocaleDateString()}.`,
+              link: '/doctor/appointments',
+            },
+          }).catch(() => {});
+        }
 
         return result;
       });
@@ -912,25 +1581,6 @@ router.get(
         take: 10,
       });
 
-      // Fetch doctor's pending consultation scribe notes
-      const pendingNotes = await prisma.consultationNote.findMany({
-        where: {
-          clinicianId: actor.id,
-          status: { in: ['DRAFT', 'RECORDING'] },
-        },
-        include: {
-          user: {
-            select: {
-              id: true,
-              email: true,
-              profile: { select: { fullName: true } },
-            },
-          },
-        },
-        orderBy: { createdAt: 'desc' },
-        take: 10,
-      });
-
       // Transform patient items
       let patients = assignments.map((asgn) => {
         const p = asgn.patient;
@@ -1049,20 +1699,10 @@ router.get(
           totalAssignedPatients: assignments.length,
           highRiskCount: patients.filter((p) => p.risk === 'HIGH').length,
           overdueFollowUpsCount: patients.filter((p) => p.isReviewOverdue).length,
-          pendingConsultationsCount: pendingNotes.length,
           upcomingAppointmentsCount: upcomingAppointments.length,
         },
         patients,
-        upcomingAppointments: upcomingAppointments.map(presentAppointment),
-        pendingNotes: pendingNotes.map((n) => ({
-          id: n.id,
-          patientId: n.userId,
-          patientName: n.user?.profile?.fullName || n.user?.email || 'Patient',
-          clinicianName: n.clinicianName,
-          status: n.status,
-          recordingDurationSeconds: n.recordingDurationSeconds,
-          createdAt: n.createdAt.toISOString(),
-        })),
+        upcomingAppointments: upcomingAppointments.map((a) => presentAppointment(a)),
       });
     } catch (error) {
       respondWithError(res, error, 'Unable to load doctor command center dashboard.');
@@ -1423,7 +2063,7 @@ router.get('/activity-feed', async (req: Request, res: Response) => {
     const canViewMessages = true;
     const canViewConsents = access.role !== 'CAREGIVER';
 
-    const [observations, tasks, carePlans, appointments, scribeNotes, messages, consents] = await Promise.all([
+    const [observations, tasks, carePlans, appointments, consultationNotes, messages, consents] = await Promise.all([
       canViewObservations && (filterType === 'ALL' || filterType === 'OBSERVATIONS')
         ? prisma.healthObservation.findMany({
             where: { userId: requestedPatientId },
@@ -1533,7 +2173,7 @@ router.get('/activity-feed', async (req: Request, res: Response) => {
       });
     });
 
-    scribeNotes.forEach((s) => {
+    consultationNotes.forEach((s) => {
       feed.push({
         id: `note-${s.id}`,
         type: 'CLINICAL',

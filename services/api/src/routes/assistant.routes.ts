@@ -1,13 +1,12 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
-import { PrismaClient } from '@prisma/client';
 import { requireAuth } from '../middleware/auth';
 import { validateRequest } from '../middleware/validate';
 import { resolvePatientContext } from '../permissions/evaluator';
 import { logAuditEvent } from '../audit/auditLogger';
 
 const router = Router();
-const prisma = new PrismaClient();
+import { prisma } from '../db/prisma';
 
 const querySchema = z.object({
   prompt: z.string().min(1).max(500),

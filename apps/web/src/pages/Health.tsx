@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, type FormEvent } from 'react';
 import { apiFetch } from '../api/client';
+import MedicalReportSourcePreview from '../components/MedicalReportSourcePreview';
 import {
   Activity,
   Plus,
@@ -57,12 +58,17 @@ interface BiomarkerItem {
 }
 
 interface ExtractedDataPayload {
+  provider?: string;
+  status?: string;
+  text?: string;
+  error?: string;
   plainSummary?: string;
   doctor?: string;
   medicines?: MedicineItem[];
   biomarkers?: BiomarkerItem[];
   doctorAdvice?: string[];
   fileDataUrl?: string | null;
+  isSynthetic?: boolean;
 }
 
 interface HealthDocument {
@@ -73,6 +79,8 @@ interface HealthDocument {
   reportDate: string;
   notes?: string;
   processingStatus: string;
+  fileSizeBytes?: number;
+  mimeType?: string;
   extractedData?: ExtractedDataPayload | null;
 }
 
@@ -101,22 +109,25 @@ export default function Health() {
   const [isScanning, setIsScanning] = useState(false);
   const [scanStep, setScanStep] = useState('');
 
-  // Scanning Draft State
+  // Reserved for a future explicit review step. The current OCR flow persists
+  // provider output directly and never enables this panel.
   const [draftTitle, setDraftTitle] = useState('');
   const [draftCategory, setDraftCategory] = useState<'PRESCRIPTION' | 'LAB_REPORT'>('PRESCRIPTION');
   const [draftFacility, setDraftFacility] = useState('');
-  const [draftMedicines, setDraftMedicines] = useState<MedicineItem[]>([]);
-  const [draftBiomarkers, setDraftBiomarkers] = useState<BiomarkerItem[]>([]);
-  const [draftAdvice, setDraftAdvice] = useState<string[]>([]);
-  const [draftSummary, setDraftSummary] = useState('');
-  const [uploadedFileDataUrl, setUploadedFileDataUrl] = useState<string | null>(null);
-  const [hasExtractedDraft, setHasExtractedDraft] = useState(false);
+  const [draftMedicines] = useState<MedicineItem[]>([]);
+  const [draftBiomarkers] = useState<BiomarkerItem[]>([]);
+  const [draftAdvice] = useState<string[]>([]);
+  const [draftSummary] = useState('');
+  const hasExtractedDraft = false;
   const [syncToTimeline, setSyncToTimeline] = useState(true);
-  const [savingDoc, setSavingDoc] = useState(false);
+  const savingDoc = false;
 
   // Modal State
   const [selectedDocForViewing, setSelectedDocForViewing] = useState<HealthDocument | null>(null);
   const [docModalTab, setDocModalTab] = useState<'summary' | 'file'>('summary');
+  const [abhaBusy, setAbhaBusy] = useState<'export' | 'import' | null>(null);
+  const [abhaMessage, setAbhaMessage] = useState<string | null>(null);
+  const [abhaSummary, setAbhaSummary] = useState<any | null>(null);
 
   const showNotification = (msg: string) => {
     setSuccessMessage(msg);
@@ -150,7 +161,7 @@ export default function Health() {
     fetchDocuments();
   }, []);
 
-  // Clean raw filenames like "VILAS KADAM 1780506390000" for human readability
+  // Clean raw filenames like "DEMO_PATIENT_LAB_REPORT_1780506390000" for human readability
   const formatDocumentDisplayTitle = (raw: string, cat: string) => {
     if (!raw) return cat === 'PRESCRIPTION' ? "Doctor's Prescription Slip" : 'Blood Test Report';
     let cleaned = raw.replace(/\b\d{10,}\b/g, '').replace(/\.[^/.]+$/, '').trim();
@@ -315,128 +326,44 @@ export default function Health() {
   };
 
   // =========================================================
-  // SMART DOCUMENT SCANNING (PDF.js + Tesseract.js)
+  // CLINICAL DOCUMENT OCR
   // =========================================================
-  const loadPdfJs = (): Promise<any> => {
-    if ((window as any).pdfjsLib) {
-      return Promise.resolve((window as any).pdfjsLib);
-    }
-    return new Promise((resolve, reject) => {
-      const script = document.createElement('script');
-      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
-      script.onload = () => {
-        const pdfjsLib = (window as any).pdfjsLib;
-        if (pdfjsLib) {
-          pdfjsLib.GlobalWorkerOptions.workerSrc =
-            'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-          resolve(pdfjsLib);
-        } else {
-          reject(new Error('PDF reader library could not be initialized'));
-        }
-      };
-      script.onerror = () => reject(new Error('PDF reader script failed to load'));
-      document.head.appendChild(script);
-    });
-  };
-
-  const loadTesseractFromCdn = (): Promise<any> => {
-    if ((window as any).Tesseract) {
-      return Promise.resolve((window as any).Tesseract);
-    }
-    return new Promise((resolve, reject) => {
-      const script = document.createElement('script');
-      script.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
-      script.onload = () => resolve((window as any).Tesseract);
-      script.onerror = () => reject(new Error('Document reader engine unavailable'));
-      document.head.appendChild(script);
-    });
-  };
-
+  // The original file is uploaded to the API and processed by the configured
+  // provider. Synthetic mode is explicit in the UI and never represents a real
+  // patient or a clinical interpretation.
   const handleFileUpload = async (file: File) => {
     setIsScanning(true);
-    setHasExtractedDraft(false);
-
-    let extractedCleanText = '';
 
     try {
-      if (file.type === 'application/pdf') {
-        setScanStep('Decoding medical PDF document...');
-        const arrayBuffer = await file.arrayBuffer();
-        const pdfjsLib = await loadPdfJs();
-        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      setScanStep('Uploading the original report securely...');
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('title', file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' '));
 
-        let digitalText = '';
-        for (let i = 1; i <= Math.min(pdf.numPages, 3); i++) {
-          const page = await pdf.getPage(i);
-          const textContent = await page.getTextContent();
-          const pageText = textContent.items.map((item: any) => item.str).join(' ');
-          digitalText += pageText + '\n';
-        }
-
-        // Render Page 1 to Canvas for thumbnail preview
-        const firstPage = await pdf.getPage(1);
-        const viewport = firstPage.getViewport({ scale: 1.5 });
-        const canvas = document.createElement('canvas');
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          await firstPage.render({ canvasContext: ctx, viewport }).promise;
-          const renderedDataUrl = canvas.toDataURL('image/png');
-          setUploadedFileDataUrl(renderedDataUrl);
-
-          if (digitalText.trim().length < 25) {
-            setScanStep('Scanned document detected. Reading paper handwriting...');
-            const Tesseract = await loadTesseractFromCdn().catch(() => null);
-            if (Tesseract) {
-              const ocrRes = await Tesseract.recognize(canvas, 'eng');
-              digitalText = ocrRes.data.text;
-            }
-          }
-        }
-
-        extractedCleanText = digitalText;
-      } else if (file.type.startsWith('image/')) {
-        const previewUrl = URL.createObjectURL(file);
-        setUploadedFileDataUrl(previewUrl);
-
-        setScanStep('Reading doctor prescription / report pixels...');
-        const Tesseract = await loadTesseractFromCdn().catch(() => null);
-
-        if (Tesseract) {
-          const result = await Tesseract.recognize(file, 'eng', {
-            logger: (m: any) => {
-              if (m.status === 'recognizing text') {
-                setScanStep(`Reading document text... ${Math.round((m.progress || 0) * 100)}%`);
-              }
-            },
-          });
-          extractedCleanText = result.data.text;
-        } else {
-          extractedCleanText = 'SAHYADRI SPECIALTY HOSPITAL PUNE. Tab Metformin 500mg SR - 1 tablet with dinner. Fasting glucose monitoring twice weekly.';
-        }
-      }
-
-      setScanStep('Translating into plain words: organizing medicines and test targets...');
-      const res = await apiFetch<{ success: boolean; extracted: any }>('/documents/scan-ocr', {
+      const uploadResult = await apiFetch<{ document: HealthDocument; extraction: { status: string } }>('/documents/upload-report', {
         method: 'POST',
-        body: JSON.stringify({
-          ocrText: extractedCleanText,
-          fileName: file.name,
-        }),
+        body: formData,
       });
 
-      const ext = res.extracted;
-      setDraftTitle(ext.title);
-      setDraftCategory(ext.category);
-      setDraftFacility(ext.issuingFacility);
-      setDraftMedicines(ext.medicines || []);
-      setDraftBiomarkers(ext.biomarkers || []);
-      setDraftAdvice(ext.doctorAdvice || []);
-      setDraftSummary(ext.plainSummary || '');
-      setHasExtractedDraft(true);
+      setScanStep('OCR is extracting report text; the original file stays available for comparison...');
+      let completed: HealthDocument | null = null;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1500));
+        const current = await apiFetch<{ documents: HealthDocument[] }>('/documents');
+        setDocuments(current.documents || []);
+        completed = (current.documents || []).find((doc) => doc.id === uploadResult.document.id) || null;
+        if (completed && completed.processingStatus !== 'PENDING') break;
+      }
 
-      showNotification('Document processed successfully! Review your summary below.');
+      if (!completed || completed.processingStatus === 'PENDING') {
+        showNotification('Report saved. OCR is still processing; refresh this page to review the result.');
+      } else if (completed.processingStatus === 'EXTRACTION_FAILED') {
+        throw new Error(completed.notes || 'Google Cloud Vision could not extract text from this report.');
+      } else {
+        setSelectedDocForViewing(completed);
+        setDocModalTab('summary');
+        showNotification('Report processed. Review the verified OCR text before using it clinically.');
+      }
     } catch (err: any) {
       alert(`Could not process document: ${err.message}`);
     } finally {
@@ -445,40 +372,10 @@ export default function Health() {
     }
   };
 
-  const handleConfirmAndSave = async (e: FormEvent) => {
+  // The old client-side draft panel is intentionally disabled. Keep its form
+  // handler inert so stale UI state can never commit unverified values.
+  const handleConfirmAndSave = (e: FormEvent) => {
     e.preventDefault();
-    if (!hasExtractedDraft || savingDoc) return;
-
-    try {
-      setSavingDoc(true);
-      await apiFetch('/documents/confirm-ocr', {
-        method: 'POST',
-        body: JSON.stringify({
-          title: draftTitle,
-          category: draftCategory,
-          issuingFacility: draftFacility,
-          reportDate: new Date().toISOString(),
-          plainSummary: draftSummary,
-          medicines: draftMedicines,
-          biomarkers: draftBiomarkers,
-          doctorAdvice: draftAdvice,
-          syncToObservations: syncToTimeline,
-          fileDataUrl: uploadedFileDataUrl,
-        }),
-      });
-
-      showNotification('Prescription and Smart Medical Summary saved successfully.');
-      setHasExtractedDraft(false);
-      setUploadedFileDataUrl(null);
-      await fetchDocuments();
-      if (syncToTimeline) {
-        await fetchObservations();
-      }
-    } catch (err: any) {
-      alert(`Could not save record: ${err.message}`);
-    } finally {
-      setSavingDoc(false);
-    }
   };
 
   const handleDeleteDocument = async (id: string) => {
@@ -489,6 +386,25 @@ export default function Health() {
       await fetchDocuments();
     } catch (err: any) {
       alert(`Failed to delete document: ${err.message}`);
+    }
+  };
+
+  const runSyntheticAbhaExchange = async (operation: 'export' | 'import') => {
+    setAbhaBusy(operation);
+    setAbhaMessage(null);
+    try {
+      const result = await apiFetch<{ abhaId: string; summary: any; alreadyImported?: boolean }>(`/abha/${operation}`, {
+        method: operation === 'import' ? 'POST' : 'GET',
+      });
+      setAbhaSummary({ ...result.summary, abhaId: result.abhaId });
+      setAbhaMessage(operation === 'import'
+        ? result.alreadyImported ? 'Synthetic ABHA data is already imported; your health record is up to date.' : 'Synthetic patient health imported successfully.'
+        : 'Synthetic ABHA health summary is ready to review.');
+      if (operation === 'import') await fetchDocuments();
+    } catch (err) {
+      setAbhaMessage(err instanceof Error ? err.message : 'Synthetic ABHA exchange failed.');
+    } finally {
+      setAbhaBusy(null);
     }
   };
 
@@ -799,6 +715,22 @@ export default function Health() {
               </div>
             </div>
 
+            <div className="rounded-2xl border border-indigo-200 bg-indigo-50/60 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-indigo-800">ABHA showcase sandbox</p>
+                  <p className="mt-1 max-w-2xl text-xs leading-relaxed text-indigo-950">Use one click to export a patient-health summary or import the bundled synthetic health record. This is a local frontend/backend showcase only — no ABDM connection.</p>
+                </div>
+                <div className="flex shrink-0 flex-wrap gap-2">
+                  <button type="button" onClick={() => void runSyntheticAbhaExchange('export')} disabled={Boolean(abhaBusy)} className="rounded-xl border border-indigo-300 bg-white px-3 py-2 text-xs font-bold text-indigo-900 hover:bg-indigo-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50">{abhaBusy === 'export' ? 'Preparing…' : 'Export to ABHA ID'}</button>
+                  <button type="button" onClick={() => void runSyntheticAbhaExchange('import')} disabled={Boolean(abhaBusy)} className="rounded-xl bg-indigo-700 px-3 py-2 text-xs font-bold text-white hover:bg-indigo-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50">{abhaBusy === 'import' ? 'Importing…' : 'Import from ABHA ID'}</button>
+                </div>
+              </div>
+              {abhaMessage && <p role="status" className="mt-3 rounded-xl border border-indigo-200 bg-white px-3 py-2 text-xs font-semibold text-indigo-900">{abhaMessage}</p>}
+              {abhaSummary && <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-5"><div className="col-span-2 rounded-xl border border-indigo-100 bg-white p-2 sm:col-span-1"><p className="text-[10px] uppercase text-slate-500">Synthetic ABHA ID</p><p className="mt-1 text-xs font-black text-indigo-900">{abhaSummary.abhaId}</p></div>{Object.entries(abhaSummary.counts || {}).map(([key, value]) => <div key={key} className="rounded-xl border border-indigo-100 bg-white p-2"><p className="text-[10px] uppercase text-slate-500">{key}</p><p className="mt-1 text-sm font-black text-indigo-900">{String(value)}</p></div>)}</div>}
+              {abhaSummary && <div className="mt-3 rounded-xl border border-indigo-100 bg-white p-3 text-xs text-slate-700"><div className="flex flex-wrap items-center justify-between gap-2"><span className="font-bold text-slate-950">Synthetic patient health summary</span><span className="text-[10px] font-semibold text-indigo-700">{abhaSummary.patient?.fullName || 'Synthetic Demo Patient'}</span></div><div className="mt-2 grid gap-2 sm:grid-cols-2"><div><p className="text-[10px] font-bold uppercase text-slate-500">Recent readings</p><p className="mt-1">{(abhaSummary.observations || []).slice(0, 3).map((item: any) => `${item.type.replace(/_/g, ' ')} ${item.numericValue} ${item.unit}`).join(' · ') || 'No readings in summary'}</p></div><div><p className="text-[10px] font-bold uppercase text-slate-500">Active medicines</p><p className="mt-1">{(abhaSummary.medications || []).slice(0, 3).map((item: any) => item.medicationName || item.medicineName).join(' · ') || 'No active medicines in summary'}</p></div></div><p className="mt-2 text-[10px] leading-relaxed text-slate-500">{abhaSummary.disclaimer}</p></div>}
+            </div>
+
             {/* DOCUMENT UPLOAD ZONE (Clean & No Demo Buttons) */}
             <div className="border-2 border-dashed border-teal-200 bg-teal-50/40 rounded-2xl p-8 text-center space-y-4">
               <div className="h-14 w-14 rounded-2xl bg-teal-100 text-teal-700 flex items-center justify-center mx-auto shadow-2xs">
@@ -850,8 +782,6 @@ export default function Health() {
                   <button
                     type="button"
                     onClick={() => {
-                      setHasExtractedDraft(false);
-                      setUploadedFileDataUrl(null);
                     }}
                     className="text-slate-400 hover:text-slate-600 p-1"
                   >
@@ -992,8 +922,6 @@ export default function Health() {
                   <button
                     type="button"
                     onClick={() => {
-                      setHasExtractedDraft(false);
-                      setUploadedFileDataUrl(null);
                     }}
                     className="px-3.5 py-2 rounded-xl text-slate-600 hover:bg-slate-100 font-semibold"
                   >
@@ -1203,6 +1131,23 @@ export default function Health() {
                     </p>
                   </div>
 
+                  {selectedDocForViewing.extractedData?.text && (
+                    <div className="space-y-2 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <h4 className="font-bold text-slate-900 text-sm">Verified OCR text</h4>
+                        <span className="rounded-full bg-white px-2 py-1 text-[10px] font-bold text-slate-600 border border-slate-200">
+                          {selectedDocForViewing.extractedData.provider || 'Configured OCR provider'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-500">
+                        This is the provider output. Review it against the original document before making clinical decisions.
+                      </p>
+                      <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-xl bg-white p-3 text-[11px] leading-relaxed text-slate-700 border border-slate-200">
+                        {selectedDocForViewing.extractedData.text}
+                      </pre>
+                    </div>
+                  )}
+
                   {/* LAB BIOMARKERS WITH VISUAL HEALTH GAUGE / METER */}
                   {selectedDocForViewing.extractedData?.biomarkers &&
                     selectedDocForViewing.extractedData.biomarkers.length > 0 && (
@@ -1401,29 +1346,11 @@ export default function Health() {
                 <div className="space-y-4">
                   {selectedDocForViewing.extractedData?.fileDataUrl ? (
                     <div className="border border-slate-200 rounded-2xl p-4 bg-slate-100 text-center space-y-3">
-                      <img
-                        src={selectedDocForViewing.extractedData.fileDataUrl}
-                        alt="Original Document File"
-                        className="max-h-[460px] w-auto mx-auto rounded-xl shadow-xs border border-slate-300"
-                      />
-                      <div className="flex justify-center pt-2">
-                        <a
-                          href={selectedDocForViewing.extractedData.fileDataUrl}
-                          download={`${selectedDocForViewing.title}.png`}
-                          className="inline-flex items-center gap-2 px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition shadow-xs"
-                        >
-                          <FileDown className="h-4 w-4" /> Download Original Document Image
-                        </a>
-                      </div>
+                      <img src={selectedDocForViewing.extractedData.fileDataUrl} alt="Original Document File" className="max-h-[460px] w-auto mx-auto rounded-xl shadow-xs border border-slate-300" />
+                      <div className="flex justify-center pt-2"><a href={selectedDocForViewing.extractedData.fileDataUrl} download={`${selectedDocForViewing.title}.png`} className="inline-flex items-center gap-2 px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition shadow-xs"><FileDown className="h-4 w-4" /> Download Original Document Image</a></div>
                     </div>
                   ) : (
-                    <div className="py-14 text-center bg-slate-50 rounded-2xl border border-dashed border-slate-300 space-y-3">
-                      <FileCheck className="h-12 w-12 text-slate-400 mx-auto" />
-                      <p className="font-bold text-slate-800 text-sm">Original File Archived</p>
-                      <p className="text-xs text-slate-500 max-w-sm mx-auto">
-                        This medical document has been cataloged and translated into your personal health file. You can see all extracted medicines and values under Option 1.
-                      </p>
-                    </div>
+                    <MedicalReportSourcePreview documentId={selectedDocForViewing.id} title={selectedDocForViewing.title} mimeType={selectedDocForViewing.mimeType} />
                   )}
                 </div>
               )}

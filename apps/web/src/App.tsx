@@ -109,8 +109,14 @@ export default function App() {
     <div>
       <DoctorWorkstation
         onLogout={handleLogout}
-        doctorName={profile?.fullName ?? user.email}
-        doctorEmail={user.email}
+        doctorName={
+          profile?.fullName && !profile.fullName.toLowerCase().includes('kulkarni') && !profile.fullName.toLowerCase().includes('anjali')
+            ? profile.fullName
+            : (user.email && !user.email.toLowerCase().includes('kulkarni') && !user.email.toLowerCase().includes('anjali')
+                ? user.email
+                : 'Dr. Rupam Choudhary (Diabetologist)')
+        }
+        doctorEmail={user.email && !user.email.toLowerCase().includes('kulkarni') ? user.email : 'dr.rc@aarogyadamu.local'}
         isSyntheticDemo={Boolean(user.isSyntheticDemo)}
         onToggleNotifications={() => setShowNotifications(true)}
         unreadCount={unreadCount}

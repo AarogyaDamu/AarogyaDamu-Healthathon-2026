@@ -70,7 +70,8 @@ export async function rotateRefreshToken(
     stored.revokedAt ||
     stored.session.revokedAt ||
     stored.expiresAt <= now ||
-    stored.session.expiresAt <= now
+    stored.session.expiresAt <= now ||
+    stored.session.user.isActive === false
   ) {
     return null;
   }

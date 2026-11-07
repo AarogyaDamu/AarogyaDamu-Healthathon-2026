@@ -1,0 +1,80 @@
+```mermaid
+flowchart TD
+  subgraph Clients["Presentation Layer (Two-Product Architecture)"]
+    subgraph Mobile["Patient / Caregiver Mobile App (Expo / React Native)"]
+      M_LOG["Lifestyle Entry Modal\n(Activity, Sleep, Water, Food, Wellbeing)"]
+      M_TWIN["Digital Health Twin Screen\n(Read-Only Personal Summary)"]
+      M_ALERT["Data Quality & Recency Alerts\n(Missing Glucose/Sleep/Meds)"]
+      M_AUDIT["Correction Reason Input\n(Mandatory for Edits)"]
+    end
+
+    subgraph Web["Doctor Web Portal (React / Vite)"]
+      W_OVERVIEW["Clinical Overview Snapshot\n(7-Day Habits & Twin Alerts)"]
+      W_TWIN_TAB["Lifestyle & Twin Drawer Tab\n(4 Health Pillars & Audit Trail)"]
+      W_GUARD["Clinical Governance Banner\n(PENDING_CLINICIAN_APPROVAL)"]
+    end
+  end
+
+  subgraph API["Backend API Service Layer (services/api)"]
+    FF["Feature Flag Middleware\nP0_3_LIFESTYLE_TWIN (dev=enabled)"]
+    AUTH["RBAC & Permission Evaluator\n(Patient Ownership / Caregiver VIEW_LIFESTYLE / Doctor Assignment)"]
+    
+    subgraph Routes["HTTP Endpoints"]
+      R_LIFESTYLE["/api/lifestyle\nGET, POST, PATCH, DELETE, /stats"]
+      R_TWIN["/api/health-twin\nGET (Personalized Twin View)"]
+    end
+
+    subgraph TwinEngine["Digital Health Twin Engine (healthTwinService.ts)"]
+      V_CALC["Pillar 1: Glycemic & Vitals Profile\n(Mean Glucose, TIR 70-180 mg/dL, Last BP & HbA1c)"]
+      L_CALC["Pillar 2: Lifestyle Habit Aggregator\n(Weekly Activity, Avg Sleep, Daily Hydration)"]
+      M_CALC["Pillar 3: Medication Status\n(Active, Unreviewed Count, 14d Adherence %)"]
+      C_CALC["Pillar 4: Care Plan Progress\n(Active Plan Title, Tasks Progress %)"]
+      Q_CALC["Data Quality & Freshness Engine\n(Recency Rules & Missing Data Warnings)"]
+    end
+
+    AUDIT_SRV["Audit Logger & Idempotency Handler\n(Multi-Source Provenance & Diff Tracking)"]
+  end
+
+  subgraph DataStore["Persistence Layer (SQLite / Prisma)"]
+    DB_LIFE[("LifestyleRecord\ncategory, numericValue, unit, qualitativeValue,\nnotes, source, reasonForCorrection, idempotencyKey")]
+    DB_OBS[("HealthObservation\nGLUCOSE, BP, WEIGHT, HBA1C")]
+    DB_MED[("Medication & MedicationAdherenceEvent\nTAKEN, SKIPPED, adherence stats")]
+    DB_PLAN[("CarePlan & CareTask\nStatus & adherence")]
+    DB_AUDIT[("AuditLog\nActor, Action, Diff, Timestamp")]
+  end
+
+  subgraph Governance["Clinical Safety Guardrails"]
+    G1["Deterministic Rule-Based Only\n(No ML Simulation or Trajectory Prediction)"]
+    G2["Non-Autonomous Prescriber\n(No Dosage or Insulin Recommendations)"]
+    G3["Non-Causation Rule\n(Correlations != Clinical Causation)"]
+    G4["Explicit Missing Data Handling\n(Displays 'No data recorded' - No Imputation)"]
+  end
+
+  M_LOG -->|POST /api/lifestyle| FF
+  M_AUDIT -->|PATCH /api/lifestyle/:id| FF
+  M_TWIN -->|GET /api/health-twin| FF
+  W_TWIN_TAB -->|GET /api/health-twin with X-Target-Patient-Id| FF
+
+  FF --> AUTH
+  AUTH --> R_LIFESTYLE
+  AUTH --> R_TWIN
+
+  R_LIFESTYLE --> AUDIT_SRV
+  AUDIT_SRV --> DB_LIFE
+  AUDIT_SRV --> DB_AUDIT
+
+  R_TWIN --> TwinEngine
+  TwinEngine --> V_CALC
+  TwinEngine --> L_CALC
+  TwinEngine --> M_CALC
+  TwinEngine --> C_CALC
+  TwinEngine --> Q_CALC
+
+  V_CALC --> DB_OBS
+  L_CALC --> DB_LIFE
+  M_CALC --> DB_MED
+  C_CALC --> DB_PLAN
+
+  TwinEngine -.-> Governance
+```
+

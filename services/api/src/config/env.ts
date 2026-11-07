@@ -6,8 +6,12 @@ dotenv.config({ path: path.resolve(process.cwd(), '.env') });
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  APP_ENV: z.enum(['development', 'staging', 'production']).default('development'),
   PORT: z.coerce.number().default(4000),
-  DATABASE_URL: z.string().default('file:./dev.db'),
+  DATABASE_URL: z
+    .string()
+    .regex(/^postgres(?:ql)?:\/\//i, 'DATABASE_URL must use PostgreSQL; SQLite development databases are not supported.')
+    .default('postgresql://aarogyadamu:change-me@localhost:5432/aarogyadamu_dev?schema=public'),
   JWT_SECRET: z.string().trim().min(32, 'JWT_SECRET must be at least 32 characters long').default('aarogyadamu_super_secure_clinical_jwt_secret_2026_dev_only'),
   JWT_EXPIRES_IN: z.string().default('15m'),
   JWT_ISSUER: z.string().default('aarogyadamu-api'),
@@ -20,13 +24,30 @@ const envSchema = z.object({
   EMAIL_FROM: z.string().optional().transform((value) => value?.trim() || undefined).pipe(z.string().email().optional()),
   WEB_APP_URL: z.string().url().default('http://localhost:5173'),
   API_PUBLIC_URL: z.string().url().default('http://localhost:4000'),
-  ALLOWED_ORIGINS: z.string().default('http://localhost:5173,http://localhost:8081'),
+  ALLOWED_ORIGINS: z.string().default('http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:3000,http://localhost:4173,http://localhost:8081,http://localhost:8082,http://127.0.0.1:5173,http://127.0.0.1:5174,http://127.0.0.1:5175,http://127.0.0.1:8081,http://127.0.0.1:8082'),
   TRUST_PROXY: z.string().default('false'),
   RATE_LIMIT_STORE: z.enum(['memory', 'redis']).default('memory'),
   REDIS_URL: z.string().optional().transform((value) => value?.trim() || undefined),
+  ENABLE_AGENT_EXPIRY_WORKER: z.string().default('false').transform((val) => val === 'true'),
+  AGENT_EXPIRY_INTERVAL_MS: z.coerce.number().default(15 * 60 * 1000),
   STORAGE_DIR: z.string().default(path.resolve(process.cwd(), 'uploads', 'private')),
-  ALLOW_DEMO_AUTH: z.string().default('true').transform((val) => val === 'true'),
+  // Demo authentication is opt-in even for development; it is always rejected
+  // by the production validation below.
+  ALLOW_DEMO_AUTH: z.string().default('false').transform((val) => val === 'true'),
   GEMINI_API_KEY: z.string().trim().optional().transform((val) => (val && val.length > 0 ? val : undefined)),
+  SARVAM_API_KEY: z.string().trim().optional().transform((val) => (val && val.length > 0 ? val : undefined)),
+  SARVAM_TTS_MODEL: z.string().trim().default('bulbul:v4-flash'),
+  SARVAM_TTS_SPEAKER: z.string().trim().optional().transform((val) => (val && val.length > 0 ? val : undefined)),
+  SARVAM_STT_MODEL: z.string().trim().default('saarika:v2'),
+  ALLOW_ROBOTIC_VOICE_FALLBACK: z.string().default('false').transform((val) => val === 'true'),
+  GROQ_API_KEY: z.string().trim().optional().transform((val) => (val && val.length > 0 ? val : undefined)),
+  FASTER_WHISPER_URL: z.string().trim().optional().transform((val) => (val && val.length > 0 ? val : undefined)),
+  GOOGLE_APPLICATION_CREDENTIALS: z.string().trim().optional().transform((val) => (val && val.length > 0 ? val : undefined)),
+  GOOGLE_CLOUD_PROJECT_ID: z.string().trim().optional().transform((val) => (val && val.length > 0 ? val : undefined)),
+  GOOGLE_CLOUD_STORAGE_BUCKET: z.string().trim().optional().transform((val) => (val && val.length > 0 ? val : undefined)),
+  // The local showcase is deliberately synthetic and requires no cloud account.
+  // Production deployments must explicitly switch to Google Cloud Vision.
+  MEDICAL_REPORT_OCR_PROVIDER: z.enum(['synthetic', 'google_vision']).default('synthetic'),
 }).superRefine((config, context) => {
   // 1. Distinct server-side secrets validation
   const secrets = [
@@ -73,8 +94,45 @@ const envSchema = z.object({
     });
   }
 
+  if (config.APP_ENV !== 'development' && config.NODE_ENV !== 'production') {
+    context.addIssue({
+      code: 'custom',
+      path: ['NODE_ENV'],
+      message: 'Staging and production require NODE_ENV=production.',
+    });
+  }
+
   // 5. Strict production environment hardening
   if (config.NODE_ENV === 'production') {
+    if (config.MEDICAL_REPORT_OCR_PROVIDER !== 'google_vision') {
+      context.addIssue({
+        code: 'custom',
+        path: ['MEDICAL_REPORT_OCR_PROVIDER'],
+        message: 'Production medical report OCR must use MEDICAL_REPORT_OCR_PROVIDER=google_vision.',
+      });
+    }
+    if (!process.env.APP_ENV || config.APP_ENV === 'development') {
+      context.addIssue({
+        code: 'custom',
+        path: ['APP_ENV'],
+        message: 'Production runtime requires APP_ENV=staging or APP_ENV=production.',
+      });
+    }
+
+    if (!process.env.DATABASE_URL) {
+      context.addIssue({
+        code: 'custom',
+        path: ['DATABASE_URL'],
+        message: 'Staging and production require an explicitly provisioned, environment-specific DATABASE_URL.',
+      });
+    } else if (!/^postgres(?:ql)?:\/\//i.test(process.env.DATABASE_URL)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['DATABASE_URL'],
+        message: 'Staging and production require a PostgreSQL DATABASE_URL; SQLite development databases are not supported.',
+      });
+    }
+
     if (config.EMAIL_PROVIDER !== 'resend') {
       context.addIssue({
         code: 'custom',
@@ -109,14 +167,25 @@ const envSchema = z.object({
     if (
       config.RESEND_API_KEY?.startsWith('replace-with-') ||
       config.EMAIL_FROM?.endsWith('@example.com') ||
-      config.EMAIL_FROM?.endsWith('.local') ||
-      config.WEB_APP_URL.includes('example.com') ||
-      config.WEB_APP_URL.includes('localhost')
+      config.EMAIL_FROM?.endsWith('.local')
     ) {
       context.addIssue({
         code: 'custom',
-        path: ['RESEND_API_KEY'],
-        message: 'Production email delivery requires verified sender address and production web URL.',
+        path: ['EMAIL_PROVIDER'],
+        message: 'Staging and production require a provisioned email credential and verified sender address.',
+      });
+    }
+
+    if (
+      config.WEB_APP_URL.includes('example.com') ||
+      config.WEB_APP_URL.includes('localhost') ||
+      new URL(config.WEB_APP_URL).protocol !== 'https:' ||
+      new URL(config.API_PUBLIC_URL).protocol !== 'https:'
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['WEB_APP_URL'],
+        message: 'Staging and production require public HTTPS web and API URLs.',
       });
     }
 
@@ -128,6 +197,23 @@ const envSchema = z.object({
       });
     }
 
+    if (
+      config.ALLOWED_ORIGINS.split(',').some((origin) => {
+        try {
+          const parsedOrigin = new URL(origin.trim());
+          return parsedOrigin.protocol !== 'https:' || parsedOrigin.origin !== origin.trim();
+        } catch {
+          return true;
+        }
+      })
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['ALLOWED_ORIGINS'],
+        message: 'Staging and production CORS origins must be valid HTTPS origins.',
+      });
+    }
+
     if (config.API_PUBLIC_URL.includes('localhost')) {
       context.addIssue({
         code: 'custom',
@@ -135,6 +221,15 @@ const envSchema = z.object({
         message: 'Production API_PUBLIC_URL must be a public HTTPS URL, not localhost.',
       });
     }
+
+    if (config.ALLOW_DEMO_AUTH) {
+      context.addIssue({
+        code: 'custom',
+        path: ['ALLOW_DEMO_AUTH'],
+        message: 'Demo authentication must be disabled in staging and production.',
+      });
+    }
+
   }
 });
 

@@ -1,14 +1,13 @@
 import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import { z } from 'zod';
-import { PrismaClient } from '@prisma/client';
 import { requireAuth } from '../middleware/auth';
 import { resolvePatientContext } from '../permissions/evaluator';
 import { savePrivateFile, deletePrivateFile } from '../services/storageService';
 import { logAuditEvent } from '../audit/auditLogger';
 
 const router = Router();
-const prisma = new PrismaClient();
+import { prisma } from '../db/prisma';
 const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
   fileFilter: (_req, file, cb) => {

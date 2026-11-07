@@ -1,0 +1,348 @@
+%% =========================================================================
+%% AAROGYADAMU PROJECT 3 — PHASE P0.0 SAFETY & DATA FOUNDATION
+%% Pipeline Architecture Specification & Technical Diagrams
+%% Generated: 2026-11-02
+%% Governance: Strict Phase-by-Phase Mandate (Sections A through G)
+%% =========================================================================
+
+%% -------------------------------------------------------------------------
+%% DIAGRAM A: HIGH-LEVEL PIPELINE ARCHITECTURE
+%% -------------------------------------------------------------------------
+```mermaid
+graph TB
+    subgraph ClientLayer ["Client Layer (Separated Products)"]
+        MobileApp["Mobile App (Patient & Caregiver) <br/> React Native / Expo"]
+        DoctorWeb["Doctor Web Portal (Clinician Only) <br/> React / Vite"]
+    end
+
+    subgraph GatewayLayer ["Security & Routing Gateway"]
+        CORS["CORS & Secure Headers <br/> (HSTS, nosniff, DENY frame)"]
+        RateLimiter["Rate Limiting & Token Bucket <br/> (Multi-instance aware)"]
+        AuthMiddleware["Auth Middleware <br/> (JWT + Server-side Session Revocation)"]
+        FeatureFlags["Feature Flag Guard <br/> (Rollout Tier & Phase Isolation)"]
+    end
+
+    subgraph SafetyFoundationLayer ["Phase P0.0 Safety & Data Foundation"]
+        PermGuard["Permission Guard & Context Resolver <br/> (Patient / Caregiver Consent / Clinician)"]
+        SafetyEvaluator["Clinical Safety Evaluator <br/> (ADA Guidelines: Glucose, BP, HbA1c)"]
+        AISafetyHarness["AI Safety Harness & Risk Classifier <br/> (LOW, MEDIUM, HIGH, PROHIBITED)"]
+        ApprovalMgr["Human-in-the-Loop Approval Manager <br/> (Clinician Verification Gate)"]
+        AuditLogger["Medical Audit Logger & PHI Redactor <br/> (safeClinicalLog, Access/Mutation Trails)"]
+        ErrorHandler["Healthcare Error Handler <br/> (Incident Tracking & Redacted Diffs)"]
+    end
+
+    subgraph PersistenceLayer ["Persistence Layer (SQLite / Prisma)"]
+        DB_Obs[("HealthObservation <br/> +clinicalFlag, secondaryValue, idempotencyKey")]
+        DB_Flags[("FeatureFlag <br/> +id, isEnabled, rolloutTier")]
+        DB_AgentAudit[("AgentAuditRecord <br/> +riskTier, approvalStatus, approvedBy")]
+        DB_AuditLog[("AuditLog <br/> +entityType, PHI-redacted metadata")]
+        DB_Core[("User, Profile, Consent, CarePlan")]
+    end
+
+    MobileApp --> CORS
+    DoctorWeb --> CORS
+    CORS --> RateLimiter
+    RateLimiter --> AuthMiddleware
+    AuthMiddleware --> FeatureFlags
+    FeatureFlags --> PermGuard
+
+    PermGuard --> SafetyEvaluator
+    PermGuard --> AISafetyHarness
+    AISafetyHarness --> ApprovalMgr
+
+    SafetyEvaluator --> DB_Obs
+    FeatureFlags --> DB_Flags
+    AISafetyHarness --> DB_AgentAudit
+    ApprovalMgr --> DB_AgentAudit
+    AuditLogger --> DB_AuditLog
+    PermGuard --> DB_Core
+
+    SafetyEvaluator -.-> AuditLogger
+    ApprovalMgr -.-> AuditLogger
+    ErrorHandler -.-> AuditLogger
+```
+
+%% -------------------------------------------------------------------------
+%% DIAGRAM B: COMPLETE DATA-FLOW DIAGRAM (VITAL OBSERVATION PIPELINE)
+%% -------------------------------------------------------------------------
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client as Patient / Caregiver App
+    participant Route as Express API (/api/observations)
+    participant Auth as Auth & Context Evaluator
+    participant Idem as Idempotency Store
+    participant Safety as Clinical Safety Evaluator
+    participant DB as SQLite Database
+    participant Audit as Clinical Audit Logger
+
+    Client->>Route: POST /api/observations {type, numericValue, secondaryValue, context, idempotencyKey}
+    Route->>Auth: Verify JWT & Resolve Patient Context (MANAGE_OBSERVATIONS)
+    Auth-->>Route: Context Verified (effectivePatientId)
+
+    alt Idempotency Key Present
+        Route->>Idem: Check existing observation by idempotencyKey
+        opt Key Exists
+            Idem-->>Route: Return existing observation record
+            Route-->>Client: 200 OK (isIdempotentReplay: true, observation)
+        end
+    end
+
+    Route->>Safety: evaluateClinicalSafety(type, numericValue, secondaryValue, context)
+    Note over Safety: Evaluates ADA Standard Thresholds<br/>CRITICAL_LOW, LOW, IN_TARGET, HIGH, CRITICAL_HIGH,<br/>STAGE_1/2_HYPERTENSION, HYPERTENSIVE_CRISIS
+    Safety-->>Route: SafetyEvaluationResult {clinicalFlag, isCritical, requiresEmergencyEscalation, clinicalMessage, actionableGuidance}
+
+    Route->>DB: prisma.healthObservation.create({clinicalFlag, sourceProvenance, secondaryValue, ...})
+    DB-->>Route: Saved Observation Record
+
+    Route->>Audit: logClinicalMutationEvent({userId, actorId, action: 'OBSERVATION_CREATED', metadata})
+    Note over Audit: Sanitizes PHI, redacts auth tokens,<br/>persists to AuditLog table asynchronously
+    Audit-->>DB: prisma.auditLog.create(...)
+
+    Route-->>Client: 201 Created {observation, safetyEvaluation}
+```
+
+%% -------------------------------------------------------------------------
+%% DIAGRAM C: API / BACKEND INTERACTION DIAGRAM
+%% -------------------------------------------------------------------------
+```mermaid
+flowchart TD
+    subgraph ClientRequests ["Client API Invocations"]
+        ReqObs["POST /api/observations"]
+        ReqFlags["GET /api/features <br/> POST /api/features/:key/toggle"]
+        ReqAIProp["POST /api/ai/proposals"]
+        ReqAIRev["POST /api/ai/proposals/:id/review"]
+    end
+
+    subgraph BackendProcessing ["Backend Processing Modules"]
+        M_Auth["requireAuth & requireClinician"]
+        M_Feat["requireFeature(FLAG_KEY)"]
+        M_Perm["resolvePatientContext()"]
+        M_Safe["evaluateClinicalSafety()"]
+        M_Risk["classifyAgentIntent()"]
+        M_Appr["reviewAgentProposal()"]
+        M_Audit["logClinicalMutationEvent()"]
+    end
+
+    subgraph Responses ["Standardized HTTP Responses"]
+        Res200["200 OK / 201 Created <br/> Standard Body + Metadata"]
+        Res400["400 Bad Request <br/> HealthcareApiError"]
+        Res403["403 Forbidden <br/> FEATURE_DISABLED / Unauthorized"]
+        Res500["500 Internal Error <br/> HealthcareErrorResponse + incidentId"]
+    end
+
+    ReqObs --> M_Auth --> M_Perm --> M_Safe --> M_Audit --> Res200
+    ReqFlags --> M_Feat --> Res200
+    ReqAIProp --> M_Auth --> M_Risk
+    M_Risk -- "LOW_RISK" --> Res200
+    M_Risk -- "MEDIUM / HIGH_RISK" --> Res200
+    M_Risk -- "PROHIBITED" --> Res400
+    ReqAIRev --> M_Auth --> M_Appr --> M_Audit --> Res200
+
+    M_Feat -- "Flag is false" --> Res403
+    M_Perm -- "Scope missing" --> Res403
+```
+
+%% -------------------------------------------------------------------------
+%% DIAGRAM D: DATABASE INTERACTION & ENTITY RELATIONSHIPS
+%% -------------------------------------------------------------------------
+```mermaid
+erDiagram
+    User ||--o{ HealthObservation : "logs"
+    User ||--o{ PatientProfile : "has"
+    User ||--o{ CaregiverConsent : "grants (patient)"
+    User ||--o{ AgentAuditRecord : "context_for"
+    User ||--o{ AuditLog : "target_or_actor"
+
+    HealthObservation {
+        string id PK
+        string userId FK
+        string type "BLOOD_GLUCOSE | BLOOD_PRESSURE | WEIGHT | HBA1C"
+        float numericValue
+        float secondaryValue "Nullable (e.g. Diastolic BP)"
+        string unit
+        string context "FASTING | POST_MEAL_2HR | BEDTIME | RANDOM"
+        string clinicalFlag "CRITICAL_LOW | IN_TARGET | HIGH | HYPERTENSIVE_CRISIS"
+        string provenance "PATIENT_ENTERED | CLINICIAN_ENTERED"
+        string sourceProvenance "MANUAL_PATIENT | BLUETOOTH_DEVICE | LAB_REPORT"
+        string deviceModel "Nullable"
+        string idempotencyKey "Unique, Nullable"
+        datetime observedAt
+        datetime createdAt
+    }
+
+    FeatureFlag {
+        string id PK "e.g. P0_0_SAFETY_FOUNDATION"
+        string name
+        string description
+        boolean isEnabled
+        string rolloutTier "development | internal_testing | staging | pilot"
+        string metadata "JSON"
+        datetime updatedAt
+        datetime createdAt
+    }
+
+    AgentAuditRecord {
+        string id PK
+        string userId FK
+        string agentName "Damu"
+        string riskTier "LOW_RISK | MEDIUM_RISK | HIGH_RISK | PROHIBITED"
+        string actionType
+        string summary
+        string payload "JSON (Sanitized PHI)"
+        boolean requiresClinicianApproval
+        string approvalStatus "PENDING | APPROVED | REJECTED | AUTO_EXECUTED"
+        string approvedBy "Doctor User ID"
+        datetime approvedAt
+        string executionResult
+        datetime createdAt
+    }
+
+    AuditLog {
+        string id PK
+        string userId
+        string actorId
+        string action
+        string entityType
+        string entityId
+        string metadata "JSON (Sanitized PHI)"
+        string ipAddress
+        datetime createdAt
+    }
+
+    CaregiverConsent {
+        string id PK
+        string patientId FK
+        string caregiverEmail
+        string status "ACTIVE | REVOKED | EXPIRED"
+        string permissions "JSON Array of CaregiverPermissionEnum"
+        datetime expiresAt
+    }
+```
+
+%% -------------------------------------------------------------------------
+%% DIAGRAM E: EXTERNAL PROVIDER & HARDWARE INTEGRATION BOUNDARIES
+%% -------------------------------------------------------------------------
+```mermaid
+flowchart LR
+    subgraph ExternalSources ["External Data Sources"]
+        BLE_Glucometer["Bluetooth Glucometer <br/> (Accu-Chek / Contour Plus)"]
+        BLE_BPMonitor["Bluetooth BP Monitor <br/> (Omron Hem-7120)"]
+        LabPDF["Diagnostic Lab PDF <br/> (Thyrocare / Lal PathLabs)"]
+        AIServices["LLM / Speech Providers <br/> (Sarvam AI / Groq / Gemini)"]
+    end
+
+    subgraph TrustBoundary ["Security & Provenance Trust Boundary"]
+        InputValidator["Payload Validator & Zod Schemas"]
+        SourceTagger["Source Provenance Tagger <br/> (BLUETOOTH_DEVICE | LAB_REPORT | AI_EXTRACTED)"]
+        Sanitizer["PHI Redaction & Key Stripping"]
+        AgentHarness["AI Risk Classifier & Safety Guard"]
+    end
+
+    subgraph CoreEngine ["Core AarogyaDamu Engine"]
+        SafetyEngine["Clinical Safety Threshold Evaluator"]
+        PrismaORM["Prisma Data Access Layer"]
+        ClinicalLog["Structured Clinical Audit Trail"]
+    end
+
+    BLE_Glucometer --> InputValidator
+    BLE_BPMonitor --> InputValidator
+    LabPDF --> InputValidator
+    AIServices --> AgentHarness
+
+    InputValidator --> SourceTagger
+    SourceTagger --> SafetyEngine
+    SafetyEngine --> PrismaORM
+    AgentHarness --> Sanitizer --> ClinicalLog
+```
+
+%% -------------------------------------------------------------------------
+%% DIAGRAM F: ERROR-HANDLING AND RECOVERY FLOW
+%% -------------------------------------------------------------------------
+```mermaid
+flowchart TD
+    Start([Incoming API Request]) --> TryBlock[Execute Route Handler]
+    TryBlock --> Condition{Exception Thrown?}
+
+    Condition -- No --> SendSuccess[Send 200/201 Success Response]
+
+    Condition -- Yes --> CatchBlock[Capture in healthcareErrorHandler]
+    CatchBlock --> GenIncident[Generate Unique incidentId via randomUUID]
+    CatchBlock --> ClassifyStatus{Error Type}
+
+    ClassifyStatus -- "Validation Error (Zod)" --> Err400[Status 400: VALIDATION_ERROR]
+    ClassifyStatus -- "Auth / Permission Denial" --> Err403[Status 403: FORBIDDEN / FEATURE_DISABLED]
+    ClassifyStatus -- "Entity Missing" --> Err404[Status 404: RESOURCE_NOT_FOUND]
+    ClassifyStatus -- "Unique Key Conflict" --> Err409[Status 409: IDEMPOTENCY_CONFLICT]
+    ClassifyStatus -- "Unhandled Exception" --> Err500[Status 500: INTERNAL_SERVER_ERROR]
+
+    Err400 --> Sanitize[Sanitize PHI & Stack Trace]
+    Err403 --> Sanitize
+    Err404 --> Sanitize
+    Err409 --> Sanitize
+    Err500 --> Sanitize
+
+    Sanitize --> LogSafe[safeClinicalLog to console.error without PHI]
+    LogSafe --> SendClient[Send HealthcareErrorResponse: <br/> { success: false, error: message, code, incidentId, timestamp }]
+```
+
+%% -------------------------------------------------------------------------
+%% DIAGRAM G: CONSENT, PERMISSION AND APPROVAL FLOW
+%% -------------------------------------------------------------------------
+```mermaid
+stateDiagram-v2
+    [*] --> RequestInitiated: Client submits action proposal or data mutation
+
+    state RequestInitiated {
+        [*] --> CheckActorRole
+        CheckActorRole --> PatientDirect: Actor is Patient
+        CheckActorRole --> ClinicianDirect: Actor is Clinician
+        CheckActorRole --> CaregiverCheck: Actor is Caregiver
+        CheckActorRole --> UnauthorizedActor: Actor not found / invalid
+    }
+
+    UnauthorizedActor --> RejectedState: 403 Forbidden
+
+    state CaregiverCheck {
+        [*] --> VerifyActiveConsent
+        VerifyActiveConsent --> ConsentExpired: Consent past expiresAt
+        VerifyActiveConsent --> VerifyScope: Active consent exists
+        VerifyScope --> ScopeGranted: Permission in permissions array
+        VerifyScope --> ScopeDenied: Permission missing
+    }
+
+    ConsentExpired --> RejectedState: 403 Consent Expired
+    ScopeDenied --> RejectedState: 403 Granular Scope Denied
+
+    state AIProposalEvaluation {
+        [*] --> ClassifyRisk
+        ClassifyRisk --> LowRisk: Informational query / lifestyle tips
+        ClassifyRisk --> MediumRisk: Follow-up scheduling / task draft
+        ClassifyRisk --> HighRisk: Medication changes / clinical notes
+        ClassifyRisk --> ProhibitedRisk: Autonomous diagnosis / prescribing
+    }
+
+    PatientDirect --> AIProposalEvaluation
+    ClinicianDirect --> ApprovedState: Doctor direct override
+    ScopeGranted --> AIProposalEvaluation
+
+    ProhibitedRisk --> RejectedState: Instant Rejection & Audit Logged
+    LowRisk --> ApprovedState: Auto-executed autonomously
+
+    MediumRisk --> PendingReview: Requires Patient/Caregiver Confirmation
+    HighRisk --> PendingDoctorReview: Requires Licensed Doctor Authorization
+
+    state PendingDoctorReview {
+        [*] --> AwaitingClinician
+        AwaitingClinician --> DoctorApproved: Doctor signs off
+        AwaitingClinician --> DoctorRejected: Doctor rejects
+    }
+
+    PendingReview --> ApprovedState: Patient confirms
+    PendingReview --> RejectedState: Patient denies
+    DoctorApproved --> ApprovedState: Proposal Applied
+    DoctorRejected --> RejectedState: Proposal Discarded
+
+    ApprovedState --> [*]
+    RejectedState --> [*]
+```

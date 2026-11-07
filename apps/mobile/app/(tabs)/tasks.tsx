@@ -1,840 +1,673 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
-  TextInput,
   TouchableOpacity,
   StyleSheet,
   ScrollView,
+  RefreshControl,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
-  Plus,
-  Sparkles,
-  Trash2,
-  Pill,
+  CheckSquare,
+  CheckCircle2,
+  Clock,
+  AlertCircle,
+  Calendar,
+  Stethoscope,
   Activity,
   Heart,
-  Stethoscope,
-  CheckCircle2,
-  Target,
-  Calendar,
+  Pill,
   ShieldCheck,
+  Check,
+  UserCheck,
 } from 'lucide-react-native';
-import {
-  clinicalStore,
-  subscribeToClinicalStore,
-  type CareTask,
-  type TaskCategory,
-} from '../../src/api/client';
-import { coordinationApi } from '../../src/api/coordination';
-import { carePlanApi, type MobileCarePlan } from '../../src/api/careplan';
+import { mobileApiFetch } from '../../src/api/client';
 import { useToast } from '../../components/ui/ToastProvider';
 import { theme } from '../../src/theme';
 
-type TaskFilter = 'ALL' | TaskCategory;
+export interface MobileCareTask {
+  id: string;
+  userId: string;
+  assignedById?: string | null;
+  assigningDoctorName?: string;
+  title: string;
+  category: string;
+  instructions?: string | null;
+  priority?: 'HIGH' | 'MEDIUM' | 'LOW';
+  frequency?: string;
+  recurrence?: string | null;
+  dueAt: string;
+  status: 'PENDING' | 'COMPLETED' | 'CANCELLED' | 'OVERDUE';
+  computedStatus?: string;
+  completedAt?: string | null;
+  completedById?: string | null;
+  completedByRole?: 'PATIENT' | 'CAREGIVER' | 'DOCTOR' | null;
+  completedByName?: string;
+  clinicalNotes?: string | null;
+  cancellationReason?: string | null;
+}
+
+export interface CareTaskStats {
+  totalTasks: number;
+  completedTasks: number;
+  pendingTasks: number;
+  overdueTasks: number;
+  cancelledTasks: number;
+  completionPercentage: number;
+  patientCompletedCount: number;
+  caregiverCompletedCount: number;
+}
+
+type CarePlanTab = 'DUE_TODAY' | 'UPCOMING' | 'COMPLETED' | 'OVERDUE';
 
 export default function TasksScreen() {
   const insets = useSafeAreaInsets();
   const { showToast } = useToast();
-  const [, setTick] = useState(0);
 
-  const [taskInput, setTaskInput] = useState('');
-  const [selectedCat, setSelectedCat] =
-    useState<TaskCategory>('MEDICINE');
-  const [activeFilter, setActiveFilter] =
-    useState<TaskFilter>('ALL');
-  const [activePlan, setActivePlan] = useState<MobileCarePlan | null>(null);
+  const [tasks, setTasks] = useState<MobileCareTask[]>([]);
+  const [stats, setStats] = useState<CareTaskStats | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [completingTaskId, setCompletingTaskId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<CarePlanTab>('DUE_TODAY');
 
-  useEffect(() => {
-    let isMounted = true;
-    async function loadCarePlan() {
-      try {
-        const ctx = await coordinationApi.getContext();
-        if (ctx && ctx.userId) {
-          const plan = await carePlanApi.getActivePlan(ctx.userId);
-          if (isMounted) {
-            setActivePlan(plan);
-          }
-        }
-      } catch {
-        // Fallback gracefully in offline / demo mode
+  const loadData = useCallback(async () => {
+    try {
+      const [tasksRes, statsRes] = await Promise.all([
+        mobileApiFetch<{ tasks: MobileCareTask[] }>('/tasks'),
+        mobileApiFetch<{ stats: CareTaskStats }>('/tasks/stats').catch(() => ({ stats: null })),
+      ]);
+      setTasks(tasksRes?.tasks || []);
+      if (statsRes?.stats) {
+        setStats(statsRes.stats);
       }
+    } catch {
+      // Keep existing data on offline / error
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
     }
-    void loadCarePlan();
-    return () => {
-      isMounted = false;
-    };
   }, []);
 
   useEffect(() => {
-    return subscribeToClinicalStore(() => {
-      setTick((tick) => tick + 1);
-    });
-  }, []);
+    void loadData();
+  }, [loadData]);
 
-  const tasks = Array.isArray(clinicalStore.tasks)
-    ? clinicalStore.tasks
-    : [];
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await loadData();
+  };
 
-  const streak = clinicalStore.calculateStreak();
-
-  const { completed, total, percentage } =
-    clinicalStore.calculateTaskProgress();
-
-  const handleAddTask = () => {
-    const title = taskInput.trim();
-
-    if (!title) {
-      showToast('Enter a reminder title first.');
+  // Handle server-side task completion with duplicate prevention
+  const handleCompleteTask = async (task: MobileCareTask) => {
+    if (task.status === 'COMPLETED' || completingTaskId === task.id) {
       return;
     }
 
+    setCompletingTaskId(task.id);
     try {
-      clinicalStore.addTask(
-        title,
-        selectedCat,
-        'Today',
-        'Daily Reminder',
+      const res = await mobileApiFetch<{ task: MobileCareTask; success: boolean; replayed?: boolean }>(
+        `/tasks/${encodeURIComponent(task.id)}/complete`,
+        { method: 'POST' }
       );
 
-      setTaskInput('');
-      showToast('Reminder added to this session.');
-    } catch {
-      showToast('Could not add this reminder.');
+      showToast('✓ Care task marked as completed!');
+      setTasks((prev) =>
+        prev.map((t) => (t.id === task.id ? { ...t, status: 'COMPLETED', completedAt: new Date().toISOString() } : t))
+      );
+
+      // Refresh stats
+      mobileApiFetch<{ stats: CareTaskStats }>('/tasks/stats')
+        .then((sRes) => {
+          if (sRes?.stats) setStats(sRes.stats);
+        })
+        .catch(() => {});
+    } catch (err: any) {
+      showToast(err?.message || 'Unable to complete task. Please try again.');
+    } finally {
+      setCompletingTaskId(null);
     }
   };
 
-  const handleToggleTask = (task: CareTask) => {
-    clinicalStore.toggleTask(task.id);
-  };
+  // Partition tasks into Due Today, Upcoming, Completed, and Overdue
+  const { dueTodayTasks, upcomingTasks, completedTasks, overdueTasks } = useMemo(() => {
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const endOfToday = startOfToday + 24 * 60 * 60 * 1000;
 
-  const handleDeleteTask = (task: CareTask) => {
-    clinicalStore.deleteTask(task.id);
-    showToast('Reminder removed from this session.');
-  };
+    const dueToday: MobileCareTask[] = [];
+    const upcoming: MobileCareTask[] = [];
+    const completed: MobileCareTask[] = [];
+    const overdue: MobileCareTask[] = [];
 
-  const getCategoryIcon = (category: TaskCategory) => {
-    switch (category) {
-      case 'MEDICINE':
-        return <Pill color={theme.colors.primary} size={16} />;
-      case 'GLUCOSE':
-        return <Activity color={theme.colors.primary} size={16} />;
-      case 'ACTIVITY':
-        return <Heart color={theme.colors.primary} size={16} />;
-      case 'CONSULT':
-        return <Stethoscope color={theme.colors.primary} size={16} />;
-      default:
-        return <Activity color={theme.colors.primary} size={16} />;
-    }
-  };
+    tasks.forEach((t) => {
+      if (t.status === 'COMPLETED') {
+        completed.push(t);
+        return;
+      }
+      if (t.status === 'CANCELLED') {
+        return; // Exclude cancelled from active views
+      }
 
-  const filteredGroups = useMemo(() => {
-    const filtered =
-      activeFilter === 'ALL'
-        ? tasks
-        : tasks.filter((task) => task.category === activeFilter);
+      const dueTime = new Date(t.dueAt).getTime();
+      if (dueTime < startOfToday) {
+        overdue.push(t);
+      } else if (dueTime >= startOfToday && dueTime < endOfToday) {
+        dueToday.push(t);
+      } else {
+        upcoming.push(t);
+      }
+    });
 
     return {
-      dueNowTasks: filtered.filter(
-        (task) => !task.completed && task.dueStatus === 'due_now',
-      ),
-      upcomingTasks: filtered.filter(
-        (task) => !task.completed && task.dueStatus === 'upcoming',
-      ),
-      completedTasks: filtered.filter((task) => task.completed),
+      dueTodayTasks: dueToday,
+      upcomingTasks: upcoming,
+      completedTasks: completed,
+      overdueTasks: overdue,
     };
-  }, [tasks, activeFilter]);
+  }, [tasks]);
 
-  const renderTaskItem = (item: CareTask) => (
-    <View
-      key={item.id}
-      style={[
-        styles.taskItem,
-        item.completed && styles.taskItemDone,
-      ]}
-    >
-      <TouchableOpacity
-        accessibilityRole="checkbox"
-        accessibilityState={{ checked: item.completed }}
-        accessibilityLabel={`Mark ${item.title} ${
-          item.completed ? 'incomplete' : 'complete'
-        }`}
-        style={[
-          styles.checkbox,
-          item.completed && styles.checkboxDone,
-        ]}
-        onPress={() => handleToggleTask(item)}
-        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-      >
-        {item.completed ? (
-          <CheckCircle2 color={theme.colors.white} size={16} />
-        ) : null}
-      </TouchableOpacity>
+  const activeTaskList = useMemo(() => {
+    switch (activeTab) {
+      case 'DUE_TODAY':
+        return dueTodayTasks;
+      case 'UPCOMING':
+        return upcomingTasks;
+      case 'COMPLETED':
+        return completedTasks;
+      case 'OVERDUE':
+        return overdueTasks;
+      default:
+        return dueTodayTasks;
+    }
+  }, [activeTab, dueTodayTasks, upcomingTasks, completedTasks, overdueTasks]);
 
-      <View style={styles.taskTextCol}>
-        <View style={styles.taskCategoryHeader}>
-          {getCategoryIcon(item.category)}
-          <Text style={styles.taskCategoryText}>
-            {item.category} {'\u2022'} {item.time}
-          </Text>
-        </View>
+  const totalActive = tasks.filter((t) => t.status !== 'CANCELLED').length;
+  const totalCompleted = completedTasks.length;
+  const progressPercent = totalActive > 0 ? Math.round((totalCompleted / totalActive) * 100) : 100;
 
-        <Text
-          style={[
-            styles.taskTitle,
-            item.completed && styles.taskTitleDone,
-          ]}
-        >
-          {item.title}
-        </Text>
-
-        <Text style={styles.taskRecurrence}>
-          {item.recurrence}
-        </Text>
-      </View>
-
-      <TouchableOpacity
-        accessibilityRole="button"
-        accessibilityLabel={`Delete ${item.title}`}
-        style={styles.deleteBtn}
-        onPress={() => handleDeleteTask(item)}
-        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-      >
-        <Trash2 color={theme.colors.textPlaceholder} size={17} />
-      </TouchableOpacity>
-    </View>
-  );
-
-  const renderTaskSection = (
-    title: string,
-    sectionTasks: CareTask[],
-    emptyMessage: string,
-  ) => (
-    <View style={styles.sectionBlock}>
-      <Text style={styles.sectionHeader}>{title}</Text>
-
-      {sectionTasks.length === 0 ? (
-        <View style={styles.emptyBox}>
-          <Text style={styles.emptyText}>{emptyMessage}</Text>
-        </View>
-      ) : (
-        sectionTasks.map(renderTaskItem)
-      )}
-    </View>
-  );
+  const renderCategoryIcon = (category: string) => {
+    switch (category) {
+      case 'BLOOD_SUGAR_CHECK':
+        return <Activity color={theme.colors.primary} size={16} />;
+      case 'MEDICATION':
+        return <Pill color={theme.colors.primary} size={16} />;
+      case 'WALK_20_MIN':
+      case 'PHYSICAL_ACTIVITY':
+        return <Heart color={theme.colors.primary} size={16} />;
+      default:
+        return <Stethoscope color={theme.colors.primary} size={16} />;
+    }
+  };
 
   return (
-    <SafeAreaView
-      style={styles.safeArea}
-      edges={['top', 'left', 'right']}
-    >
-      <View style={styles.header}>
-        <View style={styles.headerTextBlock}>
-          <Text style={styles.headerSuper}>DAILY CARE AGENDA</Text>
-          <Text style={styles.headerTitle}>Tasks & Reminders</Text>
-        </View>
-
-        <View style={styles.streakBadge}>
-          <Sparkles color={theme.colors.primary} size={14} />
-          <Text style={styles.streakText}>
-            {streak > 0 ? `${streak}-Day Streak` : 'Start Streak'}
-          </Text>
-        </View>
-      </View>
-
+    <SafeAreaView style={[styles.container, { paddingTop: insets.top }]} edges={['top', 'left', 'right']}>
       <ScrollView
-        contentContainerStyle={[
-          styles.scrollContent,
-          { paddingBottom: insets.bottom + 100 },
-        ]}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={styles.scrollContent}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[theme.colors.primary]} />}
       >
-        {activePlan ? (
-          <View style={styles.carePlanCard}>
-            <View style={styles.carePlanHeader}>
-              <View style={styles.carePlanBadge}>
-                <ShieldCheck color="#059669" size={13} />
-                <Text style={styles.carePlanBadgeText}>
-                  ACTIVE CARE PLAN v{activePlan.version}
-                </Text>
-              </View>
-              {activePlan.reviewDate ? (
-                <View style={styles.reviewBadge}>
-                  <Calendar color="#64748B" size={11} />
-                  <Text style={styles.reviewBadgeText}>
-                    Review: {new Date(activePlan.reviewDate).toLocaleDateString('en-IN', { month: 'short', day: 'numeric', year: 'numeric' })}
-                  </Text>
-                </View>
-              ) : null}
+        {/* Screen Header */}
+        <View style={styles.header}>
+          <View style={styles.headerRow}>
+            <View>
+              <Text style={styles.screenTitle}>Your Care Plan</Text>
+              <Text style={styles.screenSubtitle}>
+                Doctor-prescribed daily tasks, clinical instructions, and health directives.
+              </Text>
             </View>
-
-            <Text style={styles.carePlanTitle}>{activePlan.title}</Text>
-            <Text style={styles.carePlanDiagnosis}>Condition: {activePlan.diagnosis}</Text>
-
-            {activePlan.goals && activePlan.goals.length > 0 ? (
-              <View style={styles.goalsContainer}>
-                <Text style={styles.goalsTitle}>CLINICAL TARGETS</Text>
-                <View style={styles.goalsWrap}>
-                  {activePlan.goals.map((goal) => (
-                    <View key={goal.id} style={styles.goalPill}>
-                      <Target color="#0284C7" size={12} />
-                      <Text style={styles.goalText}>
-                        {goal.targetMetric}: {goal.targetValue} ({goal.timeframe})
-                      </Text>
-                    </View>
-                  ))}
-                </View>
-              </View>
-            ) : null}
-
-            {activePlan.doctorInstructions ? (
-              <View style={styles.doctorInstructionBox}>
-                <View style={styles.doctorInstructionHeader}>
-                  <Stethoscope color="#0D9488" size={13} />
-                  <Text style={styles.doctorInstructionLabel}>
-                    Doctor Instructions
-                    {activePlan.approvedBy ? ` (${activePlan.approvedBy.name})` : ''}
-                  </Text>
-                </View>
-                <Text style={styles.doctorInstructionText}>
-                  {activePlan.doctorInstructions}
-                </Text>
-              </View>
-            ) : null}
-          </View>
-        ) : null}
-
-        <View style={styles.card}>
-          <View style={styles.progressHeader}>
-            <Text style={styles.cardTitle}>
-              Task Completion
-            </Text>
-
-            <Text style={styles.progressCount}>
-              {completed} of {total} ({percentage}%)
-            </Text>
+            <View style={styles.badgeShield}>
+              <ShieldCheck color={theme.colors.primary} size={18} />
+            </View>
           </View>
 
-          <View
-            accessibilityRole="progressbar"
-            accessibilityValue={{
-              min: 0,
-              max: 100,
-              now: percentage,
-            }}
-            style={styles.progressBarBg}
-          >
-            <View
-              style={[
-                styles.progressBarFill,
-                { width: `${percentage}%` },
-              ]}
-            />
+          {/* Progress Card */}
+          <View style={styles.progressCard}>
+            <View style={styles.progressHeader}>
+              <Text style={styles.progressLabel}>Overall Plan Adherence</Text>
+              <Text style={styles.progressValue}>
+                {totalCompleted} of {totalActive} Done ({progressPercent}%)
+              </Text>
+            </View>
+            <View style={styles.progressBarTrack}>
+              <View style={[styles.progressBarFill, { width: `${progressPercent}%` }]} />
+            </View>
           </View>
-
-          <Text style={styles.helperText}>
-            Progress reflects tasks currently in this session.
-          </Text>
         </View>
 
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Add Daily Reminder</Text>
+        {/* Tab Filters */}
+        <View style={styles.tabContainer}>
+          <TouchableOpacity
+            style={[styles.tabButton, activeTab === 'DUE_TODAY' && styles.tabButtonActive]}
+            onPress={() => setActiveTab('DUE_TODAY')}
+            activeOpacity={0.7}
+          >
+            <Text style={[styles.tabButtonText, activeTab === 'DUE_TODAY' && styles.tabButtonTextActive]}>
+              Due Today ({dueTodayTasks.length})
+            </Text>
+          </TouchableOpacity>
 
-          <View style={styles.addBar}>
-            <TextInput
-              style={styles.addInput}
-              placeholder="e.g. Take a walk or record a reading"
-              placeholderTextColor={theme.colors.textPlaceholder}
-              value={taskInput}
-              onChangeText={setTaskInput}
-              onSubmitEditing={handleAddTask}
-              returnKeyType="done"
-              accessibilityLabel="Reminder title"
-              maxLength={120}
-            />
+          <TouchableOpacity
+            style={[styles.tabButton, activeTab === 'UPCOMING' && styles.tabButtonActive]}
+            onPress={() => setActiveTab('UPCOMING')}
+            activeOpacity={0.7}
+          >
+            <Text style={[styles.tabButtonText, activeTab === 'UPCOMING' && styles.tabButtonTextActive]}>
+              Upcoming ({upcomingTasks.length})
+            </Text>
+          </TouchableOpacity>
 
-            <TouchableOpacity
-              accessibilityRole="button"
-              accessibilityLabel="Add reminder"
-              style={styles.addBtn}
-              onPress={handleAddTask}
-            >
-              <Plus color={theme.colors.white} size={21} />
-            </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.tabButton, activeTab === 'COMPLETED' && styles.tabButtonActive]}
+            onPress={() => setActiveTab('COMPLETED')}
+            activeOpacity={0.7}
+          >
+            <Text style={[styles.tabButtonText, activeTab === 'COMPLETED' && styles.tabButtonTextActive]}>
+              Done ({completedTasks.length})
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.tabButton, activeTab === 'OVERDUE' && styles.tabButtonActive]}
+            onPress={() => setActiveTab('OVERDUE')}
+            activeOpacity={0.7}
+          >
+            <Text style={[styles.tabButtonText, activeTab === 'OVERDUE' && styles.tabButtonTextActive]}>
+              Overdue ({overdueTasks.length})
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Task List */}
+        {loading ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="small" color={theme.colors.primary} />
+            <Text style={styles.loadingText}>Loading your care tasks...</Text>
           </View>
-
-          <View style={styles.catSelectRow}>
-            {(
-              ['MEDICINE', 'GLUCOSE', 'ACTIVITY', 'CONSULT'] as const
-            ).map((category) => {
-              const selected = selectedCat === category;
-
-              const label =
-                category === 'MEDICINE'
-                  ? 'Meds'
-                  : category === 'GLUCOSE'
-                    ? 'Sugar'
-                    : category === 'ACTIVITY'
-                      ? 'Activity'
-                      : 'Doctor';
+        ) : activeTaskList.length === 0 ? (
+          <View style={styles.emptyContainer}>
+            <CheckCircle2 color={theme.colors.textMuted} size={36} />
+            <Text style={styles.emptyTitle}>
+              {activeTab === 'DUE_TODAY'
+                ? 'All scheduled tasks completed for today!'
+                : activeTab === 'UPCOMING'
+                ? 'No upcoming tasks scheduled.'
+                : activeTab === 'COMPLETED'
+                ? 'No completed tasks yet.'
+                : 'No overdue tasks! You are completely on track.'}
+            </Text>
+            <Text style={styles.emptySubtitle}>
+              New tasks will appear here whenever your assigned doctor updates your diabetes care plan.
+            </Text>
+          </View>
+        ) : (
+          <View style={styles.listContainer}>
+            {activeTaskList.map((task) => {
+              const isCompleted = task.status === 'COMPLETED';
+              const isCompleting = completingTaskId === task.id;
 
               return (
-                <TouchableOpacity
-                  key={category}
-                  accessibilityRole="radio"
-                  accessibilityState={{ selected }}
-                  style={[
-                    styles.catBtn,
-                    selected && styles.catBtnActive,
-                  ]}
-                  onPress={() => setSelectedCat(category)}
-                >
-                  <Text
-                    style={[
-                      styles.catBtnText,
-                      selected && styles.catBtnTextActive,
-                    ]}
-                  >
-                    {label}
-                  </Text>
-                </TouchableOpacity>
+                <View key={task.id} style={[styles.taskCard, isCompleted && styles.taskCardCompleted]}>
+                  <View style={styles.taskCardMain}>
+                    {/* Completion Checkbox */}
+                    <TouchableOpacity
+                      style={[styles.checkbox, isCompleted && styles.checkboxCompleted]}
+                      onPress={() => handleCompleteTask(task)}
+                      disabled={isCompleted || isCompleting}
+                      activeOpacity={0.8}
+                      accessibilityRole="checkbox"
+                      accessibilityState={{ checked: isCompleted }}
+                      accessibilityLabel={`Mark ${task.title} as completed`}
+                    >
+                      {isCompleting ? (
+                        <ActivityIndicator size="small" color={theme.colors.primary} />
+                      ) : isCompleted ? (
+                        <Check color="#FFFFFF" size={14} />
+                      ) : null}
+                    </TouchableOpacity>
+
+                    {/* Task Content */}
+                    <View style={styles.taskContent}>
+                      <View style={styles.taskTitleRow}>
+                        <Text style={[styles.taskTitle, isCompleted && styles.taskTitleCompleted]}>
+                          {task.title}
+                        </Text>
+                        {task.priority && task.priority === 'HIGH' && (
+                          <View style={styles.priorityBadge}>
+                            <Text style={styles.priorityText}>High</Text>
+                          </View>
+                        )}
+                      </View>
+
+                      {/* Doctor's Instructions */}
+                      {task.instructions ? (
+                        <View style={styles.doctorInstructionBox}>
+                          <Stethoscope color={theme.colors.primary} size={13} style={{ marginTop: 2 }} />
+                          <Text style={styles.doctorInstructionText}>
+                            <Text style={styles.doctorInstructionBold}>Doctor Instructions: </Text>
+                            {task.instructions}
+                          </Text>
+                        </View>
+                      ) : null}
+
+                      {/* Metadata Row */}
+                      <View style={styles.metaRow}>
+                        <View style={styles.metaItem}>
+                          <Clock color={theme.colors.textMuted} size={12} />
+                          <Text style={styles.metaText}>
+                            Due: {new Date(task.dueAt).toLocaleDateString([], { month: 'short', day: 'numeric' })}{' '}
+                            {new Date(task.dueAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </Text>
+                        </View>
+                        {task.frequency && (
+                          <View style={styles.metaItem}>
+                            <Calendar color={theme.colors.textMuted} size={12} />
+                            <Text style={styles.metaText}>{task.frequency}</Text>
+                          </View>
+                        )}
+                      </View>
+
+                      {/* Doctor Attribution */}
+                      <Text style={styles.assignedByText}>
+                        Prescribed by: {task.assigningDoctorName || 'Assigned Doctor'}
+                      </Text>
+
+                      {/* Submitter Attribution (if completed) */}
+                      {isCompleted && (
+                        <View style={styles.completionBanner}>
+                          {task.completedByRole === 'CAREGIVER' ? (
+                            <View style={styles.attributionRow}>
+                              <UserCheck color="#4338CA" size={13} />
+                              <Text style={styles.caregiverAttributionText}>
+                                Completed by caregiver on your behalf
+                              </Text>
+                            </View>
+                          ) : (
+                            <View style={styles.attributionRow}>
+                              <CheckCircle2 color={theme.colors.success} size={13} />
+                              <Text style={styles.patientAttributionText}>Completed by you</Text>
+                            </View>
+                          )}
+                          {task.completedAt && (
+                            <Text style={styles.completionTimestamp}>
+                              {new Date(task.completedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </Text>
+                          )}
+                        </View>
+                      )}
+                    </View>
+                  </View>
+                </View>
               );
             })}
           </View>
-        </View>
-
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.categoryScroll}
-        >
-          {(
-            [
-              'ALL',
-              'MEDICINE',
-              'GLUCOSE',
-              'ACTIVITY',
-              'CONSULT',
-            ] as const
-          ).map((filter) => {
-            const selected = activeFilter === filter;
-
-            return (
-              <TouchableOpacity
-                key={filter}
-                accessibilityRole="button"
-                accessibilityState={{ selected }}
-                style={[
-                  styles.filterPill,
-                  selected && styles.filterPillActive,
-                ]}
-                onPress={() => setActiveFilter(filter)}
-              >
-                <Text
-                  style={[
-                    styles.filterPillText,
-                    selected && styles.filterPillTextActive,
-                  ]}
-                >
-                  {filter === 'ALL' ? 'All tasks' : filter}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </ScrollView>
-
-        {renderTaskSection(
-          'DUE NOW',
-          filteredGroups.dueNowTasks,
-          'Nothing due right now.',
         )}
-
-        {renderTaskSection(
-          'UPCOMING',
-          filteredGroups.upcomingTasks,
-          'No upcoming tasks in this session.',
-        )}
-
-        {filteredGroups.completedTasks.length > 0
-          ? renderTaskSection(
-              `COMPLETED (${filteredGroups.completedTasks.length})`,
-              filteredGroups.completedTasks,
-              'No completed tasks yet.',
-            )
-          : null}
       </ScrollView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
+  container: {
     flex: 1,
-    backgroundColor: theme.colors.white,
-  },
-  header: {
-    paddingHorizontal: theme.spacing.xl,
-    paddingTop: theme.spacing.sm,
-    paddingBottom: theme.spacing.md,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.borderLight,
-    backgroundColor: theme.colors.white,
-  },
-  headerTextBlock: {
-    flex: 1,
-  },
-  headerSuper: {
-    fontSize: 10,
-    fontWeight: theme.typography.weights.extrabold,
-    color: theme.colors.primary,
-    letterSpacing: 0.8,
-  },
-  headerTitle: {
-    fontSize: 20,
-    fontWeight: theme.typography.weights.black,
-    color: theme.colors.text,
-  },
-  streakBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: theme.colors.primarySurface,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: theme.radius.pill,
-  },
-  streakText: {
-    fontSize: 11,
-    fontWeight: theme.typography.weights.extrabold,
-    color: theme.colors.primary,
+    backgroundColor: '#F8FAFC',
   },
   scrollContent: {
-    padding: theme.spacing.lg,
-    gap: theme.spacing.md,
-    backgroundColor: theme.colors.bg,
-    flexGrow: 1,
+    padding: 16,
+    paddingBottom: 40,
   },
-  card: {
-    backgroundColor: theme.colors.white,
-    borderRadius: theme.radius.lg,
-    padding: theme.spacing.lg,
+  header: {
+    marginBottom: 16,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  screenTitle: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#0F172A',
+    letterSpacing: -0.3,
+  },
+  screenSubtitle: {
+    fontSize: 12,
+    color: '#64748B',
+    marginTop: 4,
+    lineHeight: 16,
+    maxWidth: '90%',
+  },
+  badgeShield: {
+    padding: 8,
+    borderRadius: 12,
+    backgroundColor: '#E0F2FE',
+  },
+  progressCard: {
+    marginTop: 14,
+    padding: 14,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: theme.colors.border,
-  },
-  cardTitle: {
-    fontSize: 15,
-    fontWeight: theme.typography.weights.extrabold,
-    color: theme.colors.text,
+    borderColor: '#E2E8F0',
   },
   progressHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    gap: 8,
-    marginBottom: 10,
+    marginBottom: 8,
   },
-  progressCount: {
+  progressLabel: {
     fontSize: 12,
-    fontWeight: theme.typography.weights.bold,
+    fontWeight: '700',
+    color: '#334155',
+  },
+  progressValue: {
+    fontSize: 11,
+    fontWeight: '700',
     color: theme.colors.primary,
   },
-  progressBarBg: {
-    height: 8,
-    backgroundColor: theme.colors.cardMuted,
-    borderRadius: 4,
+  progressBarTrack: {
+    height: 6,
+    backgroundColor: '#F1F5F9',
+    borderRadius: 3,
     overflow: 'hidden',
   },
   progressBarFill: {
     height: '100%',
     backgroundColor: theme.colors.primary,
-    borderRadius: 4,
+    borderRadius: 3,
   },
-  helperText: {
-    marginTop: 8,
-    fontSize: 11,
-    color: theme.colors.textMuted,
-    lineHeight: 16,
-  },
-  addBar: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 10,
-    marginBottom: 10,
-  },
-  addInput: {
-    flex: 1,
-    minHeight: 48,
-    backgroundColor: theme.colors.bg,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    paddingHorizontal: theme.spacing.lg,
-    fontSize: 14,
-    color: theme.colors.text,
-  },
-  addBtn: {
-    width: 48,
-    minHeight: 48,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  catSelectRow: {
+  tabContainer: {
     flexDirection: 'row',
     gap: 6,
+    marginBottom: 14,
   },
-  catBtn: {
+  tabButton: {
     flex: 1,
-    minHeight: 36,
-    paddingHorizontal: 4,
     paddingVertical: 8,
-    borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.cardMuted,
+    alignItems: 'center',
+    borderRadius: 10,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  tabButtonActive: {
+    backgroundColor: '#0F172A',
+    borderColor: '#0F172A',
+  },
+  tabButtonText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#64748B',
+  },
+  tabButtonTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+  },
+  loadingContainer: {
+    padding: 40,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  catBtnActive: {
-    backgroundColor: theme.colors.primaryBorder,
-  },
-  catBtnText: {
-    fontSize: 11,
-    fontWeight: theme.typography.weights.bold,
-    color: theme.colors.textMuted,
-  },
-  catBtnTextActive: {
-    color: theme.colors.primary,
-  },
-  categoryScroll: {
     gap: 8,
-    paddingVertical: 4,
   },
-  filterPill: {
-    paddingHorizontal: 14,
-    paddingVertical: 9,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.white,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-  },
-  filterPillActive: {
-    backgroundColor: theme.colors.primary,
-    borderColor: theme.colors.primary,
-  },
-  filterPillText: {
-    fontSize: 11,
-    fontWeight: theme.typography.weights.bold,
-    color: theme.colors.textMuted,
-  },
-  filterPillTextActive: {
-    color: theme.colors.white,
-  },
-  sectionBlock: {
-    gap: 8,
-    marginTop: 4,
-  },
-  sectionHeader: {
-    fontSize: 11,
-    fontWeight: theme.typography.weights.extrabold,
-    color: theme.colors.textMuted,
-    letterSpacing: 0.6,
-  },
-  emptyBox: {
-    backgroundColor: theme.colors.white,
-    borderRadius: theme.radius.md,
-    padding: 16,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: theme.colors.borderLight,
-  },
-  emptyText: {
+  loadingText: {
     fontSize: 12,
-    color: theme.colors.textMuted,
+    color: '#64748B',
+  },
+  emptyContainer: {
+    padding: 36,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    alignItems: 'center',
+    textAlign: 'center',
+    gap: 8,
+  },
+  emptyTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#1E293B',
     textAlign: 'center',
   },
-  taskItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: theme.colors.white,
-    borderRadius: theme.radius.lg,
-    padding: theme.spacing.lg,
+  emptySubtitle: {
+    fontSize: 11,
+    color: '#64748B',
+    textAlign: 'center',
+    lineHeight: 16,
+  },
+  listContainer: {
+    gap: 10,
+  },
+  taskCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: theme.colors.borderLight,
+    borderColor: '#E2E8F0',
+    padding: 14,
+  },
+  taskCardCompleted: {
+    backgroundColor: '#F8FAFC',
+    borderColor: '#E2E8F0',
+    opacity: 0.85,
+  },
+  taskCardMain: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
     gap: 12,
   },
-  taskItemDone: {
-    opacity: 0.72,
-    backgroundColor: theme.colors.bg,
-  },
   checkbox: {
-    width: 26,
-    height: 26,
-    borderRadius: 8,
+    width: 22,
+    height: 22,
+    borderRadius: 6,
     borderWidth: 2,
-    borderColor: theme.colors.border,
+    borderColor: '#94A3B8',
     alignItems: 'center',
     justifyContent: 'center',
+    marginTop: 2,
   },
-  checkboxDone: {
-    backgroundColor: theme.colors.primary,
-    borderColor: theme.colors.primary,
+  checkboxCompleted: {
+    backgroundColor: theme.colors.success,
+    borderColor: theme.colors.success,
   },
-  taskTextCol: {
+  taskContent: {
     flex: 1,
-    minWidth: 0,
   },
-  taskCategoryHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    marginBottom: 4,
-  },
-  taskCategoryText: {
-    flexShrink: 1,
-    fontSize: 10,
-    fontWeight: theme.typography.weights.extrabold,
-    color: theme.colors.primary,
-  },
-  taskTitle: {
-    fontSize: 14,
-    fontWeight: theme.typography.weights.bold,
-    color: theme.colors.text,
-  },
-  taskTitleDone: {
-    textDecorationLine: 'line-through',
-    color: theme.colors.textMuted,
-  },
-  taskRecurrence: {
-    fontSize: 11,
-    color: theme.colors.textMuted,
-    marginTop: 3,
-  },
-  deleteBtn: {
-    minWidth: 38,
-    minHeight: 38,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  carePlanCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: theme.radius.lg,
-    padding: theme.spacing.lg,
-    borderWidth: 1.5,
-    borderColor: '#A7F3D0',
-    gap: 10,
-    shadowColor: '#059669',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 6,
-    elevation: 2,
-  },
-  carePlanHeader: {
+  taskTitleRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    flexWrap: 'wrap',
     gap: 8,
   },
-  carePlanBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: '#ECFDF5',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#A7F3D0',
-  },
-  carePlanBadgeText: {
-    fontSize: 10,
-    fontWeight: theme.typography.weights.extrabold,
-    color: '#065F46',
-    letterSpacing: 0.5,
-  },
-  reviewBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: '#F1F5F9',
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  reviewBadgeText: {
-    fontSize: 10,
-    fontWeight: theme.typography.weights.medium,
-    color: '#475569',
-  },
-  carePlanTitle: {
-    fontSize: 16,
-    fontWeight: theme.typography.weights.extrabold,
+  taskTitle: {
+    fontSize: 13,
+    fontWeight: '700',
     color: '#0F172A',
+    flex: 1,
   },
-  carePlanDiagnosis: {
-    fontSize: 12,
-    fontWeight: theme.typography.weights.medium,
+  taskTitleCompleted: {
+    textDecorationLine: 'line-through',
     color: '#64748B',
   },
-  goalsContainer: {
-    marginTop: 4,
-    gap: 6,
+  priorityBadge: {
+    backgroundColor: '#FEE2E2',
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 4,
   },
-  goalsTitle: {
+  priorityText: {
     fontSize: 10,
-    fontWeight: theme.typography.weights.extrabold,
-    color: '#0369A1',
-    letterSpacing: 0.5,
+    fontWeight: '700',
+    color: '#DC2626',
   },
-  goalsWrap: {
+  doctorInstructionBox: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
+    alignItems: 'flex-start',
     gap: 6,
-  },
-  goalPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
     backgroundColor: '#F0F9FF',
     borderWidth: 1,
     borderColor: '#BAE6FD',
+    borderRadius: 8,
+    padding: 8,
+    marginTop: 6,
+  },
+  doctorInstructionText: {
+    fontSize: 11,
+    color: '#0369A1',
+    lineHeight: 15,
+    flex: 1,
+  },
+  doctorInstructionBold: {
+    fontWeight: '700',
+  },
+  metaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginTop: 8,
+  },
+  metaItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  metaText: {
+    fontSize: 11,
+    color: '#64748B',
+  },
+  assignedByText: {
+    fontSize: 10,
+    color: '#94A3B8',
+    marginTop: 6,
+  },
+  completionBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#F1F5F9',
+    borderRadius: 6,
     paddingHorizontal: 8,
     paddingVertical: 4,
-    borderRadius: 8,
+    marginTop: 8,
   },
-  goalText: {
-    fontSize: 11,
-    fontWeight: theme.typography.weights.semibold,
-    color: '#0369A1',
-  },
-  doctorInstructionBox: {
-    backgroundColor: '#F0FDFA',
-    borderLeftWidth: 3,
-    borderLeftColor: '#0D9488',
-    borderRadius: 8,
-    padding: 10,
-    gap: 4,
-    marginTop: 4,
-  },
-  doctorInstructionHeader: {
+  attributionRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
   },
-  doctorInstructionLabel: {
-    fontSize: 11,
-    fontWeight: theme.typography.weights.bold,
-    color: '#0F766E',
+  patientAttributionText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: theme.colors.success,
   },
-  doctorInstructionText: {
-    fontSize: 12,
-    color: '#134E4A',
-    lineHeight: 18,
+  caregiverAttributionText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#4338CA',
+  },
+  completionTimestamp: {
+    fontSize: 10,
+    color: '#94A3B8',
   },
 });

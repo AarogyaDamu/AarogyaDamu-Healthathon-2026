@@ -1,4 +1,4 @@
-# AarogyaDamu Project 3 — Controlled Pilot Runbook & Operational Procedures
+﻿# AarogyaDamu Project 3 â€” Controlled Pilot Runbook & Operational Procedures
 
 ## Phase 5 Deliverable: Pilot Readiness & Real-World Validation
 
@@ -9,7 +9,7 @@
 > [!IMPORTANT]
 > **Mandatory Regulatory Statement**
 > 
-> “AarogyaDamu is an investigational diabetes care and decision-support companion. It is not a substitute for professional medical judgment, diagnosis, or treatment. The project does not claim CDSCO or FDA medical-device certification or clearance. Clinical decisions remain the responsibility of qualified healthcare professionals.”
+> â€œAarogyaDamu is an investigational diabetes care and decision-support companion. It is not a substitute for professional medical judgment, diagnosis, or treatment. The project does not claim CDSCO or FDA medical-device certification or clearance. Clinical decisions remain the responsibility of qualified healthcare professionals.â€
 >
 > *This disclaimer alone does not establish legal or regulatory compliance. All real-world pilot demonstrations must be strictly restricted to pre-approved synthetic patient data in closed, non-clinical evaluation environments.*
 
@@ -121,7 +121,7 @@ npm run dev:api
 | **Security & Privacy** | 4.1 | No Real Patient Data | All names, emails, and observations are strictly synthetic demo data | [x] READY |
 | | 4.2 | Scope Enforcement | Caregiver access strictly gated by active consent permissions | [x] READY |
 | | 4.3 | Cross-Patient Isolation | Unauthorized clinicians and caregivers receive 403 Forbidden | [x] READY |
-| | 4.4 | Audit Logging | Scribe approval, delegated task completion, and reviews write to `AuditLog` | [x] READY |
+| | 4.4 | Audit Logging | Clinical review, delegated task completion, and other supported reviews write to `AuditLog` | [x] READY |
 | **Mobile Runtime** | 5.1 | Mobile TypeScript Check | 0 errors via `tsc --noEmit` | [x] READY |
 | | 5.2 | Metro Bundling | 3,352 modules bundled cleanly for Android | [x] READY |
 | | 5.3 | Native Android Execution | Pixel_7 AVD boots; splash screen rendered; GUI interaction stalled by display driver | [!] NOT VERIFIED |
@@ -153,5 +153,7 @@ A controlled pilot phase is considered successful only when:
 
 1. **Investigational Only**: AarogyaDamu is not certified for clinical diagnostic or treatment decisions.
 2. **Synthetic Data Mandatory**: No protected health information (PHI), real patient identifiers, or actual diagnostic reports may be loaded into the pilot instance.
-3. **No Automatic Prescribing**: AI modules (Damu AI Assistant, Medical Scribe) operate strictly in assistive, read-only, and draft-generation capacities. All care plans and clinical notes require explicit human clinician sign-off.
+3. **No Automatic Prescribing**: The Damu AI Assistant operates within its approved assistive capabilities and must not independently prescribe, modify treatment, or make clinical decisions. All care plans and clinical documentation requiring clinical approval must receive explicit human clinician sign-off.
 4. **Hardware Validation Pending**: Native Android device validation is marked `NOT VERIFIED` due to host virtualization/display driver constraints.
+
+

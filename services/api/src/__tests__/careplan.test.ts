@@ -33,7 +33,7 @@ describe('Shared Diabetes Care Plan Architecture & Lifecycle Suite', () => {
 
   beforeAll(async () => {
     patient = await register('CarePlan Patient');
-    assignedDoctor = await register('Dr. Anjali Kulkarni', true);
+    assignedDoctor = await register('Dr. Rupam Choudhary', true);
     unassignedDoctor = await register('Dr. Unassigned Mehta', true);
     caregiver = await register('Caregiver Ramesh');
     stranger = await register('Stranger User');
@@ -335,7 +335,7 @@ describe('Shared Diabetes Care Plan Architecture & Lifecycle Suite', () => {
       .send({ prompt: 'Please explain my approved diabetes care plan' });
     expect(explainRes.status).toBe(200);
     expect(explainRes.body.reply).toMatch(/Diabetes Care Plan/i);
-    expect(explainRes.body.reply).toMatch(/Dr\. Anjali Kulkarni/i);
+    expect(explainRes.body.reply).toMatch(/Dr\. Rupam Choudhary/i);
 
     // 2. Damu summarizes progress & incomplete tasks
     const progressRes = await request(app)
@@ -352,7 +352,7 @@ describe('Shared Diabetes Care Plan Architecture & Lifecycle Suite', () => {
       .send({ prompt: 'Prepare a doctor review summary for my upcoming consultation' });
     expect(reviewRes.status).toBe(200);
     expect(reviewRes.body.reply).toMatch(/Doctor-Review Summary/i);
-    expect(reviewRes.body.reply).toMatch(/Dr\. Anjali Kulkarni/i);
+    expect(reviewRes.body.reply).toMatch(/Dr\. Rupam Choudhary/i);
 
     // 4. Damu Clinical Safety Guardrail: Rejects independent prescribing or dose modification
     const guardrailRes = await request(app)

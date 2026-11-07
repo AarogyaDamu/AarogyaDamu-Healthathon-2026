@@ -1,0 +1,242 @@
+%% =========================================================================
+%% AAROGYADAMU PROJECT 3 — PHASE P0.1 UNIFIED HEALTH JOURNAL ARCHITECTURE
+%% Technical Architecture & Subsystem Pipelines (Ready for Implementation)
+%% Generated: 2026-11-02
+%% Governance: P0.1 Health Journal Specification
+%% =========================================================================
+
+%% -------------------------------------------------------------------------
+%% DIAGRAM 1: HIGH-LEVEL ARCHITECTURE (TWO-PRODUCT JOURNAL PIPELINE)
+%% -------------------------------------------------------------------------
+```mermaid
+graph TB
+    subgraph MobileProduct ["Mobile Application (Patient & Caregiver)"]
+        MobileLogUI["Vital Entry Form <br/> (Glucose, BP, Weight, HbA1c)"]
+        OfflineQueue["Offline Observation Queue <br/> (AsyncStorage with UUID Idempotency Keys)"]
+        TrendVisualizer["Longitudinal Trend Visualizer <br/> (Time-in-Range, Glycemic Variability)"]
+        SyncManager["Bi-directional Sync Engine <br/> (Automatic replay upon network restoration)"]
+    end
+
+    subgraph DoctorWebProduct ["Doctor Web Application (Clinician Only)"]
+        DoctorTimeline["Patient Clinical Timeline <br/> (Aggregated Vitals & Scribe Consult Notes)"]
+        AmbulatoryProfile["Ambulatory Glycemic Profile (AGP) <br/> (Mean Glucose, GMI, CV%, Time in Range)"]
+        DoctorEntry["Clinician In-Clinic Reading Entry <br/> (Provenance: DOCTOR_CLINICAL)"]
+    end
+
+    subgraph APIBackend ["Shared API Backend (Unified Health Journal Engine)"]
+        ObservationRouter["/api/observations <br/> (GET, POST, PATCH with audit history)"]
+        UnitConverter["Medical Unit Conversion Engine <br/> (mg/dL <-> mmol/L, kg <-> lbs, % <-> mmol/mol)"]
+        SafetyGate["P0.0.1 Clinical Safety Evaluator <br/> (ADA 2026 / ACC AHA 2017 Thresholds)"]
+        AuditPipeline["Medical Audit & PHI Redactor <br/> (Immutable access & mutation trails)"]
+    end
+
+    subgraph DatabaseLayer ["Unified Persistence Layer (SQLite / Prisma)"]
+        DB_Obs[("HealthObservation <br/> +clinicalFlag, secondaryValue, idempotencyKey, sourceProvenance")]
+        DB_Audit[("AuditLog <br/> +before/after correction diffs")]
+        DB_Profile[("PatientProfile <br/> +clinician glycemic & BP targets")]
+    end
+
+    MobileLogUI --> OfflineQueue
+    OfflineQueue --> SyncManager
+    SyncManager --> ObservationRouter
+    MobileLogUI --> TrendVisualizer
+
+    DoctorTimeline --> ObservationRouter
+    DoctorEntry --> ObservationRouter
+    DoctorTimeline --> AmbulatoryProfile
+
+    ObservationRouter --> UnitConverter
+    ObservationRouter --> SafetyGate
+    SafetyGate --> DB_Obs
+    ObservationRouter --> AuditPipeline
+    AuditPipeline --> DB_Audit
+    ObservationRouter --> DB_Profile
+```
+
+%% -------------------------------------------------------------------------
+%% DIAGRAM 2: OBSERVATION INTAKE AND OFFLINE SYNCHRONIZATION PIPELINE
+%% -------------------------------------------------------------------------
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as Patient / Caregiver
+    participant Mobile as Mobile App (Offline Queue)
+    participant Sync as Background Sync Service
+    participant Route as API Gateway (/api/observations)
+    participant Evaluator as Clinical Safety Evaluator
+    participant DB as HealthObservation Store
+
+    User->>Mobile: Record Blood Glucose (115 mg/dL, Fasting)
+    Note over Mobile: Generates client UUID idempotencyKey.<br/>Stores locally in offline queue if offline.
+
+    alt Device is Offline
+        Mobile-->>User: Observation Queued Locally (Pending Sync)
+        Note over Sync: Network connectivity restored
+        Sync->>Route: POST /api/observations (replays queued items with idempotencyKey)
+    else Device is Online
+        Mobile->>Route: POST /api/observations (immediate submission)
+    end
+
+    Route->>DB: Check idempotencyKey uniqueness
+    opt Key already processed
+        DB-->>Route: Existing Observation Record
+        Route-->>Mobile: 200 OK (isIdempotentReplay: true)
+    end
+
+    Route->>Evaluator: evaluateClinicalSafety(type, value, context, profileTargets)
+    Evaluator-->>Route: SafetyEvaluationResult (clinicalFlag, guidance, isCritical)
+
+    Route->>DB: prisma.healthObservation.create(...)
+    DB-->>Route: Saved Record
+    Route-->>Mobile: 201 Created { observation, safetyEvaluation }
+    Mobile-->>User: Display Reading with Clinical Guidance Badge
+```
+
+%% -------------------------------------------------------------------------
+%% DIAGRAM 3: API & BACKEND INTERACTIONS (HISTORICAL TRENDS & CORRECTIONS)
+%% -------------------------------------------------------------------------
+```mermaid
+flowchart TD
+    subgraph ClientQueries ["Client API Requests"]
+        Q_List["GET /api/observations?startDate=&endDate=&type=&limit="]
+        Q_Post["POST /api/observations (New vital entry)"]
+        Q_Patch["PATCH /api/observations/:id (Correction/Amendment)"]
+        Q_Summary["GET /api/observations/stats (Time-in-Range & Stats)"]
+    end
+
+    subgraph ControllerLogic ["Backend Controller & Security Gates"]
+        AuthGate["requireAuth & requireClinician / requireFeature"]
+        ContextGate["resolvePatientContext (Patient / Authorized Caregiver / Assigned Doctor)"]
+        IdemGate["Idempotency Replay Guard"]
+        SafetyEngine["Deterministic Safety Threshold Evaluation"]
+        AuditRecorder["Clinical Mutation Logger (Records Correction Diffs)"]
+    end
+
+    subgraph ResponseOutputs ["Client Responses"]
+        OutList["200 OK: Paginated observations with timestamps & flags"]
+        OutCreated["201 Created: New observation + safety evaluation"]
+        OutAmended["200 OK: Updated observation (Prior value preserved in audit trail)"]
+        OutSummary["200 OK: Aggregated TIR%, Mean, Min, Max, CV%"]
+    end
+
+    Q_List --> AuthGate --> ContextGate --> OutList
+    Q_Summary --> AuthGate --> ContextGate --> OutSummary
+    Q_Post --> AuthGate --> ContextGate --> IdemGate --> SafetyEngine --> OutCreated
+    Q_Patch --> AuthGate --> ContextGate --> AuditRecorder --> SafetyEngine --> OutAmended
+```
+
+%% -------------------------------------------------------------------------
+%% DIAGRAM 4: DATABASE SCHEMA & RELATIONAL INTERACTIONS
+%% -------------------------------------------------------------------------
+```mermaid
+erDiagram
+    User ||--o{ HealthObservation : "submits_or_subject_of"
+    User ||--o{ PatientProfile : "has"
+    User ||--o{ CaregiverConsent : "grants_or_receives"
+    User ||--o{ AuditLog : "mutates_or_accesses"
+    HealthObservation ||--o{ AuditLog : "correction_history"
+
+    HealthObservation {
+        string id PK
+        string userId FK "Patient ID"
+        string type "BLOOD_GLUCOSE | BLOOD_PRESSURE | WEIGHT | HBA1C"
+        float numericValue "Primary metric value"
+        float secondaryValue "Nullable: Diastolic BP"
+        string unit "mg/dL | mmol/L | mmHg | kg | %"
+        string context "FASTING | PRE_MEAL | POST_MEAL_2HR | BEDTIME | RANDOM"
+        string clinicalFlag "NORMAL | IN_TARGET | LOW | HIGH | CRITICAL_LOW | HYPERTENSIVE_CRISIS"
+        string notes "Patient or clinician notes"
+        string provenance "PATIENT_ENTERED | CAREGIVER_ENTERED | DOCTOR_ENTERED"
+        string sourceProvenance "MANUAL_PATIENT | BLUETOOTH_DEVICE | LAB_REPORT | DOCTOR_CLINICAL"
+        string deviceModel "e.g. Accu-Chek Guide, Omron Hem-7120"
+        string idempotencyKey "Unique client submission UUID"
+        datetime observedAt "Measurement timestamp"
+        datetime createdAt "Server ingestion timestamp"
+    }
+
+    AuditLog {
+        string id PK
+        string userId "Target Patient ID"
+        string actorId "Operator User ID"
+        string action "OBSERVATION_CREATED | OBSERVATION_AMENDED | OBSERVATION_DELETED"
+        string entityType "HealthObservation"
+        string entityId "FK to HealthObservation"
+        string metadata "JSON: Prior state, new state, amendment reason, PHI redacted"
+        datetime createdAt
+    }
+
+    PatientProfile {
+        string id PK
+        string userId FK
+        float targetFastingMin "Default 80"
+        float targetFastingMax "Default 130"
+        float targetPostMealMax "Default 180"
+    }
+```
+
+%% -------------------------------------------------------------------------
+%% DIAGRAM 5: PROVENANCE AND PERMISSION FLOW
+%% -------------------------------------------------------------------------
+```mermaid
+stateDiagram-v2
+    [*] --> IngestionRequest: Vital reading received with source provenance
+
+    state IngestionRequest {
+        [*] --> IdentifySource
+        IdentifySource --> SourcePatient: sourceProvenance: 'MANUAL_PATIENT'
+        IdentifySource --> SourceCaregiver: sourceProvenance: 'CAREGIVER_INPUT'
+        IdentifySource --> SourceBluetooth: sourceProvenance: 'BLUETOOTH_DEVICE'
+        IdentifySource --> SourceDoctor: sourceProvenance: 'DOCTOR_CLINICAL'
+        IdentifySource --> SourceLab: sourceProvenance: 'LAB_REPORT'
+    }
+
+    state PermissionValidation {
+        [*] --> VerifyRelationship
+        VerifyRelationship --> PatientSelfCheck: Actor is Patient
+        VerifyRelationship --> CaregiverConsentCheck: Actor is Caregiver
+        VerifyRelationship --> DoctorAssignmentCheck: Actor is Doctor
+    }
+
+    SourcePatient --> PermissionValidation
+    SourceCaregiver --> PermissionValidation
+    SourceBluetooth --> PermissionValidation
+    SourceDoctor --> PermissionValidation
+    SourceLab --> PermissionValidation
+
+    state CaregiverConsentCheck {
+        [*] --> ActiveConsentQuery
+        ActiveConsentQuery --> ScopeVerified: 'MANAGE_OBSERVATIONS' in permissions
+        ActiveConsentQuery --> ScopeRevokedOrMissing: Not found or expired
+    }
+
+    ScopeRevokedOrMissing --> AccessDenied: 403 Forbidden
+    ScopeVerified --> EvaluatedAndSaved: Persisted with 'CAREGIVER_INPUT' tag
+    PatientSelfCheck --> EvaluatedAndSaved: Persisted with 'MANUAL_PATIENT' or 'BLUETOOTH_DEVICE'
+    DoctorAssignmentCheck --> EvaluatedAndSaved: Persisted with 'DOCTOR_CLINICAL' tag
+
+    AccessDenied --> [*]
+    EvaluatedAndSaved --> [*]
+```
+
+%% -------------------------------------------------------------------------
+%% DIAGRAM 6: ERROR AND RECOVERY PIPELINE
+%% -------------------------------------------------------------------------
+```mermaid
+flowchart TD
+    ReqIn([Client Vital Submission]) --> ValCheck{Input Validation Passed?}
+
+    ValCheck -- No (Missing type, negative value, invalid unit) --> Ret400[400 Bad Request <br/> 'Reading must be a positive number']
+    
+    ValCheck -- Yes --> IdemCheck{idempotencyKey provided?}
+    IdemCheck -- Yes --> SearchKey{Existing key in DB?}
+    SearchKey -- Key Exists --> ReturnCached[200 OK: Replay cached observation without duplicate write]
+    SearchKey -- New Key --> PersistWrite[Proceed to Clinical Evaluation & Storage]
+    IdemCheck -- No Key --> PersistWrite
+
+    PersistWrite --> StorageAttempt{Database Write Success?}
+    StorageAttempt -- Success --> EmitSuccess[201 Created with Safety Evaluation]
+    StorageAttempt -- DB Failure / Lock --> Ret500[500 Internal Error + incidentId]
+    
+    Ret500 --> ClientRetryQueue[Client Offline Queue preserves item for exponential backoff retry]
+```
+

@@ -8,10 +8,13 @@ export interface QueuedObservation {
   localId: string;
   type: string;
   numericValue: number;
+  secondaryValue?: number;
   unit: string;
   context: string;
   notes?: string;
   observedAt: string;
+  sourceProvenance?: string;
+  idempotencyKey?: string;
 }
 
 export async function getCachedObservations(): Promise<any[]> {
@@ -65,10 +68,13 @@ export async function syncOfflineQueue(): Promise<{ syncedCount: number; errors:
         body: JSON.stringify({
           type: item.type,
           numericValue: item.numericValue,
+          secondaryValue: item.secondaryValue,
           unit: item.unit,
           context: item.context,
           notes: item.notes ? `${item.notes} (Logged Offline)` : '(Logged Offline)',
           observedAt: item.observedAt,
+          sourceProvenance: item.sourceProvenance || 'MANUAL_PATIENT',
+          idempotencyKey: item.idempotencyKey || item.localId,
         }),
       });
       syncedCount++;

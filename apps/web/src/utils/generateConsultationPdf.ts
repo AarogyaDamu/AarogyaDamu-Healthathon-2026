@@ -115,7 +115,7 @@ export function exportConsultationSummaryPdf(payload: ConsultationPdfPayload): v
       ],
       [
         'Doctor in Charge:',
-        profile.primaryClinician || 'Dr. Anjali Kulkarni',
+        profile.primaryClinician || 'Dr. Rupam Choudhary (Diabetologist)',
         'Year Diagnosed:',
         profile.diagnosisYear ? String(profile.diagnosisYear) : '2021',
       ],

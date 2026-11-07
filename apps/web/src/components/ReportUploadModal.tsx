@@ -17,6 +17,10 @@ export function ReportUploadModal({ onClose, onUploaded }: ReportUploadModalProp
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!file) {
+      setError('Please select a PDF or image report.');
+      return;
+    }
     if (!title.trim()) {
       setError('Please provide a report title.');
       return;
@@ -26,16 +30,15 @@ export function ReportUploadModal({ onClose, onUploaded }: ReportUploadModalProp
       setUploading(true);
       setError(null);
 
-      // Submit metadata with genuine processing state flag
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('title', title.trim());
+      formData.append('category', category);
+      if (facility.trim()) formData.append('issuingFacility', facility.trim());
+
       await apiFetch('/documents', {
         method: 'POST',
-        body: JSON.stringify({
-          title: title.trim(),
-          category,
-          issuingFacility: facility.trim() || undefined,
-          reportDate: new Date().toISOString(),
-          processingStatus: file ? 'READY' : 'NEEDS_REVIEW',
-        }),
+        body: formData,
       });
 
       onUploaded();

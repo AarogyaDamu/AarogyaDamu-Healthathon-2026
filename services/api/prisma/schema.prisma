@@ -1,6 +1,5 @@
-
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -17,6 +16,8 @@ model User {
   passwordHash        String
   isSyntheticDemo     Boolean  @default(false)
   isClinician         Boolean  @default(false)
+  isActive            Boolean  @default(true)
+  deactivatedAt       DateTime?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
@@ -25,18 +26,22 @@ model User {
   tasks               CareTask[]
   documents           HealthDocument[]
   consultationPreps   ConsultationPrep[]
+  consultationNotes   ConsultationNote[]     @relation("PatientConsultationNotes")
+  clinicianConsultationNotes ConsultationNote[] @relation("ClinicianConsultationNotes")
+  consultationNoteVersions ConsultationNoteVersion[] @relation("NoteRevisionAuthor")
   consentsGiven       CaregiverConsent[]    @relation("PatientConsents")
   assistantProposals  AssistantProposal[]
   medicationSchedules MedicationSchedule[]
+  medicationAdherenceEvents MedicationAdherenceEvent[]
+  lifestyleRecords    LifestyleRecord[]
   auditLogs           AuditLog[]
-  consultationNotes   ConsultationNote[]
-  authoredNotes       ConsultationNote[]    @relation("ConsultationNoteAuthor")
-  approvedNotes       ConsultationNote[]    @relation("ConsultationNoteApprover")
 
   // Shared appointment and care coordination relationships
   appointmentsAsPatient Appointment[]             @relation("AppointmentPatient")
   appointmentsAsDoctor  Appointment[]             @relation("AppointmentDoctor")
   appointmentsBooked   Appointment[]             @relation("AppointmentBookedBy")
+  doctorAvailabilities DoctorAvailability[]      @relation("DoctorAvailabilities")
+  doctorTimeOffs       DoctorTimeOff[]           @relation("DoctorTimeOffs")
   doctorAssignments    DoctorPatientAssignment[] @relation("DoctorAssignments")
   patientAssignments   DoctorPatientAssignment[] @relation("PatientAssignments")
   carePlansAsPatient   CarePlan[]                @relation("CarePlanPatient")
@@ -45,12 +50,26 @@ model User {
 
   // Phase 4: Caregiver Connect, Doctor Dashboard & Care Coordination
   tasksCompleted       CareTask[]                @relation("TaskCompletedBy")
+  tasksAssigned        CareTask[]                @relation("TaskAssignedBy")
   sentMessages         CareTeamMessage[]         @relation("MessageSender")
   receivedMessages     CareTeamMessage[]         @relation("MessageRecipient")
   patientMessages      CareTeamMessage[]         @relation("PatientMessages")
   notifications        CareNotification[]        @relation("UserNotifications")
   authSessions         AuthSession[]
   passwordResetTokens PasswordResetToken[]
+  agentAudits          AgentAuditRecord[]
+  notificationPreference NotificationPreference?
+  reminders              Reminder[]
+  emergencyContacts      EmergencyContact[]
+  emergencySosEvents     EmergencySosEvent[]
+  agentPlansOwned        AgentPlan[]               @relation("AgentPlanOwner")
+  agentPlansAsPatient    AgentPlan[]               @relation("AgentPlanPatient")
+  agentActionsConfirmed  AgentAction[]            @relation("AgentActionConfirmedBy")
+  damuConversations      DamuConversation[]        @relation("UserDamuConversations")
+  devicePushTokens       DevicePushToken[]
+  journeyMilestones      JourneyMilestone[]
+
+  @@index([isActive])
 }
 
 model AuthSession {
@@ -144,48 +163,64 @@ model PatientProfile {
 // 3. HEALTH OBSERVATIONS
 // ==========================================
 model HealthObservation {
-  id           String   @id @default(uuid())
-  userId       String
-  type         String   @default("BLOOD_GLUCOSE")
-  numericValue Float
-  unit         String   @default("mg/dL")
-  context      String   @default("FASTING")
-  notes        String?
-  provenance   String   @default("PATIENT_ENTERED")
-  observedAt   DateTime @default(now())
-  createdAt    DateTime @default(now())
+  id               String   @id @default(uuid())
+  userId           String
+  type             String   @default("BLOOD_GLUCOSE")
+  numericValue     Float
+  secondaryValue   Float?
+  unit             String   @default("mg/dL")
+  context          String   @default("FASTING")
+  clinicalFlag     String?  @default("NORMAL")
+  notes            String?
+  provenance       String   @default("PATIENT_ENTERED")
+  sourceProvenance String?  @default("MANUAL_PATIENT")
+  deviceModel      String?
+  idempotencyKey   String?  @unique
+  observedAt       DateTime @default(now())
+  createdAt        DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, observedAt])
   @@index([userId, type])
+  @@index([userId, clinicalFlag])
 }
 
 // ==========================================
 // 4. CARE TASKS & REMINDERS
 // ==========================================
 model CareTask {
-  id              String    @id @default(uuid())
-  userId          String
-  carePlanId      String?
-  completedById   String?
-  completedByRole String?   // PATIENT, CAREGIVER, DOCTOR
-  title           String
-  category        String    @default("FOLLOW_UP")
-  status          String    @default("PENDING")
-  dueAt           DateTime
-  completedAt     DateTime?
-  idempotencyKey  String?   @unique
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  id                 String    @id @default(uuid())
+  userId             String
+  assignedById       String?
+  carePlanId         String?
+  completedById      String?
+  completedByRole    String?   // PATIENT, CAREGIVER, DOCTOR
+  title              String
+  category           String    @default("FOLLOW_UP")
+  instructions       String?
+  priority           String    @default("MEDIUM") // HIGH, MEDIUM, LOW
+  frequency          String    @default("ONCE")   // ONCE, DAILY, WEEKLY, AS_NEEDED
+  recurrence         String?
+  clinicalNotes      String?
+  status             String    @default("PENDING") // PENDING, COMPLETED, CANCELLED, OVERDUE
+  dueAt              DateTime
+  completedAt        DateTime?
+  cancelledAt        DateTime?
+  cancellationReason String?
+  idempotencyKey     String?   @unique
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assignedBy  User?     @relation("TaskAssignedBy", fields: [assignedById], references: [id], onDelete: SetNull)
   completedBy User?     @relation("TaskCompletedBy", fields: [completedById], references: [id], onDelete: SetNull)
   carePlan    CarePlan? @relation("CarePlanTasks", fields: [carePlanId], references: [id], onDelete: SetNull)
 
   @@index([userId, status, dueAt])
   @@index([carePlanId])
   @@index([completedById])
+  @@index([assignedById])
 }
 
 // ==========================================
@@ -234,20 +269,75 @@ model ConsultationPrep {
   @@index([userId, scheduledAt])
 }
 
+model ConsultationNote {
+  id                 String    @id @default(uuid())
+  userId             String
+  clinicianId        String
+  clinicianName      String
+  consultationPrepId String?
+  appointmentId      String?
+  status             String    @default("DRAFT") // DRAFT, RECORDING, APPROVED, REJECTED, SHARED
+  rawTranscript      String?
+  speakerSegments    String?
+  structuredNote     String?
+  approvedNoteText   String?
+  approvedAt         DateTime?
+  approvedBy         String?
+  sharedWithPatient  Boolean   @default(false)
+  sharedAt           DateTime?
+  consentDecision    String?   @default("GRANTED")
+  isManual           Boolean   @default(false)
+  version            Int       @default(1)
+  idempotencyKey     String?   @unique
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  user              User              @relation("PatientConsultationNotes", fields: [userId], references: [id], onDelete: Cascade)
+  clinician         User              @relation("ClinicianConsultationNotes", fields: [clinicianId], references: [id], onDelete: Restrict)
+  consultationPrep  ConsultationPrep? @relation(fields: [consultationPrepId], references: [id], onDelete: SetNull)
+  appointment       Appointment?      @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  versions          ConsultationNoteVersion[]
+
+  @@index([userId, status, createdAt])
+  @@index([clinicianId, status])
+  @@index([consultationPrepId])
+  @@index([appointmentId])
+}
+
+model ConsultationNoteVersion {
+  id          String   @id @default(uuid())
+  noteId      String
+  version     Int
+  content     String
+  revisedBy   String?
+  createdAt   DateTime @default(now())
+
+  note        ConsultationNote @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  revisedByUser User? @relation("NoteRevisionAuthor", fields: [revisedBy], references: [id], onDelete: SetNull)
+
+  @@index([noteId, version])
+}
+
 // ==========================================
 // 7. CAREGIVER CONSENTS
 // ==========================================
 model CaregiverConsent {
-  id             String   @id @default(uuid())
-  patientId      String
-  caregiverEmail String
-  caregiverName  String
-  relationship   String
-  status         String   @default("ACTIVE")
-  permissions    String
-  expiresAt      DateTime?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id              String    @id @default(uuid())
+  patientId       String
+  caregiverEmail  String
+  // Non-null only for an active grant. The unique constraint makes concurrent
+  // grant requests race-safe while allowing historical/revoked rows to remain.
+  activeGrantKey  String?   @unique
+  caregiverName   String
+  relationship    String
+  status          String    @default("ACTIVE")
+  permissions     String
+  expiresAt       DateTime?
+  lastAccessedAt  DateTime?
+  acceptedAt      DateTime?
+  invitationToken String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   patient User @relation("PatientConsents", fields: [patientId], references: [id], onDelete: Cascade)
 
@@ -274,26 +364,71 @@ model AssistantProposal {
 }
 
 // ==========================================
-// 9. MEDICATION SCHEDULES
+// 9. MEDICATION SCHEDULES & VAULT (P0.2)
 // ==========================================
 model MedicationSchedule {
-  id                String   @id @default(uuid())
-  userId            String
-  medicineName      String   @default("")
-  medicationName    String?
-  dosage            String   @default("")
-  dosageInstruction String?
-  frequency         String?
-  timing            String   @default("MORNING")
-  notes             String?
-  startDate         DateTime? @default(now())
-  isActive          Boolean  @default(true)
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  id                    String    @id @default(uuid())
+  userId                String
+  medicineName          String    @default("")
+  medicationName        String?
+  genericName           String?
+  brandName             String?
+  dosage                String    @default("")
+  dosageInstruction     String?
+  strength              String?
+  dosageForm            String?
+  route                 String?   @default("ORAL")
+  frequency             String?
+  timing                String    @default("MORNING")
+  foodInstructions      String?
+  instructions          String?
+  isPrn                 Boolean   @default(false)
+  prnInstructions       String?
+  prescriber            String?
+  source                String    @default("PATIENT_ENTERED") // PATIENT_ENTERED, CAREGIVER_ENTERED, CLINICIAN_PRESCRIBED
+  status                String    @default("ACTIVE") // ACTIVE, PAUSED, DISCONTINUED, COMPLETED
+  reviewStatus          String    @default("UNREVIEWED") // UNREVIEWED, CLINICIAN_REVIEWED
+  reviewedByClinicianId String?
+  reviewedAt            DateTime?
+  clinicalReviewNotes   String?
+  notes                 String?
+  startDate             DateTime? @default(now())
+  endDate               DateTime?
+  reasonForChange       String?
+  isActive              Boolean   @default(true)
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user            User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  adherenceEvents MedicationAdherenceEvent[]
 
+  @@index([userId, status])
   @@index([userId, isActive])
+  @@index([userId, reviewStatus])
+}
+
+// ==========================================
+// 9b. MEDICATION ADHERENCE EVENTS (P0.2)
+// ==========================================
+model MedicationAdherenceEvent {
+  id               String   @id @default(uuid())
+  medicationId     String
+  userId           String
+  action           String   // TAKEN, SKIPPED, MISSED
+  scheduledTime    DateTime
+  recordedAt       DateTime @default(now())
+  recordedBy       String
+  sourceProvenance String   @default("MANUAL_PATIENT") // MANUAL_PATIENT, CAREGIVER_INPUT, DOCTOR_CLINICAL
+  notes            String?
+  idempotencyKey   String?  @unique
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  medication MedicationSchedule @relation(fields: [medicationId], references: [id], onDelete: Cascade)
+  user       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, recordedAt])
+  @@index([medicationId, scheduledTime])
 }
 
 // ==========================================
@@ -318,46 +453,6 @@ model AuditLog {
 }
 
 // ==========================================
-// 11. MEDICAL SCRIBE NOTES
-// ==========================================
-model ConsultationNote {
-  id                       String    @id @default(uuid())
-  userId                   String
-  clinicianId              String
-  consultationPrepId       String?
-  idempotencyKey           String?
-  retryCount               Int       @default(0)
-  clinicianName            String
-  facilityName             String?
-  status                   String    @default("RECORDING")
-  recordingStatus          String    @default("NOT_STARTED")
-  recordingDurationSeconds Int?
-  audioConsentObtained     Boolean   @default(false)
-  audioConsentAt           DateTime?
-  consentMetadata          String?
-  transcriptionProvider    String?
-  rawTranscript            String
-  speakerSegments          String
-  structuredNote           String
-  approvedNoteText         String?
-  approvedAt               DateTime?
-  approvedBy               String?
-  rejectionReason          String?
-  createdAt                DateTime  @default(now())
-  updatedAt                DateTime  @updatedAt
-
-  user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  clinician        User              @relation("ConsultationNoteAuthor", fields: [clinicianId], references: [id], onDelete: Restrict)
-  approver         User?             @relation("ConsultationNoteApprover", fields: [approvedBy], references: [id], onDelete: SetNull)
-  consultationPrep ConsultationPrep? @relation(fields: [consultationPrepId], references: [id], onDelete: SetNull)
-
-  @@index([userId, status])
-  @@index([clinicianId])
-  @@unique([clinicianId, idempotencyKey])
-  @@index([consultationPrepId])
-}
-
-// ==========================================
 // 12. DOCTOR–PATIENT ASSIGNMENTS
 // ==========================================
 model DoctorPatientAssignment {
@@ -379,29 +474,69 @@ model DoctorPatientAssignment {
 }
 
 // ==========================================
-// 13. SHARED APPOINTMENTS
+// 13. SHARED APPOINTMENTS & SCHEDULING (PHASE 4)
 // ==========================================
 model Appointment {
-  id              String   @id @default(uuid())
-  patientId       String
-  doctorId        String
-  bookedById      String
-  scheduledAt     DateTime
-  durationMinutes Int      @default(30)
-  reason          String
-  visitType       String   @default("CHECKUP")
-  status          String   @default("REQUESTED")
-  notes           String?
-  idempotencyKey  String?  @unique
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id                    String    @id @default(uuid())
+  patientId             String
+  doctorId              String
+  bookedById            String
+  scheduledAt           DateTime
+  durationMinutes       Int       @default(30)
+  reason                String
+  visitType             String    @default("CHECKUP")
+  status                String    @default("REQUESTED") // REQUESTED, CONFIRMED, RESCHEDULED, CANCELLED, COMPLETED, MISSED
+  notes                 String?
+  clinicName            String?   @default("Apollo Sugar Clinic, Pune")
+  clinicFacilityId      String?
+  questionnaireResponse String?   // JSON structured 18-question responses
+  rejectionReason       String?   // Reason provided by doctor upon rejection
+  cancellationReason    String?   // Reason provided upon cancellation
+  rescheduledFromId     String?   // UUID of prior appointment if rescheduled
+  completedAt           DateTime?
+  idempotencyKey        String?   @unique
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   patient  User @relation("AppointmentPatient", fields: [patientId], references: [id], onDelete: Cascade)
   doctor   User @relation("AppointmentDoctor", fields: [doctorId], references: [id], onDelete: Restrict)
   bookedBy User @relation("AppointmentBookedBy", fields: [bookedById], references: [id], onDelete: Restrict)
+  clinicalNotes ConsultationNote[]
 
   @@index([patientId, scheduledAt, status])
   @@index([doctorId, scheduledAt, status])
+  @@index([status])
+}
+
+model DoctorAvailability {
+  id                  String   @id @default(uuid())
+  doctorId            String
+  dayOfWeek           Int      // 0 = Sunday, 1 = Monday, ... 6 = Saturday
+  startTime           String   @default("09:00") // HH:mm
+  endTime             String   @default("17:00") // HH:mm
+  slotDurationMinutes Int      @default(30)
+  isActive            Boolean  @default(true)
+  clinicName          String?  @default("Apollo Sugar Clinic, Pune")
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  doctor User @relation("DoctorAvailabilities", fields: [doctorId], references: [id], onDelete: Cascade)
+
+  @@unique([doctorId, dayOfWeek])
+  @@index([doctorId, isActive])
+}
+
+model DoctorTimeOff {
+  id        String   @id @default(uuid())
+  doctorId  String
+  startDate DateTime
+  endDate   DateTime
+  reason    String?
+  createdAt DateTime @default(now())
+
+  doctor User @relation("DoctorTimeOffs", fields: [doctorId], references: [id], onDelete: Cascade)
+
+  @@index([doctorId, startDate, endDate])
 }
 
 // ==========================================
@@ -501,20 +636,362 @@ model CareTeamMessage {
 // 16. CARE NOTIFICATIONS
 // ==========================================
 model CareNotification {
-  id        String    @id @default(uuid())
-  userId    String    // The recipient user
-  patientId String?   // Patient context if applicable
-  actorId   String?   // User who triggered this event
-  type      String    // APPOINTMENT_UPDATE, CARE_PLAN_APPROVED, TASK_ASSIGNED, DELEGATED_TASK_COMPLETED, CONSENT_CHANGE, DOCTOR_MESSAGE, FOLLOW_UP_DUE, ACCESS_REQUEST
-  title     String
-  message   String
-  link      String?
-  isRead    Boolean   @default(false)
-  readAt    DateTime?
-  createdAt DateTime  @default(now())
+  id             String    @id @default(uuid())
+  userId         String    // The recipient user
+  patientId      String?   // Patient context if applicable
+  actorId        String?   // User who triggered this event
+  type           String    // APPOINTMENT_UPDATE, CARE_PLAN_APPROVED, TASK_ASSIGNED, DELEGATED_TASK_COMPLETED, CONSENT_CHANGE, DOCTOR_MESSAGE, FOLLOW_UP_DUE, ACCESS_REQUEST
+  category       String    @default("GENERAL") // MEDICATION, TASK, APPOINTMENT, CARE_PLAN, HEALTH_LOGGING, CONSULTATION, MILESTONE, ACCOUNT, GENERAL
+  title          String
+  message        String
+  link           String?
+  priority       String    @default("NORMAL")  // LOW, NORMAL, HIGH, URGENT
+  deliveryStatus String    @default("DELIVERED") // CREATED, QUEUED, SENT, DELIVERED, READ, FAILED, CANCELLED
+  channel        String    @default("IN_APP")   // IN_APP, PUSH, EMAIL
+  scheduledFor   DateTime?
+  deliveredAt    DateTime?
+  metadata       String?   // JSON serialized payload / privacy preview
+  isRead         Boolean   @default(false)
+  readAt         DateTime?
+  createdAt      DateTime  @default(now())
 
   user User @relation("UserNotifications", fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, isRead, createdAt])
+  @@index([userId, category])
   @@index([patientId])
+  @@index([deliveryStatus, scheduledFor])
 }
+
+// ==========================================
+// 17. SYSTEM & PHASE FEATURE FLAGS (P0.0)
+// ==========================================
+model FeatureFlag {
+  id          String   @id // e.g., 'P0_0_SAFETY_FOUNDATION', 'P0_1_HEALTH_JOURNAL'
+  name        String
+  description String?
+  isEnabled   Boolean  @default(false)
+  rolloutTier String   @default("development")
+  metadata    String?  // JSON serialized settings
+  updatedAt   DateTime @updatedAt
+  createdAt   DateTime @default(now())
+
+  @@index([isEnabled])
+  @@index([rolloutTier])
+}
+
+// ==========================================
+// 18. AI AGENT SAFETY & AUDIT LOGS (P0.0)
+// ==========================================
+model AgentAuditRecord {
+  id                       String   @id @default(uuid())
+  userId                   String
+  agentName                String   @default("Damu")
+  riskTier                 String   // LOW_RISK, MEDIUM_RISK, HIGH_RISK, PROHIBITED
+  actionType               String
+  summary                  String
+  payload                  String?  // JSON
+  requiresClinicianApproval Boolean @default(false)
+  approvalStatus           String   @default("PENDING") // PENDING, APPROVED, REJECTED, AUTO_EXECUTED
+  approvedBy               String?
+  approvedAt               DateTime?
+  executionResult          String?
+  createdAt                DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agentActions AgentAction[]
+
+  @@index([userId, riskTier])
+  @@index([approvalStatus])
+}
+
+// ==========================================
+// 19. LIFESTYLE TRACKING & DIGITAL TWIN (P0.3)
+// ==========================================
+model LifestyleRecord {
+  id                  String   @id @default(uuid())
+  userId              String
+  category            String   // PHYSICAL_ACTIVITY, SLEEP, NUTRITION, HYDRATION, WELLBEING
+  numericValue        Float?
+  unit                String?  // MINUTES, HOURS, ML, GLASSES
+  qualitativeValue    String?  // MODERATE, RESTFUL, BALANCED, MILD_STRESS
+  notes               String?
+  recordedAt          DateTime
+  timezone            String?
+  source              String   @default("MANUAL_PATIENT") // MANUAL_PATIENT, CAREGIVER_INPUT, DOCTOR_CLINICAL
+  createdById         String
+  idempotencyKey      String?  @unique
+  reasonForCorrection String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, category, recordedAt])
+  @@index([userId, recordedAt])
+}
+
+// ==========================================
+// 20. NOTIFICATION PREFERENCES (P0.4)
+// ==========================================
+model NotificationPreference {
+  id                      String   @id @default(uuid())
+  userId                  String   @unique
+  carePlanUpdates         Boolean  @default(true)
+  medicationReminders     Boolean  @default(true)
+  sugarCheckReminders     Boolean  @default(true)
+  appointmentReminders    Boolean  @default(true)
+  taskReminders           Boolean  @default(true)
+  journeyMilestones       Boolean  @default(true)
+  consultationUpdates     Boolean  @default(true)
+  healthLoggingReminders  Boolean  @default(true)
+  emergencyAlerts         Boolean  @default(true)
+  pushEnabled             Boolean  @default(false)
+  emailEnabled            Boolean  @default(false)
+  smsEnabled              Boolean  @default(false)
+  quietHoursEnabled       Boolean  @default(false)
+  quietHoursStart         String?  @default("22:00")
+  quietHoursEnd           String?  @default("07:00")
+  timezone                String   @default("Asia/Kolkata")
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ==========================================
+// 21. REMINDERS & SCHEDULES (P0.4)
+// ==========================================
+model Reminder {
+  id               String    @id @default(uuid())
+  userId           String
+  createdById      String
+  title            String
+  category         String    @default("GENERAL") // MEDICATION, CARE_TASK, APPOINTMENT, GLUCOSE_CHECK, LIFESTYLE, GENERAL
+  status           String    @default("SCHEDULED") // SCHEDULED, DELIVERED, ACKNOWLEDGED, CANCELLED, FAILED
+  remindAt         DateTime
+  timezone         String?
+  recurrence       String    @default("ONCE") // ONCE, DAILY, WEEKLY
+  entityType       String?   // MEDICATION, CARE_TASK, APPOINTMENT
+  entityId         String?
+  notes            String?
+  deliveredAt      DateTime?
+  acknowledgedAt   DateTime?
+  cancelledAt      DateTime?
+  idempotencyKey   String?   @unique
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status, remindAt])
+  @@index([userId, category])
+}
+
+// ==========================================
+// 22. EMERGENCY CONTACTS (P0.4)
+// ==========================================
+model EmergencyContact {
+  id           String   @id @default(uuid())
+  userId       String
+  name         String
+  relationship String
+  phoneNumber  String
+  email        String?
+  isPrimary    Boolean  @default(false)
+  notifyOnSos  Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isPrimary])
+}
+
+// ==========================================
+// 23. EMERGENCY SOS EVENTS (P0.4)
+// ==========================================
+model EmergencySosEvent {
+  id               String    @id @default(uuid())
+  userId           String    // Patient context
+  activatedById    String    // Patient or Caregiver who triggered SOS
+  status           String    @default("ACTIVE") // ACTIVE, RESOLVED, CANCELLED
+  triggerReason    String?
+  symptoms         String?   // JSON serialized array of symptoms
+  locationStatus   String    @default("UNAVAILABLE") // AVAILABLE, PERMISSION_DENIED, UNAVAILABLE
+  latitude         Float?
+  longitude        Float?
+  accuracyMeters   Float?
+  locationAddress  String?
+  notes            String?
+  cancelledAt      DateTime?
+  cancelReason     String?
+  resolvedAt       DateTime?
+  resolutionNotes  String?
+  deliveryStatus   String    @default("IN_APP_DISPATCHED") // IN_APP_DISPATCHED, EXTERNAL_UNCONFIGURED, FAILED
+  disclaimerNotice String
+  idempotencyKey   String?   @unique
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status, createdAt])
+  @@index([activatedById])
+}
+
+// ==========================================
+// 24. GOVERNED AGENTIC EXECUTION (P0.7.2)
+// ==========================================
+model AgentPlan {
+  id                 String        @id @default(uuid())
+  userId             String        // Plan owner (patient, caregiver, clinician)
+  targetPatientId    String        // Target patient context
+  conversationId     String?       // Optional session / conversation reference
+  userIntent         String        // Intent category (e.g. SCHEDULE_FOLLOW_UP, QUERY_HEALTH)
+  explanation        String        // Clinical / user-facing rationale
+  highestRiskTier    String        @default("LOW_RISK") // LOW_RISK, MEDIUM_RISK, HIGH_RISK
+  status             String        @default("AWAITING_CONFIRMATION") // DRAFT, AWAITING_CONFIRMATION, PENDING_CLINICIAN_APPROVAL, IN_PROGRESS, COMPLETED, CANCELLED, EXPIRED, EMERGENCY_ABORTED, FAILED, PROHIBITED_REFUSED
+  version            Int           @default(1)
+  actionCount        Int           @default(0)
+  organizationId     String?       // Organizational tenancy boundary
+  facilityName       String?
+  expiresAt          DateTime      // 24-hour expiration policy
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  owner              User          @relation("AgentPlanOwner", fields: [userId], references: [id], onDelete: Cascade)
+  targetPatient      User          @relation("AgentPlanPatient", fields: [targetPatientId], references: [id], onDelete: Cascade)
+  actions            AgentAction[]
+
+  @@index([userId, status])
+  @@index([targetPatientId, status])
+  @@index([status, expiresAt])
+  @@index([createdAt])
+  @@index([organizationId])
+}
+
+model AgentAction {
+  id                     String            @id @default(uuid())
+  planId                 String
+  planVersion            Int               @default(1)
+  toolName               String            // Allowlisted tool name
+  parameters             String            // Validated JSON parameters (strict, no injected code)
+  riskTier               String            // LOW_RISK, MEDIUM_RISK, HIGH_RISK
+  status                 String            @default("AWAITING_CONFIRMATION") // DRAFT, AWAITING_CONFIRMATION, PENDING_CLINICIAN_APPROVAL, EXECUTING, COMPLETED, CANCELLED, REJECTED, EXPIRED, PROHIBITED_REFUSED
+  idempotencyKey         String            @unique
+  confirmedByUserId      String?
+  confirmedByRole        String?           // PATIENT, CAREGIVER, CLINICIAN
+  confirmedAt            DateTime?
+  confirmationSignature  String?           // Security binding hash/token
+  executedAt             DateTime?
+  executionResult        String?           // Sanitized JSON execution output
+  errorCode              String?
+  errorMessage           String?           // Sanitized error message
+  reviewNotes            String?           // Mandatory clinician rationale for approval/rejection
+  reviewedByUserId       String?
+  reviewedAt             DateTime?
+  expiresAt              DateTime          // Expiration timestamp
+  auditRecordId          String?
+  createdAt              DateTime          @default(now())
+  updatedAt              DateTime          @updatedAt
+
+  plan                   AgentPlan         @relation(fields: [planId], references: [id], onDelete: Cascade)
+  confirmedBy            User?             @relation("AgentActionConfirmedBy", fields: [confirmedByUserId], references: [id], onDelete: SetNull)
+  auditRecord            AgentAuditRecord? @relation(fields: [auditRecordId], references: [id], onDelete: SetNull)
+
+  @@index([planId, status])
+  @@index([status, expiresAt])
+  @@index([toolName])
+  @@index([confirmedByUserId])
+  @@index([auditRecordId])
+  @@index([reviewedByUserId])
+}
+
+// ==========================================
+// 19. DAMU AI HEALTH INTELLIGENCE CONVERSATIONS (PHASE 6)
+// ==========================================
+model DamuConversation {
+  id               String        @id @default(uuid())
+  userId           String
+  title            String        @default("Health Discussion")
+  language         String        @default("en")
+  isArchived       Boolean       @default(false)
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  user             User          @relation("UserDamuConversations", fields: [userId], references: [id], onDelete: Cascade)
+  messages         DamuMessage[]
+
+  @@index([userId, isArchived])
+  @@index([createdAt])
+}
+
+model DamuMessage {
+  id                 String           @id @default(uuid())
+  conversationId     String
+  sender             String           // USER, DAMU, SYSTEM
+  content            String
+  intent             String?          // e.g. GLUCOSE_SUMMARY, MEDICATION_SCHEDULE, etc.
+  sources            String?          // JSON array of DamuSourceReference
+  suggestedFollowUps String?        // JSON array of follow-up query suggestions
+  avatarMode         String?          // idle, listening, thinking, speaking
+  emergencyNotice    Boolean          @default(false)
+  isProhibited       Boolean          @default(false)
+  metadata           String?          // JSON metadata
+  actorId            String?
+  actorRole          String?
+  dataClassification String           @default("CLINICAL_PHI")
+  retentionPolicy    String           @default("PATIENT_CONTROLLED")
+  redactedForStorage Boolean          @default(true)
+  transparency       String?          // JSON DamuTransparency object
+  createdAt          DateTime         @default(now())
+
+  conversation       DamuConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+    @@index([conversationId, createdAt])
+    @@index([actorId, createdAt])
+}
+
+
+// ==========================================
+// 25. DEVICE PUSH TOKENS (PHASE 7)
+// ==========================================
+model DevicePushToken {
+  id         String   @id @default(uuid())
+  userId     String
+  token      String   @unique
+  platform   String   @default("EXPO") // EXPO, ANDROID, IOS, WEB
+  deviceInfo String?
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isActive])
+}
+
+// ==========================================
+// 26. PERSISTED JOURNEY MILESTONES (PHASE 7)
+// ==========================================
+model JourneyMilestone {
+  id           String   @id @default(uuid())
+  userId       String
+  milestoneKey String   // e.g. FIRST_GLUCOSE_READING, FIRST_TASK_COMPLETED, FIRST_CONSULTATION, CARE_PLAN_INITIATED, FIRST_MEDICATION_TAKEN
+  title        String
+  description  String
+  achievedAt   DateTime @default(now())
+  eventRefType String?  // HealthObservation, CareTask, CarePlan, MedicationAdherence
+  eventRefId   String?
+  actorId      String?  // Patient or caregiver actor
+  metadata     String?  // JSON serialized context
+  createdAt    DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, milestoneKey])
+  @@index([userId, achievedAt])
+}
+
+

@@ -1,6 +1,7 @@
 import request from 'supertest';
 import { randomUUID } from 'crypto';
 import { app, prisma } from '../server';
+import { deletePrivateFile } from '../services/storageService';
 
 describe('Phase 5 — Pilot Readiness & Synthetic Patient End-to-End Lifecycle Suite', () => {
   let patient: any;
@@ -43,7 +44,7 @@ describe('Phase 5 — Pilot Readiness & Synthetic Patient End-to-End Lifecycle S
   beforeAll(async () => {
     // Register all role actors with distinct identities
     patient = await registerUser('Ramesh Deshmukh');
-    assignedDoctor = await registerUser('Dr. Anjali Kulkarni', true);
+    assignedDoctor = await registerUser('Dr. Rupam Choudhary (Diabetologist)', true);
     unassignedDoctor = await registerUser('Dr. Vikram Rao', true);
     caregiver = await registerUser('Meera Joshi');
     stranger = await registerUser('Unrelated Stranger');
@@ -82,7 +83,7 @@ describe('Phase 5 — Pilot Readiness & Synthetic Patient End-to-End Lifecycle S
         fullName: 'Ramesh Deshmukh',
         diabetesType: 'TYPE_2_DIABETES',
         diagnosisYear: 2021,
-        primaryClinician: 'Dr. Anjali Kulkarni',
+        primaryClinician: 'Dr. Rupam Choudhary (Diabetologist)',
         knownAllergies: 'Sulfa drugs',
         targetFastingMin: 80,
         targetFastingMax: 130,
@@ -91,7 +92,7 @@ describe('Phase 5 — Pilot Readiness & Synthetic Patient End-to-End Lifecycle S
 
     expect(onboardingRes.status).toBe(201);
     expect(onboardingRes.body.profile).toBeDefined();
-    expect(onboardingRes.body.profile.primaryClinician).toBe('Dr. Anjali Kulkarni');
+    expect(onboardingRes.body.profile.primaryClinician).toBe('Dr. Rupam Choudhary (Diabetologist)');
     expect(onboardingRes.body.profile.targetFastingMin).toBe(80);
     expect(onboardingRes.body.profile.targetFastingMax).toBe(130);
 
@@ -155,7 +156,7 @@ describe('Phase 5 — Pilot Readiness & Synthetic Patient End-to-End Lifecycle S
       data: {
         userId: patient.id,
         clinicianId: assignedDoctor.id,
-        clinicianName: 'Dr. Anjali Kulkarni',
+        clinicianName: 'Dr. Rupam Choudhary (Diabetologist)',
         status: 'APPROVED',
         rawTranscript: 'Consultation dialogue covering elevated fasting glucose.',
         speakerSegments: '[]',
@@ -275,11 +276,12 @@ describe('Phase 5 — Pilot Readiness & Synthetic Patient End-to-End Lifecycle S
     expect(consentRes.body.consent.status).toBe('ACTIVE');
     activeConsentId = consentRes.body.consent.id;
 
-    // 2. Patient creates a care task
+    // 2. Doctor assigns a care task
     const taskRes = await request(app)
       .post('/api/tasks')
-      .set('Authorization', auth(patient))
+      .set('Authorization', auth(assignedDoctor))
       .send({
+        patientId: patient.id,
         title: 'Fasting Blood Sugar Log Assistance',
         category: 'MONITORING',
         dueAt: new Date(Date.now() + 1800000).toISOString(),
@@ -392,6 +394,45 @@ describe('Phase 5 — Pilot Readiness & Synthetic Patient End-to-End Lifecycle S
     expect(patientAppts.status).toBe(200);
     expect(patientAppts.body.appointments.some((a: any) => a.id === appointmentId && a.status === 'CONFIRMED')).toBe(true);
   });
+
+  test('STEP 9: Assigned doctor uploads a report into the selected patient Health Vault', async () => {
+    const minimalPngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+    const uploadRes = await request(app)
+      .post('/api/documents/upload-report')
+      .set('Authorization', auth(assignedDoctor))
+      .set('X-Target-Patient-Id', patient.id)
+      .field('title', 'Synthetic HbA1c report')
+      .field('issuingFacility', 'Synthetic clinic')
+      .attach('file', minimalPngSignature, {
+        filename: 'synthetic-hba1c.png',
+        contentType: 'image/png',
+      });
+
+    expect(uploadRes.status).toBe(202);
+    expect(uploadRes.body.document.processingStatus).toBe('PENDING');
+    const saved = await prisma.healthDocument.findUnique({ where: { id: uploadRes.body.document.id } });
+    expect(saved?.userId).toBe(patient.id);
+    expect(saved?.mimeType).toBe('image/png');
+
+    // Let the real asynchronous OCR worker settle before cleaning up its row/file.
+    let settled = saved;
+    for (let attempt = 0; attempt < 20 && settled?.processingStatus === 'PENDING'; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      settled = await prisma.healthDocument.findUnique({ where: { id: saved!.id } });
+    }
+    expect(settled?.processingStatus).toMatch(/NEEDS_REVIEW|OCR_NO_TEXT|EXTRACTION_FAILED/);
+
+    const patientVault = await request(app)
+      .get('/api/documents')
+      .set('Authorization', auth(patient));
+    expect(patientVault.status).toBe(200);
+    expect(patientVault.body.documents.some((doc: any) => doc.id === saved?.id)).toBe(true);
+
+    if (saved) {
+      if (saved.storagePath) await deletePrivateFile(saved.storagePath);
+      await prisma.healthDocument.delete({ where: { id: saved.id } });
+    }
+  }, 15000);
 
   // =========================================================================
   // TASK 3 — CROSS-ROLE CONSISTENCY & AUTHORIZATION BOUNDARY ENFORCEMENT

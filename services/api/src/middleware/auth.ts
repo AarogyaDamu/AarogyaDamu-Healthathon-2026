@@ -1,9 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
-import { PrismaClient } from '@prisma/client';
 import { env } from '../config/env';
-
-const prisma = new PrismaClient();
+import { prisma } from '../db/prisma';
 
 export interface AuthTokenPayload {
   id: string;
@@ -53,12 +51,17 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
         expiresAt: { gt: new Date() },
       },
       include: {
-        user: { select: { id: true, email: true, isSyntheticDemo: true, isClinician: true } },
+        user: { select: { id: true, email: true, isSyntheticDemo: true, isClinician: true, isActive: true } },
       },
     });
 
     if (!session) {
       res.status(401).json({ error: 'Session has been revoked or expired. Please sign in again.' });
+      return;
+    }
+
+    if (session.user.isActive === false) {
+      res.status(401).json({ error: 'Account has been deactivated. Access denied.' });
       return;
     }
 

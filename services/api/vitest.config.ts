@@ -7,6 +7,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      'zod': path.resolve(__dirname, 'node_modules/zod'),
       '@aarogyadamu/contracts': path.resolve(__dirname, '../../packages/contracts/src/index.ts'),
     },
   },

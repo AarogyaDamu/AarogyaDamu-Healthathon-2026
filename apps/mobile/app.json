@@ -5,20 +5,53 @@
     "scheme": "aarogyadamu",
     "version": "1.0.0",
     "orientation": "portrait",
+    "icon": "./assets/damu.png",
     "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/damu.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0D9488"
+    },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "in.panumirge.aarogyadamu"
+      "bundleIdentifier": "in.panumirge.aarogyadamu",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "AarogyaDamu requires microphone access to enable voice conversations with your diabetes companion Damu."
+      }
     },
     "android": {
-      "package": "in.panumirge.aarogyadamu"
+      "package": "in.panumirge.aarogyadamu",
+      "versionCode": 1,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/damu.png",
+        "backgroundColor": "#0D9488"
+      },
+      "permissions": [
+        "android.permission.INTERNET",
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.POST_NOTIFICATIONS"
+      ]
     },
     "web": {
       "bundler": "metro"
     },
     "plugins": [
       "expo-router",
-      "expo-secure-store"
+      "expo-secure-store",
+      [
+        "expo-av",
+        {
+          "microphonePermission": "AarogyaDamu requires microphone access to enable voice conversations with your diabetes companion Damu."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "AarogyaDamu uses the camera when you take a photo of a medical report.",
+          "photosPermission": "AarogyaDamu lets you choose a medical report photo from your library."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

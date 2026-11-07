@@ -161,7 +161,33 @@ export async function getMobileRefreshToken(): Promise<string | null> {
  * Explicit IPs or production configurations are preserved.
  */
 export function resolveApiBaseUrl(rawUrl?: string): string {
-  const configured = (rawUrl || process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000/api')
+  const apiUrl = rawUrl?.trim() || process.env.EXPO_PUBLIC_API_URL?.trim();
+  if (process.env.NODE_ENV === 'production') {
+    const appEnvironment = process.env.EXPO_PUBLIC_APP_ENV;
+    if (!['development', 'staging', 'production'].includes(appEnvironment || '')) {
+      throw new Error('Release builds require EXPO_PUBLIC_APP_ENV to identify the build environment.');
+    }
+    if (!apiUrl) {
+      throw new Error('Release builds require EXPO_PUBLIC_API_URL to be configured.');
+    }
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(apiUrl);
+    } catch {
+      throw new Error('Release builds require EXPO_PUBLIC_API_URL to be a valid HTTPS URL.');
+    }
+    if (parsedUrl.username.length > 0 || parsedUrl.password.length > 0) {
+      throw new Error('Release builds require a credential-free API URL.');
+    }
+    if (appEnvironment !== 'development' && (
+      parsedUrl.protocol !== 'https:' ||
+      ['localhost', '127.0.0.1', '10.0.2.2'].includes(parsedUrl.hostname.toLowerCase())
+    )) {
+      throw new Error('Staging and production builds require a reachable HTTPS API URL.');
+    }
+  }
+
+  const configured = (apiUrl || 'http://localhost:4000/api')
     .trim()
     .replace(/\/+$/, '');
 
@@ -198,9 +224,14 @@ async function rotateMobileRefreshToken(): Promise<RefreshSessionResponse | null
     const timeoutId = setTimeout(() => controller.abort(), 15000);
     let response: Response;
     try {
+      const headers = new Headers({
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'X-Aarogyadamu-Environment': process.env.EXPO_PUBLIC_APP_ENV || 'development',
+      });
       response = await fetch(`${resolveApiBaseUrl()}/auth/refresh`, {
         method: 'POST',
-        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ refreshToken }),
         signal: controller.signal,
       });
@@ -226,7 +257,7 @@ async function rotateMobileRefreshToken(): Promise<RefreshSessionResponse | null
  * Makes an authenticated request to the AarogyaDamu API.
  *
  * Automatically resolves 10.0.2.2 on Android emulators when localhost is configured.
- * Implements standard 15-second request timeouts (60s for long-running scribe/audio uploads).
+ * Implements standard 15-second request timeouts (60s for long-running audio uploads).
  */
 async function mobileApiFetchInternal<T = unknown>(
   path: string,
@@ -246,6 +277,12 @@ async function mobileApiFetchInternal<T = unknown>(
   if (!headers.has('Accept')) {
     headers.set('Accept', 'application/json');
   }
+  if (!headers.has('X-Aarogyadamu-Environment')) {
+    headers.set(
+      'X-Aarogyadamu-Environment',
+      process.env.EXPO_PUBLIC_APP_ENV || 'development',
+    );
+  }
 
   if (typeof init.body === 'string' && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
@@ -257,7 +294,7 @@ async function mobileApiFetchInternal<T = unknown>(
             headers.set('Authorization', 'Bearer ' + token);
   }
 
-  const isLongRunning = path.includes('/scribe/') || path.includes('/recordings') || path.includes('/upload');
+  const isLongRunning = path.includes('/recordings') || path.includes('/upload');
   const timeoutMs = init.timeoutMs ?? (isLongRunning ? 60000 : 15000);
 
   let controller: AbortController | null = null;
@@ -339,7 +376,17 @@ async function mobileApiFetchInternal<T = unknown>(
       typeof responseData === 'object'
     ) {
       const body = responseData as Record<string, unknown>;
-      const serverMessage = body.error ?? body.message;
+      // Prefer descriptive message over generic error code string
+      let serverMessage = typeof body.message === 'string' && body.message.trim()
+        ? body.message
+        : (typeof body.error === 'string' && body.error.trim() ? body.error : undefined);
+
+      if (Array.isArray(body.details) && body.details.length > 0) {
+        const detailsStr = body.details
+          .map((d: any) => `${d.path || 'field'}: ${d.message}`)
+          .join('; ');
+        serverMessage = serverMessage ? `${serverMessage} (${detailsStr})` : detailsStr;
+      }
 
       if (
         typeof serverMessage === 'string' &&
@@ -419,7 +466,7 @@ export interface ExtractedField {
 export interface MedicalReport {
   id: string;
   title: string;
-  fileType: 'PDF' | 'IMAGE' | 'AUDIO_SCRIBE';
+  fileType: 'PDF' | 'IMAGE' | 'AUDIO_NOTE';
   fileName: string;
   fileSize: string;
   patientName: string;
@@ -602,15 +649,15 @@ const todayLabel = (): string =>
     year: 'numeric',
   });
 
-const DEFAULT_PATIENT: PatientProfile = {
-  name: 'User',
+const EMPTY_PATIENT_PROFILE: PatientProfile = {
+  name: '',
   age: 0,
   gender: 'Not provided',
   bloodGroup: 'Not provided',
   abhaId: '',
   abhaLinked: false,
   condition: 'Not provided',
-  emergencyContact: 'Not provided',
+  emergencyContact: '',
   lastUpdated: 'Not synced',
   role: 'PATIENT',
 };
@@ -636,7 +683,7 @@ const isReportStatus = (value: unknown): value is ReportStatus =>
 const isReportFileType = (
   value: unknown,
 ): value is MedicalReport['fileType'] =>
-  value === 'PDF' || value === 'IMAGE' || value === 'AUDIO_SCRIBE';
+  value === 'PDF' || value === 'IMAGE' || value === 'AUDIO_NOTE';
 
 const asText = (value: unknown, fallback = ''): string =>
   typeof value === 'string' ? value : fallback;
@@ -652,7 +699,7 @@ const asText = (value: unknown, fallback = ''): string =>
  * Cross-account coordination must use the authenticated backend API.
  */
 class ClinicalStore {
-  isDemoMode = true;
+  isDemoMode = false;
 
   syncState: {
     status: SyncStatus;
@@ -663,10 +710,10 @@ class ClinicalStore {
     status: 'OFFLINE_CACHE',
     lastSyncedAt: 'Not synced',
     pendingSyncCount: 0,
-    errorMessage: 'Backend sync has not been configured.',
+    errorMessage: 'Local demo cache is disabled. The authenticated backend is the source of truth.',
   };
 
-  patient: PatientProfile = { ...DEFAULT_PATIENT };
+  patient: PatientProfile = { ...EMPTY_PATIENT_PROFILE };
 
   private realObservations: GlucoseRecord[] = [];
   private realTasks: CareTask[] = [];
@@ -987,54 +1034,6 @@ class ClinicalStore {
     this.notify();
 
     return true;
-  }
-
-  saveAmbientScribe(
-    appointmentId: string,
-    transcriptSummary: string,
-    meds: string,
-    goals: string,
-  ): MedicalReport {
-    const appointment = this.appointments.find(
-      (item) => item.id === appointmentId,
-    );
-
-    const formattedDate = todayLabel();
-
-    const report: MedicalReport = {
-      id: makeId('scribe'),
-      title: 'AI-Generated Consultation Note — Draft',
-      fileType: 'AUDIO_SCRIBE',
-      fileName: 'consultation-note-draft',
-      fileSize: 'Not generated',
-      patientName: appointment?.patientName || 'Patient',
-      reportDate: formattedDate,
-      uploadDate: formattedDate,
-      facility: appointment?.hospital || 'Not specified',
-      specialty: 'DIABETOLOGY',
-      source: 'LIVE_AI_AGENT',
-      status: 'PENDING_PA_REVIEW',
-      extractedFields: [],
-      conciseSummary: transcriptSummary.trim(),
-    };
-
-    this.reports = [report, ...this.reports];
-
-    if (appointment) {
-      appointment.postVisitNote = {
-        visitDate: new Date().toISOString(),
-        advice: transcriptSummary.trim(),
-        medChanges: meds.trim(),
-        lifestyleGoals: goals.trim(),
-        nextFollowUpWeeks: 0,
-        doctorSigned: false,
-      };
-    }
-
-    this.syncState.pendingSyncCount += 1;
-    this.notify();
-
-    return report;
   }
 
   /* ------------------------------- Consent -------------------------------- */

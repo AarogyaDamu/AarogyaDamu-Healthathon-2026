@@ -1,5 +1,24 @@
+import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+
+const appEnvironment = process.env.APP_ENV;
+const databaseUrl = process.env.DATABASE_URL || 'postgresql://aarogyadamu:change-me@localhost:5432/aarogyadamu_dev?schema=public';
+if (process.env.NODE_ENV === 'production' || appEnvironment !== 'development') {
+  throw new Error('Synthetic seed data requires APP_ENV=development and is disabled in production.');
+}
+let parsedDatabaseUrl: URL;
+try {
+  parsedDatabaseUrl = new URL(databaseUrl);
+} catch {
+  throw new Error('Synthetic seed data requires a valid local PostgreSQL DATABASE_URL.');
+}
+const databaseName = parsedDatabaseUrl.pathname.replace(/^\//, '').split('?')[0];
+if (!['postgres:', 'postgresql:'].includes(parsedDatabaseUrl.protocol) ||
+    !['localhost', '127.0.0.1', '::1'].includes(parsedDatabaseUrl.hostname) ||
+    !databaseName.endsWith('_dev')) {
+  throw new Error('Synthetic seed data may only target a local PostgreSQL database ending in _dev.');
+}
 
 const prisma = new PrismaClient();
 
@@ -7,12 +26,17 @@ async function main() {
   console.log('Seeding AarogyaDamu clinical baseline database...');
 
   // 1. Clean existing records in correct foreign key order
+  await prisma.agentAction.deleteMany();
+  await prisma.agentPlan.deleteMany();
+  await prisma.agentAuditRecord.deleteMany();
+  await prisma.reminder.deleteMany();
+  await prisma.medicationAdherenceEvent.deleteMany();
+  await prisma.featureFlag.deleteMany();
   await prisma.careNotification.deleteMany();
   await prisma.careTeamMessage.deleteMany();
   await prisma.auditLog.deleteMany();
   await prisma.appointment.deleteMany();
   await prisma.doctorPatientAssignment.deleteMany();
-  await prisma.consultationNote.deleteMany();
   await prisma.assistantProposal.deleteMany();
   await prisma.caregiverConsent.deleteMany();
   await prisma.medicationSchedule.deleteMany();
@@ -43,7 +67,7 @@ async function main() {
           dateOfBirth: new Date('1966-06-18'),
           diabetesType: 'TYPE_2_DIABETES',
           diagnosisYear: 2021,
-          primaryClinician: 'Dr. Anjali Kulkarni (Endocrinologist)',
+          primaryClinician: 'Dr. Rupam Choudhary (Diabetologist)',
           knownAllergies: 'Sulfonamides (rash)',
           targetFastingMin: 80,
           targetFastingMax: 130,
@@ -56,16 +80,16 @@ async function main() {
   });
   console.log(`Created demo patient: ${patient.email} (${patient.id})`);
 
-  // 3. Create Doctor Account (Dr. Anjali Kulkarni)
+  // 3. Create Doctor Account (Dr. Rupam Choudhary)
   const doctor = await prisma.user.create({
     data: {
-      email: 'dr.kulkarni@aarogyadamu.local',
+      email: 'dr.rc@aarogyadamu.local',
       passwordHash,
       isSyntheticDemo: true,
       isClinician: true,
       profile: {
         create: {
-          fullName: 'Dr. Anjali Kulkarni (Endocrinologist)',
+          fullName: 'Dr. Rupam Choudhary (Diabetologist)',
           diabetesType: 'UNKNOWN',
           primaryClinician: 'Sahyadri Specialty Hospital',
         },
@@ -323,7 +347,7 @@ async function main() {
         reportDate: new Date('2026-09-25'),
         processingStatus: 'READY',
         extractedData: JSON.stringify({
-          plainSummary: 'Prescription from Dr. Anjali Kulkarni at Sahyadri Specialty Hospital. Prescribed Tab Metformin 500mg SR with dinner daily and twice-weekly fasting monitoring.',
+          plainSummary: 'Prescription from Dr. Rupam Choudhary at Sahyadri Specialty Hospital. Prescribed Tab Metformin 500mg SR with dinner daily and twice-weekly fasting monitoring.',
           medicines: [
             {
               name: 'Tab Metformin 500mg SR',
@@ -349,7 +373,7 @@ async function main() {
   await prisma.consultationPrep.create({
     data: {
       userId: patient.id,
-      clinicianName: 'Dr. Anjali Kulkarni (Endocrinologist)',
+      clinicianName: 'Dr. Rupam Choudhary (Diabetologist)',
       facilityName: 'Sahyadri Specialty Hospital',
       scheduledAt: new Date(now + 4 * dayMs),
       concernsAndQuestions: 'Fasting blood sugar running stable (118–128 mg/dL). Occasional afternoon thirst after long walks.',
@@ -370,42 +394,7 @@ async function main() {
     },
   });
 
-  // 13. Seed AI Medical Scribe Approved Consultation Note
-  await prisma.consultationNote.create({
-    data: {
-      userId: patient.id,
-      clinicianId: doctor.id,
-      clinicianName: 'Dr. Anjali Kulkarni (Endocrinologist)',
-      facilityName: 'Sahyadri Specialty Hospital',
-      status: 'APPROVED',
-      audioConsentObtained: true,
-      rawTranscript: 'Doctor: Namaste Ramesh-ji. How have your sugars been running? Patient: Fasting is averaging around 120-128. Doctor: That is well within our 80-130 target. Continue Metformin 500mg SR with dinner and we will review again next month.',
-      speakerSegments: JSON.stringify([
-        { speaker: 'Doctor', text: 'Namaste Ramesh-ji. How have your sugars been running?' },
-        { speaker: 'Patient', text: 'Fasting is averaging around 120-128.' },
-        { speaker: 'Doctor', text: 'That is well within our 80-130 target. Continue Metformin 500mg SR with dinner and we will review again next month.' },
-      ]),
-      structuredNote: JSON.stringify({
-        chiefComplaint: 'Routine glycemic control review',
-        symptoms: ['Mild afternoon thirst'],
-        historyOfPresentIllness: 'Patient with known Type 2 Diabetes reports stable morning glucose under current regimen.',
-        relevantMedicalHistory: ['Type 2 Diabetes Mellitus', 'Essential Hypertension'],
-        currentMedications: [{ name: 'Tab Metformin SR', dose: '500mg', frequency: 'Once daily with dinner' }],
-        allergies: ['Sulfonamides'],
-        examinationFindings: ['Alert and oriented', 'Cardiovascular S1/S2 normal', 'Chest clear'],
-        clinicalAssessment: 'Type 2 Diabetes Mellitus with satisfactory glycemic control',
-        investigationsOrdered: ['Repeat HbA1c panel in 3 months'],
-        treatmentPlan: ['Continue Tab Metformin 500mg SR with dinner', '2.5L daily hydration', '30-minute daily walk'],
-        followUpInstructions: 'Review in 30 days',
-        uncertainOrMissingInformation: ['None documented'],
-      }),
-      approvedNoteText: 'Doctor: Dr. Anjali Kulkarni | Assessment: Type 2 Diabetes Mellitus with satisfactory glycemic control | Plan: Continue Tab Metformin 500mg SR with dinner; 30-minute daily walk; review in 30 days.',
-      approvedAt: new Date(now - 1 * dayMs),
-      approvedBy: doctor.id,
-    },
-  });
-
-  // 14. Seed Confirmed Appointment
+  // 13. Seed Confirmed Appointment
   await prisma.appointment.create({
     data: {
       patientId: patient.id,
@@ -428,7 +417,7 @@ async function main() {
         senderId: patient.id,
         senderRole: 'PATIENT',
         category: 'QUESTION',
-        content: 'Namaste Dr. Kulkarni, my fasting sugar was 122 this morning. Walking routine is going well.',
+        content: 'Namaste Dr. Choudhary, my fasting sugar was 122 this morning. Walking routine is going well.',
         createdAt: new Date(now - 2 * dayMs),
       },
       {
@@ -469,7 +458,7 @@ async function main() {
         actorId: doctor.id,
         type: 'DOCTOR_MESSAGE',
         title: 'Message from Doctor',
-        message: 'Dr. Anjali Kulkarni: "Very good, Ramesh-ji. 122 mg/dL is within our fasting target..."',
+        message: 'Dr. Rupam Choudhary: "Very good, Ramesh-ji. 122 mg/dL is within our fasting target..."',
         link: '/messages',
         createdAt: new Date(now - 1 * dayMs),
       },
@@ -486,7 +475,275 @@ async function main() {
     ],
   });
 
-  // 17. Initial Audit Log
+  // 17. Seed Synthetic Demo Patient 2: Suresh Patel (Inconsistent Glucose & Missed Reminders)
+  const patient2 = await prisma.user.create({
+    data: {
+      email: 'demo.patient2@aarogyadamu.local',
+      passwordHash,
+      isSyntheticDemo: true,
+      isClinician: false,
+      profile: {
+        create: {
+          fullName: 'Suresh Patel',
+          dateOfBirth: new Date('1972-04-12'),
+          diabetesType: 'TYPE_2_DIABETES',
+          diagnosisYear: 2019,
+          primaryClinician: 'Dr. Rupam Choudhary (Diabetologist)',
+          targetFastingMin: 80,
+          targetFastingMax: 130,
+          targetPostMealMax: 180,
+          preferredLanguage: 'en',
+          timeZone: 'Asia/Kolkata',
+        },
+      },
+    },
+  });
+  console.log(`Created demo patient 2: ${patient2.email} (${patient2.id})`);
+
+  await prisma.doctorPatientAssignment.create({
+    data: {
+      doctorId: doctor.id,
+      patientId: patient2.id,
+      status: 'ACTIVE',
+      activatedAt: new Date(),
+    },
+  });
+
+  // Seed Inconsistent Glucose Observations for Suresh Patel (Spikes post-meal)
+  await prisma.healthObservation.createMany({
+    data: [
+      {
+        userId: patient2.id,
+        type: 'BLOOD_GLUCOSE',
+        numericValue: 148,
+        unit: 'mg/dL',
+        context: 'FASTING',
+        notes: 'Morning fasting slightly elevated',
+        provenance: 'PATIENT_ENTERED',
+        observedAt: new Date(now - 3 * dayMs),
+      },
+      {
+        userId: patient2.id,
+        type: 'BLOOD_GLUCOSE',
+        numericValue: 218,
+        unit: 'mg/dL',
+        context: 'POST_MEAL_2HR',
+        notes: 'Post heavy lunch (rice and sweets)',
+        clinicalFlag: 'ELEVATED_POST_MEAL',
+        provenance: 'PATIENT_ENTERED',
+        observedAt: new Date(now - 2 * dayMs),
+      },
+      {
+        userId: patient2.id,
+        type: 'BLOOD_GLUCOSE',
+        numericValue: 152,
+        unit: 'mg/dL',
+        context: 'FASTING',
+        notes: 'Morning fasting',
+        provenance: 'PATIENT_ENTERED',
+        observedAt: new Date(now - 1 * dayMs),
+      },
+      {
+        userId: patient2.id,
+        type: 'BLOOD_GLUCOSE',
+        numericValue: 242,
+        unit: 'mg/dL',
+        context: 'POST_MEAL_2HR',
+        notes: 'Post dinner family celebration',
+        clinicalFlag: 'ELEVATED_POST_MEAL',
+        provenance: 'PATIENT_ENTERED',
+        observedAt: new Date(now - 12 * 3600000),
+      },
+    ],
+  });
+
+  // Seed Medication Schedule & Missed Adherence for Suresh Patel
+  const glimepirideMed = await prisma.medicationSchedule.create({
+    data: {
+      userId: patient2.id,
+      medicineName: 'Tab Glimepiride',
+      dosage: '1mg',
+      timing: 'MORNING',
+      isActive: true,
+    },
+  });
+
+  await prisma.medicationAdherenceEvent.create({
+    data: {
+      medicationId: glimepirideMed.id,
+      userId: patient2.id,
+      action: 'MISSED',
+      scheduledTime: new Date(now - dayMs),
+      recordedBy: patient2.id,
+      sourceProvenance: 'MANUAL_PATIENT',
+      notes: 'Patient forgot morning dose due to travel',
+      idempotencyKey: 'seed_adh_suresh_missed_1',
+    },
+  });
+
+  await prisma.reminder.create({
+    data: {
+      userId: patient2.id,
+      createdById: patient2.id,
+      title: 'Take Tab Glimepiride 1mg with breakfast',
+      category: 'MEDICATION',
+      status: 'SCHEDULED',
+      remindAt: new Date(now + 12 * 3600000),
+      recurrence: 'DAILY',
+      notes: 'Morning pre-breakfast reminder',
+    },
+  });
+
+  // 18. Seed Synthetic Demo Patient 3: Sunita Sharma (Pending Care Tasks & AI Care Proposal)
+  const patient3 = await prisma.user.create({
+    data: {
+      email: 'demo.patient3@aarogyadamu.local',
+      passwordHash,
+      isSyntheticDemo: true,
+      isClinician: false,
+      profile: {
+        create: {
+          fullName: 'Sunita Sharma',
+          dateOfBirth: new Date('1961-09-22'),
+          diabetesType: 'TYPE_2_DIABETES',
+          diagnosisYear: 2017,
+          primaryClinician: 'Dr. Rupam Choudhary (Diabetologist)',
+          targetFastingMin: 80,
+          targetFastingMax: 130,
+          targetPostMealMax: 180,
+          preferredLanguage: 'en',
+          timeZone: 'Asia/Kolkata',
+        },
+      },
+    },
+  });
+  console.log(`Created demo patient 3: ${patient3.email} (${patient3.id})`);
+
+  await prisma.doctorPatientAssignment.create({
+    data: {
+      doctorId: doctor.id,
+      patientId: patient3.id,
+      status: 'ACTIVE',
+      activatedAt: new Date(),
+    },
+  });
+
+  // Seed Health Observations for Sunita Sharma (Low fasting trend)
+  await prisma.healthObservation.createMany({
+    data: [
+      {
+        userId: patient3.id,
+        type: 'BLOOD_GLUCOSE',
+        numericValue: 74,
+        unit: 'mg/dL',
+        context: 'FASTING',
+        notes: 'Morning reading with mild shakiness',
+        provenance: 'PATIENT_ENTERED',
+        observedAt: new Date(now - 2 * dayMs),
+      },
+      {
+        userId: patient3.id,
+        type: 'BLOOD_GLUCOSE',
+        numericValue: 76,
+        unit: 'mg/dL',
+        context: 'FASTING',
+        notes: 'Morning reading before tea',
+        provenance: 'PATIENT_ENTERED',
+        observedAt: new Date(now - 1 * dayMs),
+      },
+      {
+        userId: patient3.id,
+        type: 'BLOOD_GLUCOSE',
+        numericValue: 72,
+        unit: 'mg/dL',
+        context: 'FASTING',
+        notes: 'Morning reading; felt mild lightheadedness',
+        provenance: 'PATIENT_ENTERED',
+        observedAt: new Date(now),
+      },
+    ],
+  });
+
+  // Seed Pending Care Tasks for Sunita Sharma
+  await prisma.careTask.createMany({
+    data: [
+      {
+        userId: patient3.id,
+        title: 'Annual Comprehensive Diabetic Foot Examination',
+        category: 'FOOT_EXAM',
+        status: 'PENDING',
+        dueAt: new Date(now + 5 * dayMs),
+        idempotencyKey: 'seed_task_sunita_foot_exam_1',
+      },
+      {
+        userId: patient3.id,
+        title: 'Schedule 3-Month Repeat HbA1c Lab Panel',
+        category: 'LAB_TEST',
+        status: 'PENDING',
+        dueAt: new Date(now + 7 * dayMs),
+        idempotencyKey: 'seed_task_sunita_hba1c_1',
+      },
+    ],
+  });
+
+  // Seed AI-Generated Advisory Proposal Awaiting Doctor Review (PENDING_CLINICIAN_APPROVAL)
+  const proposalExpiresAt = new Date(now + 24 * 60 * 60 * 1000);
+  const proposalPlan = await prisma.agentPlan.create({
+    data: {
+      id: 'seed-plan-sunita-proposal-1',
+      userId: patient3.id,
+      targetPatientId: patient3.id,
+      userIntent: 'REVISE_CARE_PLAN',
+      explanation: 'Patient morning fasting glucose readings have averaged 74 mg/dL over the past week with reported mild lightheadedness. Advisory proposal generated for Dr. Choudhary to review fasting glucose target ranges.',
+      highestRiskTier: 'HIGH_RISK',
+      status: 'PENDING_CLINICIAN_APPROVAL',
+      version: 1,
+      actionCount: 1,
+      expiresAt: proposalExpiresAt,
+      actions: {
+        create: [
+          {
+            id: 'seed-act-sunita-proposal-1',
+            toolName: 'tool_draft_care_proposal',
+            parameters: JSON.stringify({
+              proposalType: 'TARGET_GLUCOSE_RANGE_REVISION',
+              title: 'Review Target Fasting Glucose Range for Sunita Sharma',
+              rationale: 'Recent fasting observations trending at 72-78 mg/dL with occasional morning lightheadedness. Clinician evaluation recommended to adjust target range from 80-130 mg/dL to 90-140 mg/dL.',
+              proposedDetails: {
+                currentFastingTarget: '80-130 mg/dL',
+                suggestedFastingTarget: '90-140 mg/dL',
+                advisoryNotice: 'Advisory proposal only. Physician must clinically evaluate and update CarePlan independently.',
+              },
+            }),
+            riskTier: 'HIGH_RISK',
+            status: 'PENDING_CLINICIAN_APPROVAL',
+            idempotencyKey: 'seed_idemp_sunita_proposal_1',
+            expiresAt: proposalExpiresAt,
+          },
+        ],
+      },
+    },
+  });
+
+  await prisma.agentAuditRecord.create({
+    data: {
+      id: 'seed-audit-sunita-proposal-1',
+      userId: patient3.id,
+      riskTier: 'HIGH_RISK',
+      actionType: 'CLINICAL_CARE_PROPOSAL',
+      summary: 'AI advisory proposal drafted: Review Target Fasting Glucose Range for Sunita Sharma',
+      approvalStatus: 'PENDING',
+      requiresClinicianApproval: true,
+      payload: JSON.stringify({
+        planId: proposalPlan.id,
+        actionId: 'seed-act-sunita-proposal-1',
+        proposalType: 'TARGET_GLUCOSE_RANGE_REVISION',
+      }),
+    },
+  });
+  console.log(`Created AI clinical proposal awaiting doctor review for Sunita Sharma`);
+
+  // 19. Initial Audit Log
   await prisma.auditLog.create({
     data: {
       userId: patient.id,
@@ -498,7 +755,71 @@ async function main() {
     },
   });
 
-  console.log('Seeding completed successfully with synthetic pilot profiles for Patient, Doctor, and Caregiver!');
+  // 20. Default System Feature Flags (P0.0 Safety & Governance)
+  const defaultFlags = [
+    {
+      id: 'P0_0_SAFETY_FOUNDATION',
+      name: 'Clinical Safety & Data Foundation',
+      description: 'ADA safety evaluation thresholds, medical audit logging, AI safety boundaries, and feature governance.',
+      isEnabled: true,
+      rolloutTier: 'development',
+    },
+    {
+      id: 'P0_1_HEALTH_JOURNAL',
+      name: 'Unified Health Journal',
+      description: 'Vital signs, continuous/discrete blood glucose, blood pressure, weight, and HbA1c tracking.',
+      isEnabled: false,
+      rolloutTier: 'development',
+    },
+    {
+      id: 'P0_2_MEDICATION_VAULT',
+      name: 'Medication Vault & Adherence Management',
+      description: 'Prescriptions, medication schedules, dispensing history, and adherence alerts.',
+      isEnabled: false,
+      rolloutTier: 'development',
+    },
+    {
+      id: 'P0_3_LIFESTYLE_TWIN',
+      name: 'Lifestyle Tracking & Digital Health Twin',
+      description: 'Nutrition logging, physical activity, sleep monitoring, and metabolic modeling.',
+      isEnabled: false,
+      rolloutTier: 'development',
+    },
+    {
+      id: 'P0_4_NOTIFICATIONS_SOS',
+      name: 'Clinical Notifications & Emergency SOS',
+      description: 'Critical hypoglycemia alerts, caregiver dispatch, and emergency contact escalations.',
+      isEnabled: false,
+      rolloutTier: 'development',
+    },
+    {
+      id: 'P0_6_GROQ_DAMU_ASSISTANT',
+      name: 'Damu Multilingual Voice Assistant',
+      description: 'Conversational diabetes companion, speech recognition, and regional voice synthesis.',
+      isEnabled: false,
+      rolloutTier: 'development',
+    },
+    {
+      id: 'P0_7_AGENTIC_EXECUTION',
+      name: 'Governed Agentic Execution',
+      description: 'Human-in-the-loop AI task planning, follow-up scheduling, and care proposal approval.',
+      isEnabled: false,
+      rolloutTier: 'development',
+    },
+    {
+      id: 'P0_8_EXTERNAL_INTEGRATIONS',
+      name: 'Wearables & WhatsApp Integrations',
+      description: 'Continuous glucose monitor sync, wearable step counters, and WhatsApp health digests.',
+      isEnabled: false,
+      rolloutTier: 'development',
+    },
+  ];
+
+  for (const flag of defaultFlags) {
+    await prisma.featureFlag.create({ data: flag });
+  }
+
+  console.log('Seeding completed successfully with synthetic pilot profiles and P0.0 feature flags!');
 }
 
 main()

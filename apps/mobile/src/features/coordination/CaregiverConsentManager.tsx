@@ -55,7 +55,7 @@ export default function CaregiverConsentManager() {
     <Text>Grant access to the caregiver's account email. Revocation takes effect on the server.</Text>
     {loading && <Text>Loading caregiver access…</Text>}
     {consents.map(c => <View key={c.id} style={{ paddingVertical: 10 }}>
-      <Text>{c.caregiverName} ({c.caregiverEmail}) — {c.status}</Text>
+      <Text>{c.caregiverName} ({c.caregiverEmail}) • {c.status}</Text>
       <Text>{c.relationship}: {c.permissions.join(', ')}</Text>
       {c.status === 'ACTIVE' && <TouchableOpacity accessibilityRole="button" disabled={busy} onPress={() => void revoke(c.id)}><Text style={{ color: '#B91C1C', paddingVertical: 8 }}>Revoke access</Text></TouchableOpacity>}
     </View>)}

@@ -1,4 +1,44 @@
-const API_BASE = (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_API_URL) || 'http://localhost:4000/api';
+import type {
+  AgentProposalsResponse,
+  AgentProposalReviewPayload,
+  AgentProposalReviewResponse,
+  AgentPlanResponse,
+  AgentActionResponse,
+  DoctorAppointmentItem,
+  AppointmentStatus,
+  DoctorAvailabilitySlot,
+  DoctorScheduleSetting,
+  DoctorTimeOffItem,
+  JourneyProgressSummary,
+  HealthInsight,
+  JourneyMilestoneItem,
+} from './types';
+
+const viteEnv = (typeof import.meta !== 'undefined' && (import.meta as any).env) || {};
+const configuredApiBase = viteEnv.VITE_API_URL?.trim();
+if (viteEnv.PROD) {
+  if (viteEnv.VITE_APP_ENV !== 'staging' && viteEnv.VITE_APP_ENV !== 'production') {
+    throw new Error('Production web builds require VITE_APP_ENV=staging or production.');
+  }
+  if (!configuredApiBase) {
+    throw new Error('Production web builds require VITE_API_URL to be configured.');
+  }
+  let parsedApiBase: URL;
+  try {
+    parsedApiBase = new URL(configuredApiBase);
+  } catch {
+    throw new Error('Production web builds require VITE_API_URL to be a valid HTTPS URL.');
+  }
+  if (
+    parsedApiBase.protocol !== 'https:' ||
+    parsedApiBase.username.length > 0 ||
+    parsedApiBase.password.length > 0 ||
+    ['localhost', '127.0.0.1'].includes(parsedApiBase.hostname.toLowerCase())
+  ) {
+    throw new Error('Staging and production web builds require a credential-free, reachable HTTPS API URL.');
+  }
+}
+const API_BASE = configuredApiBase || 'http://localhost:4000/api';
 const TOKEN_KEY = 'aarogyadamu_token';
 const REFRESH_TOKEN_KEY = 'aarogyadamu_refresh_token';
 const TARGET_PATIENT_KEY = 'aarogyadamu_target_patient_id';
@@ -17,7 +57,6 @@ export class ApiError extends Error {
     this.name = 'ApiError';
   }
 }
-
 export function getCsrfToken(): string | null {
   if (typeof document === 'undefined') return null;
   const match = document.cookie.match(/(?:^|;\s*)aarogyadamu_csrf_token=([^;]+)/);
@@ -104,6 +143,7 @@ export function setActiveTargetPatientId(patientId: string | null): void {
 
 export interface WebApiFetchOptions extends RequestInit {
   timeoutMs?: number;
+  responseType?: 'json' | 'blob';
 }
 
 export async function refreshAccessToken(): Promise<string | null> {
@@ -117,6 +157,7 @@ export async function refreshAccessToken(): Promise<string | null> {
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      'X-Aarogyadamu-Environment': viteEnv.VITE_APP_ENV || 'development',
     };
     if (csrfToken) {
       headers['X-CSRF-Token'] = csrfToken;
@@ -193,6 +234,7 @@ export async function apiFetch<T>(
   const isFormData = options.body instanceof FormData;
   const headers: Record<string, string> = {
     ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
+    'X-Aarogyadamu-Environment': viteEnv.VITE_APP_ENV || 'development',
     ...((options.headers as Record<string, string>) || {}),
   };
 
@@ -209,7 +251,7 @@ export async function apiFetch<T>(
   const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
 
   // Standard 15-second request timeout; 60 seconds for long uploads/audio
-  const isLongRunning = cleanEndpoint.includes('/scribe/') || cleanEndpoint.includes('/recordings') || isFormData;
+  const isLongRunning = cleanEndpoint.includes('/recordings') || isFormData;
   const timeoutMs = options.timeoutMs ?? (isLongRunning ? 60000 : 15000);
 
   let controller: AbortController | null = null;
@@ -309,7 +351,14 @@ export async function apiFetch<T>(
     } catch {
       // Body not JSON
     }
-    const message = errorData?.error || errorData?.message || 'Access denied for this patient view.';
+    const message =
+      (typeof errorData?.error === 'string'
+        ? errorData.error
+        : typeof errorData?.error?.message === 'string'
+          ? errorData.error.message
+          : typeof errorData?.message === 'string'
+            ? errorData.message
+            : 'Access denied for this patient view.');
     window.dispatchEvent(
       new CustomEvent('aarogyadamu:permission_denied', {
         detail: { message },
@@ -326,9 +375,187 @@ export async function apiFetch<T>(
       // Body not JSON
     }
     const message =
-      errorData?.error || errorData?.message || `Request failed with status ${response.status}`;
+      (typeof errorData?.error === 'string'
+        ? errorData.error
+        : typeof errorData?.error?.message === 'string'
+          ? errorData.error.message
+          : typeof errorData?.message === 'string'
+            ? errorData.message
+            : typeof errorData === 'string'
+              ? errorData
+              : `Request failed with status ${response.status}`);
     throw new ApiError(response.status, message, errorData);
   }
 
+  if (options.responseType === 'blob') {
+    return response.blob() as Promise<T>;
+  }
   return response.json();
+}
+
+/** Fetches a protected binary such as a private medical report preview. */
+export async function apiFetchBlob(endpoint: string, options: WebApiFetchOptions = {}): Promise<Blob> {
+  return apiFetch<Blob>(endpoint, { ...options, responseType: 'blob' });
+}
+
+/**
+ * P0.7.6 Governed Agentic Proposals & Action Client APIs
+ */
+
+export async function getAgentProposals(params?: {
+  patientId?: string;
+  status?: string;
+  limit?: number;
+}): Promise<AgentProposalsResponse> {
+  const query = new URLSearchParams();
+  if (params?.patientId) query.set('patientId', params.patientId);
+  if (params?.status) query.set('status', params.status);
+  if (params?.limit) query.set('limit', String(params.limit));
+  const queryString = query.toString();
+  return apiFetch<AgentProposalsResponse>(`/agent/proposals${queryString ? `?${queryString}` : ''}`);
+}
+
+export async function reviewAgentProposal(
+  actionId: string,
+  payload: AgentProposalReviewPayload
+): Promise<AgentProposalReviewResponse> {
+  return apiFetch<AgentProposalReviewResponse>(`/agent/proposals/${actionId}/clinician-review`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getAgentPlan(planId: string): Promise<AgentPlanResponse> {
+  return apiFetch<AgentPlanResponse>(`/agent/plans/${planId}`);
+}
+
+export async function getAgentAction(actionId: string): Promise<AgentActionResponse> {
+  return apiFetch<AgentActionResponse>(`/agent/actions/${actionId}`);
+}
+
+/**
+ * Phase 4: Doctor Appointment Management & Availability APIs
+ */
+export async function getDoctorAppointments(params?: {
+  status?: string;
+  patientId?: string;
+  visitType?: string;
+  filter?: string;
+  date?: string;
+}): Promise<{ appointments: DoctorAppointmentItem[] }> {
+  const query = new URLSearchParams();
+  if (params?.status) query.set('status', params.status);
+  if (params?.patientId) query.set('patientId', params.patientId);
+  if (params?.visitType) query.set('visitType', params.visitType);
+  if (params?.filter) query.set('filter', params.filter);
+  if (params?.date) query.set('date', params.date);
+  const qs = query.toString();
+  return apiFetch<{ appointments: DoctorAppointmentItem[] }>(
+    `/coordination/appointments${qs ? `?${qs}` : ''}`
+  );
+}
+
+export async function updateAppointmentStatus(
+  appointmentId: string,
+  payload: {
+    status: AppointmentStatus;
+    rejectionReason?: string;
+    cancellationReason?: string;
+    newScheduledAt?: string;
+    newDurationMinutes?: number;
+  }
+): Promise<{ appointment: DoctorAppointmentItem }> {
+  return apiFetch<{ appointment: DoctorAppointmentItem }>(
+    `/coordination/appointments/${encodeURIComponent(appointmentId)}/status`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export async function getDoctorAvailability(
+  doctorId: string,
+  date: string
+): Promise<{
+  date: string;
+  doctorId: string;
+  doctorName: string;
+  clinicName: string;
+  slotDurationMinutes?: number;
+  isWorkingDay: boolean;
+  message?: string;
+  slots: DoctorAvailabilitySlot[];
+}> {
+  return apiFetch(
+    `/coordination/doctors/${encodeURIComponent(doctorId)}/availability?date=${encodeURIComponent(date)}`
+  );
+}
+
+export async function getDoctorScheduleSettings(): Promise<{
+  availabilities: DoctorScheduleSetting[];
+  timeOffs: DoctorTimeOffItem[];
+}> {
+  return apiFetch('/coordination/doctor/availability');
+}
+
+export async function updateDoctorScheduleSettings(
+  schedules: DoctorScheduleSetting[]
+): Promise<{ success: boolean; message: string }> {
+  return apiFetch('/coordination/doctor/availability', {
+    method: 'PUT',
+    body: JSON.stringify({ schedules }),
+  });
+}
+
+export async function createDoctorTimeOff(payload: {
+  startDate: string;
+  endDate: string;
+  reason?: string;
+}): Promise<{ timeOff: DoctorTimeOffItem }> {
+  return apiFetch('/coordination/doctor/time-off', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteDoctorTimeOff(
+  id: string
+): Promise<{ success: boolean; message: string }> {
+  return apiFetch(`/coordination/doctor/time-off/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function getQuestionnaireDefinition(): Promise<{
+  protocol: string;
+  version: string;
+  alignment: string;
+  disclaimer: string;
+  totalQuestions: number;
+  questions: any[];
+}> {
+  return apiFetch('/coordination/questionnaire');
+}
+
+// ==========================================
+// Phase 7: Health Journey & Progress Insights
+// ==========================================
+
+export async function getPatientJourneySummary(
+  patientId: string
+): Promise<JourneyProgressSummary> {
+  return apiFetch(`/journey/summary?patientId=${encodeURIComponent(patientId)}`);
+}
+
+export async function getPatientJourneyInsights(
+  patientId: string
+): Promise<{ patientId: string; totalInsights: number; insights: HealthInsight[] }> {
+  return apiFetch(`/journey/insights?patientId=${encodeURIComponent(patientId)}`);
+}
+
+export async function getPatientJourneyMilestones(
+  patientId: string
+): Promise<{ patientId: string; totalMilestones: number; milestones: JourneyMilestoneItem[] }> {
+  return apiFetch(`/journey/milestones?patientId=${encodeURIComponent(patientId)}`);
 }

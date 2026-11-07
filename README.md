@@ -1,154 +1,281 @@
 # AarogyaDamu — Diabetes Care Journey Companion
-### Health-a-thon 2026 — Project 3 (Repository Cleanup & P0 Preparation)
 
-> **AarogyaDamu** is an intelligent diabetes care companion platform built with clinical rigor adhering to **ADA (American Diabetes Association) Standards of Care** and **FHIR R4 semantic interoperability specifications**.
-
----
-
-## 🌟 Architecture & Interface Separation
-
-AarogyaDamu maintains a strict **two-product, role-isolated architecture**:
-
-1. **Mobile Application (`apps/mobile`) — Patient & Caregiver Companion**:
-   - **Target Users**: Patients living with diabetes and authorized family caregivers only.
-   - **Patient Features**: 3-stage interactive onboarding, glucose logging with meal context (fasting, pre-meal, post-meal, bedtime), ADA color-coded indicators, longitudinal journey stages, daily care tasks, and personalized Damu AI guidance.
-   - **Caregiver Features**: Real-time dependent health monitoring, active consent scope badges, delegated care plan activities, and appointment coordination.
-   - **Isolation Guarantee**: Doctor login, clinician dashboards, and clinical note approval are strictly excluded from the mobile application.
-
-2. **Web Application (`apps/web`) — Doctor Workstation**:
-   - **Target Users**: Approved clinicians and endocrinologists only.
-   - **Clinician Workstation**: Dedicated command center with patient roster filtering by risk tier (**High Risk**, **In-Target**, **Low Risk**), adherence rates, and overdue reviews.
-   - **NEO Ambient Scribe**: In-clinic ambient audio transcription workflow with AI-assisted SOAP clinical note generation and doctor approval flow.
-   - **Shared Care Plan Studio**: Goal formulation, activity scheduling with caregiver delegation flags, and immutable versioning (v1, v2).
-   - **Consultation Prep & Timeline**: Longitudinal glycemic trend charts and consolidated clinical history.
-   - **Isolation Guarantee**: Patient and caregiver workflows are strictly excluded from the clinician web application.
+**Health-a-thon 2026 Submission**
+*A clinically responsible, interoperable digital care platform for Type 2 Diabetes management.*
 
 ---
 
-## 🏗️ Repository Structure
+## 1. Project Overview
 
-```
-aarogyadamu-project3/
-├── apps/
-│   ├── mobile/            # Patient & Caregiver Companion (React Native + Expo Router)
-│   └── web/               # Clinician Workstation (React + Vite + Tailwind CSS)
-├── packages/
-│   └── contracts/         # Shared clinical tokens, ADA ranges, Zod schemas, FHIR types
-├── services/
-│   └── api/               # Express + Prisma + SQLite backend, JWT auth, Scribe, Audit logs
-├── docs/
-│   ├── audits/            # Security, Pilot Readiness, and UI/UX audit reports
-│   ├── phases/            # Historical phase plans and milestone implementation reports
-│   ├── runbooks/          # Operational runbooks and backup procedures
-│   └── repository_cleanup_report.md
-└── tests/
-    ├── e2e/               # Browser acceptance and end-to-end suites
-    └── integration/       # Cross-workspace integration tests (Vitest)
-```
+**AarogyaDamu** ("Healthy Life") is an intelligent, interoperable digital healthcare ecosystem designed to support individuals living with Type 2 Diabetes, their treating physicians, and family caregivers.
+
+By unifying three purpose-built client interfaces onto a single secure backend, AarogyaDamu bridges the gap between occasional clinical visits and daily self-management, maintaining continuous care coordination and verified healthcare interoperability.
 
 ---
 
-## 🚀 Quick Start Guide
+## 2. Problem Being Solved
 
-### 1. Prerequisites
-- **Node.js**: v20.x LTS or higher
-- **npm**: v10.x or higher
+Type 2 Diabetes mellitus is a chronic metabolic disorder affecting over 500 million people worldwide. Effective glycemic management faces significant real-world barriers:
 
-### 2. Install Dependencies & Generate Database
+1. **Information Silos between Consultations:** Clinicians typically see patients every 3 to 6 months, relying on episodic recall or fragmented paper logs that fail to reveal glycemic variability.
+2. **Medical Jargon & Patient Disengagement:** Complex clinical terminology, confusing lab acronyms (e.g., HbA1c, FBS, PPBS), and unstructured treatment plans overwhelm patients.
+3. **Caregiver Exclusion:** Family members who actively assist elderly patients with medicine routines and dietary adherence lack secure, consent-governed access to treatment plans.
+4. **Lack of Interoperability:** Health data recorded in consumer apps cannot be exchanged with electronic health records (EHRs) due to absence of standardized HL7 FHIR structures and verified LOINC codes.
+5. **Unsafe Medical AI:** Generative AI tools often hallucinate clinical advice, suggest unauthorized medication adjustments, or fail to prioritize acute medical emergencies.
+
+---
+
+## 3. The Solution
+
+AarogyaDamu addresses these challenges through a unified, clinically grounded platform:
+
+- **Continuous Care Coordination:** Connects the Doctor, Patient, and Family Caregiver around an active, shared Diabetes Care Plan.
+- **Centralized Language Simplification:** Translates complex medical terms into plain English for patients and caregivers while preserving standardized clinical codes for doctors.
+- **HL7 FHIR R4 Interoperability:** Standardized RESTful FHIR R4 (v4.0.1) API with verified LOINC and UCUM bindings, allowing EHR export.
+- **Server-Side Caregiver Consent:** Granular, patient-controlled delegation allowing family members to complete tasks and view health metrics without compromising privacy.
+- **Clinical AI Safety Guardrails:** Hard barriers preventing AI from prescribing or diagnosing independently, with mandatory human-in-the-loop clinician sign-off.
+- **Synthetic-Only Data:** 100% synthetic demonstration dataset with zero real patient information.
+
+---
+
+## 4. Technology Stack
+
+- **Backend API:** Node.js 20 LTS, Express.js, TypeScript 5.3.
+- **Database & ORM:** PostgreSQL 15+, Prisma ORM 5.14.
+- **Doctor WebApp:** React 18, Vite 8, Tailwind CSS, Lucide Icons.
+- **Mobile Companion:** React Native (Expo SDK 51), Expo Router, Lucide React Native.
+- **Interoperability Standard:** HL7 FHIR R4 (v4.0.1).
+- **Clinical Terminology:** Regenstrief LOINC 2.78, Unified Code for Units of Measure (UCUM), SNOMED CT, ICD-10.
+- **Testing & Quality Assurance:** Jest 29, Vitest, ts-jest, Supertest.
+
+---
+
+## 5. Doctor WebApp (`apps/web`)
+
+A dedicated clinical workstation for licensed diabetologists and endocrinologists:
+
+- **Patient Command Center:** Roster management with risk stratification (High Risk, In-Target, Low Risk).
+- **Longitudinal Glycemic Analytics:** Fasting, postprandial, bedtime, and random blood sugar trend visualization with ADA target bands.
+- **Shared Care Plan Studio:** Formulation of individualized glycemic goals, lifestyle targets, and delegated care activities with versioning.
+- **Medication Prescribing & Reconciliation:** Prescription creation, dosage management, and real-time adherence tracking.
+- **Document & Lab Report Center:** Upload and review of laboratory reports with automated biomarker extraction.
+- **AI Proposal Review Gate:** Human-in-the-loop review interface for approving or rejecting AI-generated care recommendations with mandatory clinical rationale.
+
+---
+
+## 6. Patient Mobile App (`apps/mobile` - Patient Experience)
+
+An empathetic, daily health companion tailored for non-technical individuals:
+
+- **Plain-English Health Dashboard:** Clear glycemic summary with intuitive, friendly labels.
+- **Point-of-Care Glucose Logging:** Rapid logging with context tags (Morning Fasting, 2h After Meal, Bedtime, Anytime) and instant Rule-of-15 guidance for low sugar readings.
+- **Medication Vault:** Daily schedule of doctor-prescribed medications with reminder notifications and one-tap intake recording.
+- **Care Activities & Habits:** Daily action checklist for walks, hydration, foot checks, and pillbox replenishment.
+- **Consultation Scheduling:** Interactive appointment booking with an 18-point clinical intake wizard.
+- **Damu AI Companion:** Conversational assistant for diabetes education, diet tips, and lifestyle motivation, governed by informed consent disclaimers.
+- **Emergency SOS:** Rapid 112 emergency calling and automated SMS alert dispatch to registered family caregivers.
+
+---
+
+## 7. Caregiver Mobile App (`apps/mobile` - Caregiver Experience)
+
+A specialized companion for adult children and family health companions:
+
+- **Consent-Governed Patient Linking:** Cryptographic authorization requiring explicit patient permission.
+- **Multi-Patient Switching:** Seamless switching for caregivers managing care for multiple elderly family members.
+- **Delegated Task Execution:** Complete tasks on behalf of the patient (e.g. pillbox refills, accompaniment on walks) with explicit caregiver attribution.
+- **Authorized Health Visibility:** Read-only access to authorized glucose trends, medications, and upcoming clinic visits.
+- **Immediate Boundary Enforcement:** Immediate termination of all access when consent is revoked or expired.
+
+---
+
+## 8. AI Capabilities & Clinical Safety
+
+AarogyaDamu integrates artificial intelligence strictly as an assistive and educational tool:
+
+- **Zero Autonomous Clinical Actions:** The AI engine is programmatically barred from prescribing medications, altering dosages, titrating insulin, or making independent medical diagnoses (`riskClassifier.ts`).
+- **Clinician Sign-off Required:** All AI-drafted proposals (e.g. proposed care plan goals, suggested follow-ups) require explicit physician approval before taking effect.
+- **Deterministic ADA 2026 Safety Rules:** Vitals are evaluated against deterministic clinical guidelines rather than probabilistic LLMs, flagging Level 1 (54–69 mg/dL) and Level 2/3 (<54 mg/dL) hypoglycemia immediately.
+- **Emergency Precedence:** Detection of acute hypoglycemia or critical symptoms immediately aborts AI workflows and escalates to emergency services.
+- **Unverified Document Flagging:** Automated OCR data is explicitly watermarked as *Unverified* until reviewed by a human clinician or patient.
+
+---
+
+## 9. HL7 FHIR R4 Implementation
+
+AarogyaDamu implements an interoperability layer conforming to **HL7 FHIR Release 4 version 4.0.1**:
+
+- **Core Resources Mapped:**
+  - `Patient`: Demographics, synthetic identifier, managing practitioner reference.
+  - `Practitioner`: Clinician identity with Diabetologist qualification.
+  - `RelatedPerson`: Caregiver identity linked to patient with role coding.
+  - `Observation`: Vital signs and laboratory panels with verified LOINC and UCUM codes.
+  - `Condition`: Type 2 Diabetes Mellitus with SNOMED CT `44054006` and ICD-10 `E11`.
+  - `CarePlan` & `Goal`: Structured diabetes care plan with individualized targets.
+  - `Task`: Delegated and scheduled care activities.
+  - `MedicationRequest` & `MedicationStatement`: Prescriptions and adherence events.
+  - `Encounter`: Ambulatory Diabetology clinic visits.
+  - `DiagnosticReport` & `DocumentReference`: Laboratory reports and clinical attachments.
+  - `Consent`: Granular caregiver access delegation records.
+  - `AuditEvent`: Security and clinical mutation audit trail.
+- **API Endpoints:** Mounted at `/api/fhir/r4/` with CapabilityStatement (`/metadata`) and complete patient export (`/Patient/:id/$everything`).
+- **Validation:** Every resource is verified against FHIR schema invariants, returning `OperationOutcome` on errors.
+
+*Full specification: [`docs/FHIR-R4.md`](docs/FHIR-R4.md)*
+
+---
+
+## 10. LOINC and UCUM Implementation
+
+Standardized laboratory and vital measurements use verified clinical codes:
+
+- **Fasting Glucose (Point-of-Care Glucometer):** LOINC `14771-0` (`mg/dL`)
+- **Fasting Glucose (Venous Serum/Plasma Lab):** LOINC `1558-6` (`mg/dL`)
+- **Postprandial Glucose (2h Post-Meal):** LOINC `88365-2` (`mg/dL`)
+- **Pre-Meal Glucose:** LOINC `72171-2` (`mg/dL`)
+- **Bedtime Glucose:** LOINC `74774-1` (`mg/dL`)
+- **Random Blood Glucose:** LOINC `2339-0` (`mg/dL`)
+- **Hemoglobin A1c (HbA1c):** LOINC `4548-4` (`%`)
+- **Blood Pressure Panel:** LOINC `85354-9` (Systolic `8480-6`, Diastolic `8462-4`, `mm[Hg]`)
+- **Body Weight:** LOINC `29463-7` (`kg`)
+- **Heart Rate:** LOINC `8867-4` (`/min`)
+
+*Full dictionary: [`docs/LOINC-MAPPINGS.md`](docs/LOINC-MAPPINGS.md)*
+
+---
+
+## 11. Security, Privacy & Compliance
+
+- **Authentication:** Short-lived JWT access tokens (15 min) with cryptographic refresh token rotation and server-side session revocation.
+- **Server-Side Caregiver Consent:** Permissions checked on every API call; revoked consents immediately block caregiver access with HTTP 403.
+- **Zero Real Patient Data:** Complete sanitization of local SQLite databases, backups, and upload folders. All demo data is 100% synthetic.
+- **Transport Security:** HSTS, X-Content-Type-Options, X-Frame-Options, and strict CORS allowlists.
+- **Audit Trails:** Immutable logging of all clinical mutations and access events.
+
+*Full security whitepaper: [`docs/SECURITY-PRIVACY.md`](docs/SECURITY-PRIVACY.md)*
+
+---
+
+## 12. Local Installation Instructions
+
+### Prerequisites
+- Node.js `>= 20.12.0 LTS`
+- npm `>= 10.8.0`
+- PostgreSQL 15+ (local or containerized)
+
+### Step 1: Clone & Install Dependencies
 ```bash
-# Install dependencies across all workspaces
+git clone https://github.com/your-username/aarogyadamu-project3.git
+cd aarogyadamu-project3
 npm install
+```
 
-# Generate Prisma Client & Apply SQLite Migrations
+### Step 2: Configure Environment
+```bash
+# Copy root environment example
+cp .env.example .env
+cp services/api/.env.example services/api/.env
+cp apps/web/.env.example apps/web/.env
+cp apps/mobile/.env.example apps/mobile/.env
+```
+
+### Step 3: Database Migration & Synthetic Seed
+```bash
 npm run db:generate
 npm run db:migrate
-
-# Seed Synthetic Pilot Clinical Records
-npm --workspace=services/api run prisma:seed
+npm run db:seed
 ```
 
-### 3. Launch Development Servers
-
-Workspaces can be run independently or simultaneously:
-
+### Step 4: Run Development Services
 ```bash
-# 1. Start the API Server (Port 4000)
+# Start backend API (Port 4000)
 npm run dev:api
 
-# 2. Start the Doctor Web Workstation (Port 5173)
+# Start Doctor WebApp (Port 5173)
 npm run dev:web
 
-# 3. Start the Patient & Caregiver Mobile Companion (Port 8081)
+# Start Mobile App (Expo Metro)
 npm run dev:mobile
 ```
 
 ---
 
-## 👥 Evaluator Personas (Local Development Only)
+## 13. Environment Configuration
 
-The local development database can be seeded with synthetic evaluation profiles (`DemoPassword123!`):
-
-| Persona | Role | Email | Target Application | Capabilities & Flow |
-|---------|------|-------|--------------------|---------------------|
-| **Dr. Anjali Kulkarni** | Clinician | `dr.kulkarni@aarogyadamu.local` | **Doctor Web Workstation** (`apps/web`) | Patient Roster, Risk Tiers, Care Plan Studio, NEO Ambient Scribe, Consultation Prep. |
-| **Ramesh Deshmukh** | Patient | `demo.patient1@aarogyadamu.local` | **Mobile Companion** (`apps/mobile`) | Glucose logs, Journey Navigator, Daily Agenda, Caregiver Consent Grants. |
-| **Meera Joshi** | Caregiver | `meera.joshi@family.aarogyadamu.local` | **Mobile Companion** (`apps/mobile`) | Dependent monitoring, glucose trends, delegated medication tasks. |
-
-> ⚠️ **Security Notice:** Demo authentication and synthetic seed accounts are strictly restricted to local development environments (`ENABLE_DEV_DEMO_MODE=true` and `ALLOW_DEMO_AUTH=true`). They are automatically blocked and rejected in production environments. Doctor registration in production strictly requires a verified, one-time invitation token issued by an administrator.
+| Variable | Workspace | Purpose | Example / Default |
+| :--- | :--- | :--- | :--- |
+| `DATABASE_URL` | `services/api` | PostgreSQL connection string | `postgresql://user:pass@localhost:5432/aarogyadamu_dev` |
+| `JWT_SECRET` | `services/api` | Secret for signing JWT access tokens | `min-32-chars-cryptographic-secret` |
+| `FHIR_SERVER_URL` | `services/api` | Base URL for generated FHIR resources | `https://app.example.com/api/fhir/r4` |
+| `ALLOWED_ORIGINS` | `services/api` | Allowed origins for CORS | `http://localhost:5173,http://localhost:8081` |
+| `VITE_API_URL` | `apps/web` | API gateway URL for Doctor WebApp | `http://localhost:4000/api` (or `https://app.example.com/api`) |
+| `EXPO_PUBLIC_API_URL` | `apps/mobile` | API gateway URL for Mobile App | `http://localhost:4000/api` (or LAN IP) |
 
 ---
 
-## 🧪 Testing & Verification
+## 14. Deployment Instructions
 
-The test suite validates authentication, role separation, consent boundaries, appointment concurrency, care plan immutability, session restoration, and ambient scribe workflows.
-
+### Production WebApp (`https://app.example.com`)
 ```bash
-# Run API test suite (Jest 11 suites + Vitest integration)
-npm run test:api
-
-# Run Web test suite (Doctor-only auth, session UX, concurrent refresh)
-npm --workspace=apps/web run test
-
-# Run Mobile test suite (Onboarding, session restoration, role routing)
-npm --workspace=apps/mobile run test
-
-# Compile and build production bundles
-npm run build
+# Build production web bundle
+npm --workspace=apps/web run build
+# Deploy apps/web/dist to NGINX, Cloudflare Pages, or AWS S3+CloudFront with SPA routing
 ```
 
-**Baseline Test Verification Summary:**
-- **API Unit & Security Tests (Jest)**: 11 suites, 83 tests passing (100% Green)
-- **Integration Tests (Vitest)**: 1 suite, 2 tests passing (100% Green)
-- **Doctor Web Workstation Tests (Node Test Runner)**: 8 tests passing (100% Green)
-- **Mobile Companion Tests (Node Test Runner)**: 6 tests passing (100% Green)
-- **Total**: 99 automated tests passing across workspaces
+### Production API Gateway
+```bash
+# Compile TypeScript API
+npm run build:api
+# Run migrations on production PostgreSQL
+npm run db:deploy
+# Start cluster via PM2
+pm2 start services/api/dist/server.js --name "aarogyadamu-api" -i max
+```
+
+### Production Android App (EAS)
+```bash
+cd apps/mobile
+eas build --platform android --profile production
+```
+
+*Full deployment runbook: [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)*
 
 ---
 
-## 📊 Feature Status & Roadmap
+## 15. Demonstration Accounts
 
-| Feature Area | Status | Implementation Details |
-|--------------|--------|------------------------|
-| **Doctor-Only Web Workstation** | Implemented | Dedicated slate/emerald UI, invitation-gated onboarding, session rotation. |
-| **Patient & Caregiver Mobile App** | Implemented | Expo Router mobile app with role switching and WorkspaceGuard protection. |
-| **Role Isolation & Session Security** | Implemented | HttpOnly refresh cookie rotation, CSRF token validation, server-side revocation. |
-| **Care Coordination & Consent** | Implemented | ABDM-style consent grants (`VIEW_OBSERVATIONS`, `MANAGE_TASKS`), instant revocation. |
-| **Shared Care Plans** | Implemented | Versioned care plans (v1, v2) with clinician approval and delegation flags. |
-| **NEO Ambient Scribe (Local)** | Implemented | Audio chunk capture, structured SOAP note generation, clinician review. |
-| **FHIR R4 Semantic Export** | Implemented | Standard Observation bundle generation for health records. |
-| **Live ABDM Sandbox Gateway** | Planned (P0) | Direct integration with ABDM Milestone 1-3 M1/M2/M3 national health network. |
-| **Hardware CGM / Glucometer Sync** | Planned (P0) | Bluetooth LE device integration for continuous blood glucose streaming. |
-| **Production SMS/WhatsApp Alerts** | Planned (P0) | Direct SMS gateway for high/low glucose emergency escalation. |
+All demo accounts are populated with **realistic synthetic demonstration data** (`isSyntheticDemo: true`):
+
+| Role | Email Address | Password | Profile Name | Clinical Notes |
+| :--- | :--- | :--- | :--- | :--- |
+| **Doctor** | `dr.rc@aarogyadamu.local` | `DemoPassword123!` | Dr. Rupam Choudhary | Treating Diabetologist |
+| **Patient** | `demo.patient1@aarogyadamu.local` | `DemoPassword123!` | Ramesh Deshmukh | Type 2 Diabetes, on Metformin |
+| **Caregiver**| `meera.joshi@family.aarogyadamu.local` | `DemoPassword123!` | Meera Joshi | Daughter & Authorized Caregiver |
+
+*Step-by-step testing guide: [`docs/EVALUATOR-GUIDE.md`](docs/EVALUATOR-GUIDE.md)*
 
 ---
 
-## 🔒 Security & Clinical Compliance
+## 16. Automated Verification
 
-1. **Role-Based Isolation**: Clinicians and patients have strictly separated shells. Clinician administrative and scribe controls are inaccessible to patient sessions.
-2. **Consent-Gated Data Access**: Caregiver access is strictly gated by patient-issued active consent tokens with granular scopes (`VIEW_OBSERVATIONS`, `MANAGE_TASKS`, `MANAGE_CONSULTATIONS`). Revoking consent immediately terminates caregiver access.
-3. **Audit Trails**: All clinical actions, appointments, scribe approvals, and password reset requests generate immutable records in the `AuditLog` table.
-4. **ADA Standards of Care**:
-   - Fasting Target: **80 – 130 mg/dL**
-   - Post-Meal Target: **< 180 mg/dL**
-   - Hypoglycemia Alert: **< 70 mg/dL** (Severe: **< 54 mg/dL**)
-   - Hyperglycemia Alert: **> 250 mg/dL**
+Execute all automated verification suites:
+
+```bash
+# FHIR R4 Interoperability & Conformance (22 tests)
+npx jest --config services/api/jest.config.js services/api/src/__tests__/fhir_r4.test.ts
+
+# LOINC & UCUM Terminology Mapping (7 tests)
+npx jest --config services/api/jest.config.js services/api/src/__tests__/terminology_loinc.test.ts
+
+# Synthetic Data & PII Sanitization (4 tests)
+npx jest --config services/api/jest.config.js services/api/src/__tests__/synthetic_data_integrity.test.ts
+
+# AI Clinical Safety & Governance (70 tests)
+npx jest --config services/api/jest.config.js services/api/src/__tests__/p0_7_1_agentic_contracts.test.ts
+
+# Doctor WebApp Tests (36 tests)
+npm run test:web
+
+# Patient & Caregiver Mobile Tests (46 tests)
+npm run test:mobile
+```

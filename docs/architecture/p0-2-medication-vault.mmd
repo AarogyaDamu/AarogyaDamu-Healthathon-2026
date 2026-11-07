@@ -1,0 +1,123 @@
+%% =========================================================================
+%% AAROGYADAMU PROJECT 3 — PHASE P0.2 MEDICATION VAULT & MANAGEMENT ARCHITECTURE
+%% Technical Architecture & Subsystem Pipelines
+%% Generated: 2026-11-02
+%% Governance: P0.2 Medication Vault Specification
+%% =========================================================================
+
+%% -------------------------------------------------------------------------
+%% DIAGRAM 1: HIGH-LEVEL ARCHITECTURE (TWO-PRODUCT MEDICATION LIFECYCLE)
+%% -------------------------------------------------------------------------
+```mermaid
+graph TB
+    subgraph MobileProduct ["Mobile Application (Patient & Caregiver)"]
+        MedVaultUI["Medication Vault UI <br/> (Active Regimen, Status Pills, Review Badges)"]
+        AdherenceActions["Adherence Action Triggers <br/> (Take Dose, Skip Dose with Reason Modal)"]
+        MedEntryForm["Patient/Caregiver Entry Form <br/> (Name, Dose, Frequency, Instructions)"]
+        StatusModifier["Patient Status Controls <br/> (Pause / Resume with Reason For Change)"]
+    end
+
+    subgraph DoctorWebProduct ["Doctor Web Application (Clinician Only)"]
+        ReconciliationDesk["Clinician Reconciliation Desk <br/> (Unreviewed Alerts, Diff Review, Audit Notes)"]
+        InClinicPrescription["In-Clinic Prescription Writer <br/> (Direct Prescriptions: CLINICIAN_PRESCRIBED)"]
+        AdherenceDashboard["14-Day Adherence Analytics <br/> (Compliance Rate %, Taken, Skipped, Missed)"]
+        StatusGovernance["Clinical Status Governance <br/> (Pause, Discontinue with Audited Reason)"]
+    end
+
+    subgraph APIBackend ["Shared API Backend (Medication Vault Engine)"]
+        MedRouter["/api/medications <br/> (GET, POST, PATCH, /review, /events, /stats)"]
+        ProvenanceAttribution["Provenance & Review Attributor <br/> (PATIENT_ENTERED vs CLINICIAN_PRESCRIBED)"]
+        IdempotencyEngine["Adherence Idempotency Engine <br/> (Unique Key Deduplication & Replay)"]
+        RBACGuard["Healthcare RBAC & Isolation Evaluator <br/> (Doctor Assignment & Caregiver Consent)"]
+        AuditPipeline["Clinical Audit Logger <br/> (Immutable Change History & Reason Tracking)"]
+    end
+
+    subgraph DatabaseLayer ["Unified Persistence Layer (SQLite / Prisma)"]
+        DB_MedSchedule[("MedicationSchedule <br/> +status, reviewStatus, source, reasonForChange")]
+        DB_Adherence[("MedicationAdherenceEvent <br/> +action, scheduledTime, idempotencyKey, sourceProvenance")]
+        DB_Audit[("AuditLog <br/> +medication mutations & review trails")]
+    end
+
+    MedVaultUI --> MedRouter
+    AdherenceActions --> MedRouter
+    MedEntryForm --> MedRouter
+    StatusModifier --> MedRouter
+
+    ReconciliationDesk --> MedRouter
+    InClinicPrescription --> MedRouter
+    AdherenceDashboard --> MedRouter
+    StatusGovernance --> MedRouter
+
+    MedRouter --> RBACGuard
+    MedRouter --> ProvenanceAttribution
+    MedRouter --> IdempotencyEngine
+    MedRouter --> AuditPipeline
+
+    ProvenanceAttribution --> DB_MedSchedule
+    IdempotencyEngine --> DB_Adherence
+    AuditPipeline --> DB_Audit
+```
+
+%% -------------------------------------------------------------------------
+%% DIAGRAM 2: PROVENANCE, REVIEW & RECONCILIATION STATE MACHINE
+%% -------------------------------------------------------------------------
+```mermaid
+stateDiagram-v2
+    [*] --> PatientInput: Patient self-reports medication
+    [*] --> CaregiverInput: Caregiver enters medication
+    [*] --> ClinicianInput: Doctor prescribes in-clinic
+
+    PatientInput --> UNREVIEWED_ACTIVE: source = PATIENT_ENTERED
+    CaregiverInput --> UNREVIEWED_ACTIVE: source = CAREGIVER_ENTERED
+    ClinicianInput --> REVIEWED_ACTIVE: source = CLINICIAN_PRESCRIBED, reviewStatus = CLINICIAN_REVIEWED
+
+    state UNREVIEWED_ACTIVE {
+        [*] --> UnreviewedState: Badge = Patient Reported (Unreviewed)
+        UnreviewedState --> ClinicianReconciliation: Doctor selects Review & Reconcile
+        ClinicianReconciliation --> ApprovedState: Submits clinicalReviewNotes
+    }
+
+    ApprovedState --> REVIEWED_ACTIVE: reviewStatus = CLINICIAN_REVIEWED
+
+    state REVIEWED_ACTIVE {
+        [*] --> ActiveTherapy: Badge = Clinician Reviewed
+        ActiveTherapy --> PausedTherapy: Requires reasonForChange (e.g. adverse symptoms)
+        PausedTherapy --> ActiveTherapy: Resume therapy
+        ActiveTherapy --> DiscontinuedTherapy: Permanently cease regimen
+    }
+
+    PausedTherapy --> [*]
+    DiscontinuedTherapy --> [*]
+```
+
+%% -------------------------------------------------------------------------
+%% DIAGRAM 3: ADHERENCE EVENT INGESTION & IDEMPOTENCY SEQUENCE
+%% -------------------------------------------------------------------------
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as Patient / Caregiver
+    participant App as Mobile App
+    participant Route as API Gateway (/api/medications/:id/events)
+    participant RBAC as Permission Evaluator
+    participant DB as MedicationAdherenceEvent Store
+
+    User->>App: Tap "Take Dose" or "Skip Dose"
+    App->>App: Generate client idempotencyKey (adh-medId-action-timestamp)
+    App->>Route: POST /api/medications/:id/events { action, scheduledTime, idempotencyKey, notes }
+    
+    Route->>RBAC: Validate user ownership or Caregiver MANAGE_MEDICATIONS scope
+    RBAC-->>Route: Authorized
+
+    Route->>DB: Check idempotencyKey uniqueness
+    opt Key already processed
+        DB-->>Route: Existing Adherence Record
+        Route-->>App: 200 OK (idempotent replay)
+    end
+
+    Route->>DB: prisma.medicationAdherenceEvent.create(...)
+    DB-->>Route: Saved Event Record
+    Route-->>App: 201 Created { event }
+    App-->>User: Visual Confirmation & 14-Day Adherence Rate Updated
+```
+
