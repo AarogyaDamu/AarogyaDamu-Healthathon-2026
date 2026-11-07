@@ -422,9 +422,9 @@ export default function HealthVaultScreen() {
       const options: ImagePicker.ImagePickerOptions = {
         mediaTypes: ['images'],
         quality: 0.9,
-        preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
+        ...(ImagePicker.UIImagePickerPreferredAssetRepresentationMode ? { preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible } : {}),
       };
-      const result = source === 'camera'
+      const result = (source === 'camera' && Platform.OS !== 'web')
         ? await ImagePicker.launchCameraAsync(options)
         : await ImagePicker.launchImageLibraryAsync(options);
       if (result.canceled) return;
@@ -1189,7 +1189,7 @@ export default function HealthVaultScreen() {
             ) : (
               selectedReportForReview && reportPreviewToken ? (
                 <View style={styles.reportSourceFrame}>
-                  {selectedReportForReview.mimeType?.startsWith('image/') ? <Image source={{ uri: `${resolveApiBaseUrl()}/documents/${encodeURIComponent(selectedReportForReview.id)}/preview`, headers: { Authorization: `Bearer ${reportPreviewToken}` } }} style={styles.reportSourceImage} resizeMode="contain" /> : <WebView source={{ uri: `${resolveApiBaseUrl()}/documents/${encodeURIComponent(selectedReportForReview.id)}/preview`, headers: { Authorization: `Bearer ${reportPreviewToken}` } }} style={styles.reportSourceWebView} startInLoadingState />}
+                  {selectedReportForReview.mimeType?.startsWith('image/') ? <Image source={{ uri: `${resolveApiBaseUrl()}/documents/${encodeURIComponent(selectedReportForReview.id)}/preview`, headers: { Authorization: `Bearer ${reportPreviewToken}` } }} style={styles.reportSourceImage} resizeMode="contain" /> : Platform.OS === 'web' ? <View style={styles.reportSourceWebView}><iframe src={`${resolveApiBaseUrl()}/documents/${encodeURIComponent(selectedReportForReview.id)}/preview`} style={{ width: '100%', height: '100%', border: 'none' }} title="Medical Report Preview" /></View> : <WebView source={{ uri: `${resolveApiBaseUrl()}/documents/${encodeURIComponent(selectedReportForReview.id)}/preview`, headers: { Authorization: `Bearer ${reportPreviewToken}` } }} style={styles.reportSourceWebView} startInLoadingState />}
                 </View>
               ) : <ActivityIndicator color={theme.colors.primary} style={{ marginVertical: 40 }} />
             )}

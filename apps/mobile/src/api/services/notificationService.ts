@@ -1,17 +1,23 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-    shouldShowBanner: true,
-    shouldShowList: true,
-  }),
-});
+if (Platform.OS !== 'web') {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowAlert: true,
+      shouldPlaySound: true,
+      shouldSetBadge: true,
+      shouldShowBanner: true,
+      shouldShowList: true,
+    }),
+  });
+}
 
 export async function registerForPushNotifications(): Promise<boolean> {
+  if (Platform.OS === 'web') {
+    return false;
+  }
+
   if (Platform.OS === 'android') {
     await Notifications.setNotificationChannelAsync('care-reminders', {
       name: 'Care Reminders',
@@ -38,6 +44,10 @@ export async function scheduleTaskReminder(
   title: string,
   triggerDate: Date
 ): Promise<string | null> {
+  if (Platform.OS === 'web') {
+    return null;
+  }
+
   try {
     const now = new Date();
     if (triggerDate <= now) return null;
@@ -62,6 +72,10 @@ export async function scheduleTaskReminder(
 }
 
 export async function cancelScheduledReminder(notificationId: string): Promise<void> {
+  if (Platform.OS === 'web') {
+    return;
+  }
+
   try {
     await Notifications.cancelScheduledNotificationAsync(notificationId);
   } catch (error) {

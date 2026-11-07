@@ -34,7 +34,9 @@
       ]
     },
     "web": {
-      "bundler": "metro"
+      "bundler": "metro",
+      "output": "single",
+      "favicon": "./assets/damu.png"
     },
     "plugins": [
       "expo-router",
