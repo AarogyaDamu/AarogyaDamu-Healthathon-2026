@@ -164,10 +164,25 @@ app.use('/api/journey', journeyRouter);
 
 // Health Check
 const sendLiveness = (_req: Request, res: Response) => {
-  res.json({ status: 'healthy', timestamp: new Date().toISOString() });
+  res.json({
+    status: 'healthy',
+    version: '5.1.0-staging-dataset',
+    appEnv: env.APP_ENV,
+    timestamp: new Date().toISOString(),
+  });
 };
 app.get('/health', sendLiveness);
 app.get('/health/live', sendLiveness);
+if (env.APP_ENV === 'staging') {
+  app.get('/health/staging-seed', async (_req: Request, res: Response) => {
+    try {
+      const result = await ensureStagingDemoDoctor(prisma);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message, stack: err?.stack });
+    }
+  });
+}
 app.get('/health/ready', async (_req: Request, res: Response) => {
   try {
     await prisma.$queryRaw`SELECT 1`;
