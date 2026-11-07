@@ -347,6 +347,24 @@ async function mobileApiFetchInternal<T = unknown>(
       }
     }
     await clearMobileToken();
+
+    try {
+      const text = await response.text();
+      if (text) {
+        const parsed = JSON.parse(text);
+        if (parsed?.error) {
+          throw new Error(parsed.error);
+        }
+        if (parsed?.message) {
+          throw new Error(parsed.message);
+        }
+      }
+    } catch (parseErr: any) {
+      if (parseErr?.message && !parseErr.message.includes('Unexpected token')) {
+        throw parseErr;
+      }
+    }
+
     throw new Error('Your session has expired. Please sign in again.');
   }
 

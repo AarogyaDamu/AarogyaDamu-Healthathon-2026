@@ -320,7 +320,7 @@ const passwordResetCompletionRateLimiter = rateLimit({
 
 const loginRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 10,
+  max: env.APP_ENV === 'staging' ? 100 : 10,
   standardHeaders: true,
   legacyHeaders: false,
   store: createRateLimitStore('rl:login:', 15 * 60 * 1000),
