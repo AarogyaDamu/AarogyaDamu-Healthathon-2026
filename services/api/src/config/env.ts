@@ -25,7 +25,7 @@ const envSchema = z.object({
   WEB_APP_URL: z.string().url().default('http://localhost:5173'),
   API_PUBLIC_URL: z.string().url().default('http://localhost:4000'),
   ALLOWED_ORIGINS: z.string().default('http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:3000,http://localhost:4173,http://localhost:8081,http://localhost:8082,http://127.0.0.1:5173,http://127.0.0.1:5174,http://127.0.0.1:5175,http://127.0.0.1:8081,http://127.0.0.1:8082'),
-  TRUST_PROXY: z.string().default('false'),
+  TRUST_PROXY: z.string().default('1'),
   RATE_LIMIT_STORE: z.enum(['memory', 'redis']).default('memory'),
   REDIS_URL: z.string().optional().transform((value) => value?.trim() || undefined),
   ENABLE_AGENT_EXPIRY_WORKER: z.string().default('false').transform((val) => val === 'true'),

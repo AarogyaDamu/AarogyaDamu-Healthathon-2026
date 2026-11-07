@@ -40,6 +40,14 @@ import { prisma } from './db/prisma';
 export { prisma } from './db/prisma';
 export const app = express();
 
+// Configure reverse-proxy trust for Render deployment:
+// Trust exactly one upstream proxy hop so express-rate-limit and req.ip
+// reliably resolve the client's actual IP address from X-Forwarded-For
+// without throwing ERR_ERL_UNEXPECTED_X_FORWARDED_FOR.
+// Must be set immediately after Express application creation and before any rate-limiting middleware.
+// Strictly avoids `app.set('trust proxy', true)` to prevent IP spoofing and rate-limit bypass.
+app.set('trust proxy', 1);
+
 export function getAuthErrorStatus(err: any): number {
   if (
     err?.status === 403 ||
@@ -53,15 +61,6 @@ export function getAuthErrorStatus(err: any): number {
     return 401;
   }
   return 500;
-}
-
-// Proxy Trust Configuration (Hardened against arbitrary header spoofing)
-if (env.TRUST_PROXY === 'false' || !env.TRUST_PROXY) {
-  app.set('trust proxy', false);
-} else if (/^\d+$/.test(env.TRUST_PROXY)) {
-  app.set('trust proxy', parseInt(env.TRUST_PROXY, 10));
-} else {
-  app.set('trust proxy', env.TRUST_PROXY);
 }
 
 // Built-in Security Headers Middleware
