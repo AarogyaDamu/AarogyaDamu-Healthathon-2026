@@ -105,7 +105,7 @@ const envSchema = z.object({
 
   // 5. Deployed runtime hardening (applies to both staging and production with NODE_ENV=production)
   if (config.NODE_ENV === 'production') {
-    if (!process.env.APP_ENV || config.APP_ENV === 'development') {
+    if (!config.APP_ENV || config.APP_ENV === 'development') {
       context.addIssue({
         code: 'custom',
         path: ['APP_ENV'],
@@ -113,13 +113,13 @@ const envSchema = z.object({
       });
     }
 
-    if (!process.env.DATABASE_URL) {
+    if (!config.DATABASE_URL || config.DATABASE_URL.includes('change-me')) {
       context.addIssue({
         code: 'custom',
         path: ['DATABASE_URL'],
         message: 'Staging and production require an explicitly provisioned, environment-specific DATABASE_URL.',
       });
-    } else if (!/^postgres(?:ql)?:\/\//i.test(process.env.DATABASE_URL)) {
+    } else if (!/^postgres(?:ql)?:\/\//i.test(config.DATABASE_URL)) {
       context.addIssue({
         code: 'custom',
         path: ['DATABASE_URL'],
@@ -128,7 +128,7 @@ const envSchema = z.object({
     }
 
     if (
-      !process.env.JWT_SECRET ||
+      !config.JWT_SECRET ||
       config.JWT_SECRET.includes('dev_only') ||
       config.JWT_SECRET.startsWith('replace-with-')
     ) {

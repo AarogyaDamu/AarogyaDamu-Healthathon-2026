@@ -1,6 +1,18 @@
 import { envSchema } from '../config/env';
 
 describe('Environment Policy: Staging vs Production Validation', () => {
+  function formatIssues(issues?: { path: (string | number | symbol)[]; message: string }[]): string {
+    if (!issues || issues.length === 0) return 'None';
+    return JSON.stringify(
+      issues.map((issue) => ({
+        field: issue.path.join('.'),
+        message: issue.message,
+      })),
+      null,
+      2
+    );
+  }
+
   const validStagingBase = {
     NODE_ENV: 'production',
     APP_ENV: 'staging',
@@ -12,6 +24,7 @@ describe('Environment Policy: Staging vs Production Validation', () => {
     ALLOWED_ORIGINS: 'https://staging.aarogyadamu.net,https://staging-doctor.aarogyadamu.net',
     WEB_APP_URL: 'https://staging-doctor.aarogyadamu.net',
     API_PUBLIC_URL: 'https://staging.aarogyadamu.net',
+    TRUST_PROXY: '1',
     MEDICAL_REPORT_OCR_PROVIDER: 'synthetic',
     EMAIL_PROVIDER: 'disabled',
     ALLOW_DEMO_AUTH: 'false',
@@ -20,6 +33,9 @@ describe('Environment Policy: Staging vs Production Validation', () => {
 
   test('validates staging deployment with synthetic OCR and disabled email', () => {
     const result = envSchema.safeParse(validStagingBase);
+    if (!result.success) {
+      console.error('Staging synthetic diagnostics:', formatIssues(result.error.issues));
+    }
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.APP_ENV).toBe('staging');
@@ -27,6 +43,7 @@ describe('Environment Policy: Staging vs Production Validation', () => {
       expect(result.data.MEDICAL_REPORT_OCR_PROVIDER).toBe('synthetic');
       expect(result.data.EMAIL_PROVIDER).toBe('disabled');
       expect(result.data.ALLOW_DEMO_AUTH).toBe(false);
+      expect(result.data.TRUST_PROXY).toBe('1');
     }
   });
 
@@ -39,6 +56,9 @@ describe('Environment Policy: Staging vs Production Validation', () => {
       EMAIL_FROM: 'noreply@aarogyadamu.net',
     };
     const result = envSchema.safeParse(stagingWithResend);
+    if (!result.success) {
+      console.error('Staging with Resend diagnostics:', formatIssues(result.error.issues));
+    }
     expect(result.success).toBe(true);
   });
 
@@ -102,6 +122,9 @@ describe('Environment Policy: Staging vs Production Validation', () => {
       API_PUBLIC_URL: 'https://api.aarogyadamu.org',
     };
     const result = envSchema.safeParse(fullProduction);
+    if (!result.success) {
+      console.error('Actual production diagnostics:', formatIssues(result.error.issues));
+    }
     expect(result.success).toBe(true);
   });
 
@@ -130,5 +153,18 @@ describe('Environment Policy: Staging vs Production Validation', () => {
     const devInviteStaging = { ...validStagingBase, DOCTOR_INVITATION_SECRET: 'aarogyadamu_doctor_invitation_secret_2026_dev_only' };
     const devInviteResult = envSchema.safeParse(devInviteStaging);
     expect(devInviteResult.success).toBe(false);
+
+    // 6. Default/placeholder DATABASE_URL is rejected
+    const devDbStaging = {
+      ...validStagingBase,
+      DATABASE_URL: 'postgresql://aarogyadamu:change-me@localhost:5432/aarogyadamu_dev?schema=public',
+    };
+    const devDbResult = envSchema.safeParse(devDbStaging);
+    expect(devDbResult.success).toBe(false);
+
+    // 7. Wildcard TRUST_PROXY is rejected
+    const wildcardTrustProxy = { ...validStagingBase, TRUST_PROXY: 'true' };
+    const wildcardTrustProxyResult = envSchema.safeParse(wildcardTrustProxy);
+    expect(wildcardTrustProxyResult.success).toBe(false);
   });
 });

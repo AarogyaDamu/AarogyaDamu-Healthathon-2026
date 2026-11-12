@@ -1,6 +1,8 @@
 import request from 'supertest';
 import { randomUUID } from 'crypto';
 import { app, prisma } from '../server';
+import { env } from '../config/env';
+import * as emailService from '../services/emailService';
 import { hashToken } from '../services/authSessions';
 
 describe('Authentication security and Doctor-only API authorization', () => {
@@ -212,65 +214,98 @@ describe('Authentication security and Doctor-only API authorization', () => {
     expect(otherDevice.status).toBe(401);
   });
 
-  test('password-reset requests do not enumerate accounts, and tokens are one-time and expire', async () => {
-    const firstResponse = await request(app)
-      .post('/api/auth/forgot-password')
-      .send({ email: doctorEmail });
-    expect(firstResponse.status).toBe(200);
-    expect(firstResponse.body.resetToken).toBeUndefined();
-    const unknownEmail = await request(app)
-      .post('/api/auth/forgot-password')
-      .send({ email: `unknown-${suffix}@test.local` });
-    expect(unknownEmail.status).toBe(firstResponse.status);
-    expect(unknownEmail.body).toEqual(firstResponse.body);
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const allowed = await request(app)
+  test('staging environment with disabled email returns documented HTTP 503 for password reset', async () => {
+    const prevAppEnv = env.APP_ENV;
+    const prevEmailProvider = env.EMAIL_PROVIDER;
+    try {
+      (env as any).APP_ENV = 'staging';
+      (env as any).EMAIL_PROVIDER = 'disabled';
+
+      const response = await request(app)
         .post('/api/auth/forgot-password')
-        .send({ email: `unknown-${suffix}@test.local` });
-      expect(allowed.status).toBe(200);
+        .set('X-Forwarded-For', '203.0.113.111')
+        .send({ email: doctorEmail });
+
+      expect(response.status).toBe(503);
+      expect(response.body.error).toContain('disabled or unavailable in this environment');
+    } finally {
+      (env as any).APP_ENV = prevAppEnv;
+      (env as any).EMAIL_PROVIDER = prevEmailProvider;
     }
-    const limitedReset = await request(app)
-      .post('/api/auth/forgot-password')
-      .send({ email: `unknown-${suffix}@test.local` });
-    expect(limitedReset.status).toBe(429);
+  });
 
-    const expiredToken = `expired-${suffix}`;
-    await prisma.passwordResetToken.create({
-      data: {
-        userId: (await prisma.user.findUniqueOrThrow({ where: { email: doctorEmail } })).id,
-        tokenHash: hashToken(expiredToken),
-        expiresAt: new Date(Date.now() - 1000),
-      },
-    });
-    const expired = await request(app).post('/api/auth/reset-password').send({
-      token: expiredToken,
-      newPassword: 'ChangedPassword123!',
-    });
-    expect(expired.status).toBe(400);
+  test('password-reset requests do not enumerate accounts, and tokens are one-time and expire', async () => {
+    const emailSendSpy = jest.spyOn(emailService, 'sendPasswordResetEmail').mockResolvedValue(undefined);
 
-    const resetToken = `usable-${suffix}`;
-    const resetUser = await prisma.user.findUniqueOrThrow({ where: { email: doctorEmail } });
-    await prisma.passwordResetToken.create({
-      data: {
-        userId: resetUser.id,
-        tokenHash: hashToken(resetToken),
-        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
-      },
-    });
-    const reset = await request(app).post('/api/auth/reset-password').send({
-      token: resetToken,
-      newPassword: 'ChangedPassword123!',
-    });
-    expect(reset.status).toBe(200);
-    const oldSession = await request(app)
-      .get('/api/auth/me')
-      .set('Authorization', authorization(doctorAccessToken));
-    expect(oldSession.status).toBe(401);
+    try {
+      const firstResponse = await request(app)
+        .post('/api/auth/forgot-password')
+        .set('X-Forwarded-For', '203.0.113.222')
+        .send({ email: doctorEmail });
+      expect(firstResponse.status).toBe(200);
+      expect(firstResponse.body.resetToken).toBeUndefined();
+      expect(emailSendSpy).toHaveBeenCalledWith(doctorEmail, expect.any(String));
 
-    const reused = await request(app).post('/api/auth/reset-password').send({
-      token: resetToken,
-      newPassword: 'AnotherPassword123!',
-    });
-    expect(reused.status).toBe(400);
+      const unknownEmail = await request(app)
+        .post('/api/auth/forgot-password')
+        .set('X-Forwarded-For', '203.0.113.222')
+        .send({ email: `unknown-${suffix}@test.local` });
+      expect(unknownEmail.status).toBe(firstResponse.status);
+      expect(unknownEmail.body).toEqual(firstResponse.body);
+
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const allowed = await request(app)
+          .post('/api/auth/forgot-password')
+          .set('X-Forwarded-For', '203.0.113.222')
+          .send({ email: `unknown-${suffix}@test.local` });
+        expect(allowed.status).toBe(200);
+      }
+      const limitedReset = await request(app)
+        .post('/api/auth/forgot-password')
+        .set('X-Forwarded-For', '203.0.113.222')
+        .send({ email: `unknown-${suffix}@test.local` });
+      expect(limitedReset.status).toBe(429);
+
+      const expiredToken = `expired-${suffix}`;
+      await prisma.passwordResetToken.create({
+        data: {
+          userId: (await prisma.user.findUniqueOrThrow({ where: { email: doctorEmail } })).id,
+          tokenHash: hashToken(expiredToken),
+          expiresAt: new Date(Date.now() - 1000),
+        },
+      });
+      const expired = await request(app).post('/api/auth/reset-password').send({
+        token: expiredToken,
+        newPassword: 'ChangedPassword123!',
+      });
+      expect(expired.status).toBe(400);
+
+      const resetToken = `usable-${suffix}`;
+      const resetUser = await prisma.user.findUniqueOrThrow({ where: { email: doctorEmail } });
+      await prisma.passwordResetToken.create({
+        data: {
+          userId: resetUser.id,
+          tokenHash: hashToken(resetToken),
+          expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        },
+      });
+      const reset = await request(app).post('/api/auth/reset-password').send({
+        token: resetToken,
+        newPassword: 'ChangedPassword123!',
+      });
+      expect(reset.status).toBe(200);
+      const oldSession = await request(app)
+        .get('/api/auth/me')
+        .set('Authorization', authorization(doctorAccessToken));
+      expect(oldSession.status).toBe(401);
+
+      const reused = await request(app).post('/api/auth/reset-password').send({
+        token: resetToken,
+        newPassword: 'AnotherPassword123!',
+      });
+      expect(reused.status).toBe(400);
+    } finally {
+      emailSendSpy.mockRestore();
+    }
   });
 });
