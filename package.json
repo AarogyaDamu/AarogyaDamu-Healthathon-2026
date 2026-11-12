@@ -34,7 +34,7 @@
     "test:api": "npm --workspace=services/api run test",
     "test:web": "npm --workspace=apps/web run test",
     "test:mobile": "npm --workspace=apps/mobile run test",
-    "typecheck": "npm run typecheck:mobile && npm run build:contracts && npm run build:api && npm run build:web",
+    "typecheck": "npm run build:contracts && npm run typecheck:mobile && npm run build:api && npm run build:web",
     "typecheck:mobile": "tsc --noEmit --project apps/mobile/tsconfig.json"
   },
   "engines": {

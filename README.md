@@ -40,10 +40,10 @@ AarogyaDamu addresses these challenges through a unified, clinically grounded pl
 
 ## 4. Technology Stack
 
-- **Backend API:** Node.js 20 LTS, Express.js, TypeScript 5.3.
-- **Database & ORM:** PostgreSQL 15+, Prisma ORM 5.14.
+- **Backend API:** Node.js 22 LTS, Express.js, TypeScript 5.9.
+- **Database & ORM:** PostgreSQL 15+, Prisma ORM 5.22.
 - **Doctor WebApp:** React 18, Vite 8, Tailwind CSS, Lucide Icons.
-- **Mobile Companion:** React Native (Expo SDK 51), Expo Router, Lucide React Native.
+- **Mobile Companion:** React Native (Expo SDK 53), Expo Router, Lucide React Native.
 - **Interoperability Standard:** HL7 FHIR R4 (v4.0.1).
 - **Clinical Terminology:** Regenstrief LOINC 2.78, Unified Code for Units of Measure (UCUM), SNOMED CT, ICD-10.
 - **Testing & Quality Assurance:** Jest 29, Vitest, ts-jest, Supertest.
@@ -159,14 +159,14 @@ Standardized laboratory and vital measurements use verified clinical codes:
 ## 12. Local Installation Instructions
 
 ### Prerequisites
-- Node.js `>= 20.12.0 LTS`
+- Node.js `>= 22.0.0 LTS`
 - npm `>= 10.8.0`
 - PostgreSQL 15+ (local or containerized)
 
 ### Step 1: Clone & Install Dependencies
 ```bash
-git clone https://github.com/your-username/aarogyadamu-project3.git
-cd aarogyadamu-project3
+git clone https://github.com/AarogyaDamu/AarogyaDamu-Healthathon-2026.git
+cd AarogyaDamu-Healthathon-2026
 npm install
 ```
 
