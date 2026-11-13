@@ -219,6 +219,81 @@ describe('Sarvam STT & Bulbul TTS Voice Architecture Integration Suite', () => {
       ).rejects.toThrow(/Sarvam Bulbul TTS failed \(400\)/);
     });
 
+    it('handles Sarvam 401/403 authentication failures with informative error', async () => {
+      global.fetch = jest.fn().mockImplementation(async () => {
+        return {
+          ok: false,
+          status: 401,
+          text: async () => 'Unauthorized: Invalid subscription key',
+        };
+      }) as any;
+
+      const provider = new SarvamDamuProvider('invalid-key');
+
+      await expect(
+        provider.synthesizeSpeech({ text: 'Test speech', language: 'en-IN' })
+      ).rejects.toThrow(/Sarvam Bulbul TTS failed \(401\)/);
+    });
+
+    it('handles Sarvam 429 rate limit errors with informative error', async () => {
+      global.fetch = jest.fn().mockImplementation(async () => {
+        return {
+          ok: false,
+          status: 429,
+          text: async () => 'Rate limit exceeded: Too many requests',
+        };
+      }) as any;
+
+      const provider = new SarvamDamuProvider('test-key');
+
+      await expect(
+        provider.synthesizeSpeech({ text: 'Test speech', language: 'en-IN' })
+      ).rejects.toThrow(/Sarvam Bulbul TTS failed \(429\)/);
+    });
+
+    it('handles Sarvam 5xx server errors with informative error', async () => {
+      global.fetch = jest.fn().mockImplementation(async () => {
+        return {
+          ok: false,
+          status: 503,
+          text: async () => 'Service Temporarily Unavailable',
+        };
+      }) as any;
+
+      const provider = new SarvamDamuProvider('test-key');
+
+      await expect(
+        provider.synthesizeSpeech({ text: 'Test speech', language: 'en-IN' })
+      ).rejects.toThrow(/Sarvam Bulbul TTS failed \(503\)/);
+    });
+
+    it('throws error when Sarvam returns empty or invalid audio array', async () => {
+      global.fetch = jest.fn().mockImplementation(async () => {
+        return {
+          ok: true,
+          json: async () => ({ audios: [] }),
+        };
+      }) as any;
+
+      const provider = new SarvamDamuProvider('test-key');
+
+      await expect(
+        provider.synthesizeSpeech({ text: 'Test speech', language: 'en-IN' })
+      ).rejects.toThrow(/Sarvam TTS returned an empty audio response/);
+    });
+
+    it('handles network connection timeout or failure', async () => {
+      global.fetch = jest.fn().mockImplementation(async () => {
+        throw new Error('connect ECONNREFUSED 104.18.2.1:443');
+      }) as any;
+
+      const provider = new SarvamDamuProvider('test-key');
+
+      await expect(
+        provider.synthesizeSpeech({ text: 'Test speech', language: 'en-IN' })
+      ).rejects.toThrow(/request failed after 2 retries/);
+    });
+
     it('transcribes genuine M4A audio by sending audio/mp4 MIME type to Sarvam STT', async () => {
       global.fetch = jest.fn().mockImplementation(async (url: string) => {
         if (url.includes('speech-to-text')) {

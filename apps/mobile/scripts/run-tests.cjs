@@ -31,16 +31,15 @@ if (testFiles.length === 0) {
   process.exit(1);
 }
 
-const hasTs = testFiles.some((f) => /\.[cm]?tsx?$/i.test(f));
-const nodeArgs = hasTs
-  ? ['--import', 'tsx', '--test', ...testFiles]
-  : ['--test', ...testFiles];
-
-const result = spawnSync(process.execPath, nodeArgs, {
-  cwd: mobileDir,
-  stdio: 'inherit',
-  env: process.env,
-});
+const result = spawnSync(
+  process.execPath,
+  ['--import', 'tsx', '--test', ...testFiles],
+  {
+    cwd: mobileDir,
+    stdio: 'inherit',
+    env: process.env,
+  }
+);
 
 if (result.error) {
   console.error(result.error);
@@ -48,3 +47,4 @@ if (result.error) {
 }
 
 process.exit(result.status ?? 0);
+
