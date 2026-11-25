@@ -78,3 +78,18 @@ coverage/
 *.zip
 
 git-diff-summary.txt
+testsprite_tests/
+.testsprite_runtime/
+.tools/
+scratch/
+artifacts/
+apps/web/tests/evidence/
+/uploads/
+/ten*
+
+# Credentials & Service Account Key Files
+*.pem
+*.key
+*service-account*.json
+google-credentials*.json
+*firebase-adminsdk*.json

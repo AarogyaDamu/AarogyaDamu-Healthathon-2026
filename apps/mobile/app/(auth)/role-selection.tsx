@@ -130,27 +130,31 @@ export default function RoleSelectionScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: theme.colors.white,
+    backgroundColor: theme.colors.background,
   },
   scrollContent: {
     padding: theme.spacing.xl,
   },
   superTitle: {
     fontSize: theme.typography.sizes.caption,
+    fontFamily: theme.typography.fonts.label,
     fontWeight: theme.typography.weights.extrabold,
     color: theme.colors.primary,
-    letterSpacing: 0.8,
+    letterSpacing: 1,
     marginBottom: 4,
+    textTransform: 'uppercase',
   },
   title: {
     fontSize: 26,
-    fontWeight: theme.typography.weights.black,
+    fontFamily: theme.typography.fonts.serif,
+    fontWeight: theme.typography.weights.bold,
     color: theme.colors.text,
     letterSpacing: -0.4,
     marginBottom: theme.spacing.xs,
   },
   subtitle: {
     fontSize: theme.typography.sizes.body,
+    fontFamily: theme.typography.fonts.sans,
     color: theme.colors.textMuted,
     lineHeight: theme.typography.lineHeights.body,
     marginBottom: theme.spacing.xl,
@@ -159,15 +163,17 @@ const styles = StyleSheet.create({
     gap: theme.spacing.md,
   },
   card: {
-    backgroundColor: theme.colors.bg,
-    borderRadius: theme.radius.lg,
+    backgroundColor: theme.colors.surfaceContainerLowest,
+    borderRadius: theme.borders.radius.xl,
     padding: theme.spacing.lg,
-    borderWidth: 2,
-    borderColor: theme.colors.border,
+    borderWidth: 1.5,
+    borderColor: theme.colors.borderGhost,
+    ...theme.shadows.card,
   },
   cardSelected: {
-    backgroundColor: theme.colors.primarySurface,
+    backgroundColor: theme.colors.surfaceContainerLowest,
     borderColor: theme.colors.primary,
+    ...theme.shadows.elevation2,
   },
   cardTopRow: {
     flexDirection: 'row',
@@ -179,28 +185,29 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: theme.colors.white,
+    backgroundColor: theme.colors.surfaceContainerLow,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: theme.colors.border,
+    borderColor: theme.colors.borderGhost,
   },
   iconBoxSelected: {
-    backgroundColor: theme.colors.primaryBorder,
-    borderColor: theme.colors.primary,
+    backgroundColor: 'rgba(0, 77, 77, 0.08)',
+    borderColor: 'rgba(0, 77, 77, 0.2)',
   },
   badge: {
-    backgroundColor: theme.colors.cardMuted,
+    backgroundColor: theme.colors.surfaceContainerHigh,
     paddingHorizontal: theme.spacing.sm,
     paddingVertical: 4,
-    borderRadius: theme.radius.xs,
+    borderRadius: 9999,
   },
   badgeSelected: {
-    backgroundColor: theme.colors.primaryBorder,
+    backgroundColor: 'rgba(0, 77, 77, 0.08)',
   },
   badgeText: {
     fontSize: 11,
-    fontWeight: theme.typography.weights.extrabold,
+    fontFamily: theme.typography.fonts.label,
+    fontWeight: theme.typography.weights.bold,
     color: theme.colors.textMuted,
   },
   badgeTextSelected: {
@@ -211,7 +218,8 @@ const styles = StyleSheet.create({
   },
   cardTitle: {
     fontSize: theme.typography.sizes.bodyLg,
-    fontWeight: theme.typography.weights.extrabold,
+    fontFamily: theme.typography.fonts.serif,
+    fontWeight: theme.typography.weights.bold,
     color: theme.colors.text,
     marginBottom: 4,
   },
@@ -220,7 +228,8 @@ const styles = StyleSheet.create({
   },
   cardDesc: {
     fontSize: theme.typography.sizes.bodySm,
-    color: theme.colors.textSecondary,
+    fontFamily: theme.typography.fonts.sans,
+    color: theme.colors.textMuted,
     lineHeight: theme.typography.lineHeights.bodySm,
   },
   cardFooter: {
@@ -228,7 +237,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     borderTopWidth: 1,
-    borderTopColor: theme.colors.borderLight,
+    borderTopColor: theme.colors.borderGhost,
     paddingTop: theme.spacing.sm,
   },
   radioCircle: {
@@ -251,12 +260,13 @@ const styles = StyleSheet.create({
   },
   radioLabel: {
     fontSize: theme.typography.sizes.caption,
+    fontFamily: theme.typography.fonts.label,
     fontWeight: theme.typography.weights.semibold,
     color: theme.colors.textMuted,
   },
   radioLabelSelected: {
     color: theme.colors.primary,
-    fontWeight: theme.typography.weights.extrabold,
+    fontWeight: theme.typography.weights.bold,
   },
   footer: {
     position: 'absolute',
@@ -265,9 +275,9 @@ const styles = StyleSheet.create({
     right: 0,
     paddingHorizontal: theme.spacing.xl,
     paddingTop: theme.spacing.md,
-    backgroundColor: theme.colors.white,
+    backgroundColor: theme.colors.surfaceContainerLowest,
     borderTopWidth: 1,
-    borderTopColor: theme.colors.borderLight,
+    borderTopColor: theme.colors.borderGhost,
     ...theme.shadows.card,
   },
 });

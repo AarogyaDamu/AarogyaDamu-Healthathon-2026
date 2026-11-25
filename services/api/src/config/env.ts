@@ -2,6 +2,8 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { z } from 'zod';
 
+dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+dotenv.config({ path: path.resolve(process.cwd(), 'services/api/.env') });
 dotenv.config({ path: path.resolve(process.cwd(), '.env') });
 
 const envSchema = z.object({
@@ -24,6 +26,8 @@ const envSchema = z.object({
   EMAIL_FROM: z.string().optional().transform((value) => value?.trim() || undefined).pipe(z.string().email().optional()),
   WEB_APP_URL: z.string().url().default('http://localhost:5173'),
   API_PUBLIC_URL: z.string().url().default('http://localhost:4000'),
+  FHIR_SERVER_URL: z.string().url().default('http://localhost:4000/api/fhir/r4'),
+  RLS_CONTEXT_SECRET: z.string().trim().min(32, 'RLS_CONTEXT_SECRET must be at least 32 characters long').optional().transform((val) => val || 'local-dev-and-test-only-signing-secret-change-for-production'),
   ALLOWED_ORIGINS: z.string().default('http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:3000,http://localhost:4173,http://localhost:8081,http://localhost:8082,http://127.0.0.1:5173,http://127.0.0.1:5174,http://127.0.0.1:5175,http://127.0.0.1:8081,http://127.0.0.1:8082'),
   TRUST_PROXY: z.string().default('1'),
   RATE_LIMIT_STORE: z.enum(['memory', 'redis']).default('memory'),
@@ -44,6 +48,7 @@ const envSchema = z.object({
   GROQ_API_KEY: z.string().trim().optional().transform((val) => (val && val.length > 0 ? val : undefined)),
   FASTER_WHISPER_URL: z.string().trim().optional().transform((val) => (val && val.length > 0 ? val : undefined)),
   GOOGLE_APPLICATION_CREDENTIALS: z.string().trim().optional().transform((val) => (val && val.length > 0 ? val : undefined)),
+  GOOGLE_APPLICATION_CREDENTIALS_JSON: z.string().trim().optional().transform((val) => (val && val.length > 0 ? val : undefined)),
   GOOGLE_CLOUD_PROJECT_ID: z.string().trim().optional().transform((val) => (val && val.length > 0 ? val : undefined)),
   GOOGLE_CLOUD_STORAGE_BUCKET: z.string().trim().optional().transform((val) => (val && val.length > 0 ? val : undefined)),
   // The local showcase is deliberately synthetic and requires no cloud account.
@@ -55,6 +60,7 @@ const envSchema = z.object({
     { name: 'JWT_SECRET', val: config.JWT_SECRET },
     { name: 'DOCTOR_INVITATION_SECRET', val: config.DOCTOR_INVITATION_SECRET },
     { name: 'DOCTOR_INVITATION_ADMIN_KEY', val: config.DOCTOR_INVITATION_ADMIN_KEY },
+    { name: 'RLS_CONTEXT_SECRET', val: config.RLS_CONTEXT_SECRET },
   ];
   for (let i = 0; i < secrets.length; i++) {
     for (let j = i + 1; j < secrets.length; j++) {
@@ -150,6 +156,18 @@ const envSchema = z.object({
       });
     }
 
+    if (
+      config.RLS_CONTEXT_SECRET &&
+      config.RLS_CONTEXT_SECRET !== 'local-dev-and-test-only-signing-secret-change-for-production' &&
+      (config.RLS_CONTEXT_SECRET.includes('dev_only') || config.RLS_CONTEXT_SECRET.startsWith('replace-with-'))
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['RLS_CONTEXT_SECRET'],
+        message: 'Production requires provisioned RLS context secret, not placeholder values.',
+      });
+    }
+
     if (config.EMAIL_PROVIDER === 'resend') {
       if (
         config.RESEND_API_KEY?.startsWith('replace-with-') ||
@@ -235,6 +253,30 @@ const envSchema = z.object({
           message: 'Production password-reset delivery requires EMAIL_PROVIDER=resend.',
         });
       }
+    }
+  }
+
+  if (config.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
+    try {
+      const parsedCredentials = JSON.parse(config.GOOGLE_APPLICATION_CREDENTIALS_JSON);
+      if (
+        !parsedCredentials ||
+        typeof parsedCredentials !== 'object' ||
+        typeof parsedCredentials.client_email !== 'string' ||
+        typeof parsedCredentials.private_key !== 'string'
+      ) {
+        context.addIssue({
+          code: 'custom',
+          path: ['GOOGLE_APPLICATION_CREDENTIALS_JSON'],
+          message: 'GOOGLE_APPLICATION_CREDENTIALS_JSON must be a valid service account JSON object containing client_email and private_key.',
+        });
+      }
+    } catch {
+      context.addIssue({
+        code: 'custom',
+        path: ['GOOGLE_APPLICATION_CREDENTIALS_JSON'],
+        message: 'GOOGLE_APPLICATION_CREDENTIALS_JSON must be valid JSON.',
+      });
     }
   }
 });

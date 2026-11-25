@@ -135,7 +135,7 @@ export default function IndexScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: theme.colors.white,
+    backgroundColor: theme.colors.background,
   },
 
   content: {
@@ -146,12 +146,12 @@ const styles = StyleSheet.create({
   },
 
   logoBadge: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    backgroundColor: theme.colors.primarySurface,
-    borderWidth: 3,
-    borderColor: theme.colors.primaryBorder,
+    width: 124,
+    height: 124,
+    borderRadius: 62,
+    backgroundColor: theme.colors.mascotCream,
+    borderWidth: 2,
+    borderColor: 'rgba(201, 84, 16, 0.15)',
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: theme.spacing.lg,
@@ -159,8 +159,9 @@ const styles = StyleSheet.create({
   },
 
   title: {
-    fontSize: 28,
-    fontWeight: theme.typography.weights.black,
+    fontSize: 32,
+    fontWeight: theme.typography.weights.bold,
+    fontFamily: theme.typography.fonts.serif,
     color: theme.colors.text,
     letterSpacing: -0.5,
     marginBottom: theme.spacing.xs,
@@ -168,9 +169,10 @@ const styles = StyleSheet.create({
 
   subtitle: {
     fontSize: theme.typography.sizes.body,
+    fontFamily: theme.typography.fonts.sans,
     color: theme.colors.textMuted,
     textAlign: 'center',
-    maxWidth: 280,
+    maxWidth: 290,
     lineHeight: theme.typography.lineHeights.body,
   },
 });

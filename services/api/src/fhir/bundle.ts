@@ -4,8 +4,9 @@
  */
 
 import { FhirBundle, FhirResourceBase } from './types';
+import { env } from '../config/env';
 
-const FHIR_BASE_URL = process.env.FHIR_SERVER_URL || 'https://app.example.com/api/fhir/r4';
+const FHIR_BASE_URL = process.env.FHIR_SERVER_URL || env.FHIR_SERVER_URL || 'https://app.example.com/api/fhir/r4';
 
 /**
  * Creates a searchset bundle for FHIR search operations

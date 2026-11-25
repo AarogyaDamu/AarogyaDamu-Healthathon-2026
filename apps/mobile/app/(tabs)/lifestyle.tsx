@@ -32,6 +32,7 @@ import {
   Heart,
   CheckCircle2,
   Sparkles,
+  User,
 } from 'lucide-react-native';
 import { theme } from '../../src/theme';
 import {
@@ -227,15 +228,15 @@ export default function LifestyleScreen() {
   const getCategoryIcon = (cat: LifestyleCategory, size = 18) => {
     switch (cat) {
       case 'PHYSICAL_ACTIVITY':
-        return <Activity color={theme.colors.primary} size={size} />;
+        return <Activity color="#004D4D" size={size} />;
       case 'SLEEP':
-        return <Moon color="#6366F1" size={size} />;
+        return <Moon color="#6366f1" size={size} />;
       case 'HYDRATION':
-        return <Droplets color="#0284C7" size={size} />;
+        return <Droplets color="#0284c7" size={size} />;
       case 'NUTRITION':
-        return <Utensils color="#D97706" size={size} />;
+        return <Utensils color="#d97706" size={size} />;
       case 'WELLBEING':
-        return <Smile color="#10B981" size={size} />;
+        return <Smile color="#059669" size={size} />;
     }
   };
 
@@ -246,7 +247,7 @@ export default function LifestyleScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
-      {/* Top Header */}
+      {/* 1. Header (Alexandria Style) */}
       <View style={styles.header}>
         <View style={styles.headerTextContainer}>
           <Text style={styles.screenTitle}>Lifestyle & Health Twin</Text>
@@ -259,18 +260,18 @@ export default function LifestyleScreen() {
           accessibilityRole="button"
           accessibilityLabel="Log Lifestyle Entry"
         >
-          <Plus color={theme.colors.white} size={18} />
+          <Plus color="#ffffff" size={16} />
           <Text style={styles.addButtonText}>Log Activity</Text>
         </TouchableOpacity>
       </View>
 
-      {/* Segmented Tab Switcher */}
+      {/* 2. Segmented Tab Switcher (Alexandria Segmented Pills) */}
       <View style={styles.tabBar}>
         <TouchableOpacity
           style={[styles.tabButton, activeTab === 'LOGS' && styles.tabButtonActive]}
           onPress={() => setActiveTab('LOGS')}
         >
-          <Activity color={activeTab === 'LOGS' ? theme.colors.primary : '#64748B'} size={16} />
+          <Activity color={activeTab === 'LOGS' ? '#004D4D' : '#737784'} size={15} />
           <Text style={[styles.tabButtonText, activeTab === 'LOGS' && styles.tabButtonTextActive]}>
             Lifestyle Logs
           </Text>
@@ -280,7 +281,7 @@ export default function LifestyleScreen() {
           style={[styles.tabButton, activeTab === 'TWIN' && styles.tabButtonActive]}
           onPress={() => setActiveTab('TWIN')}
         >
-          <Sparkles color={activeTab === 'TWIN' ? theme.colors.primary : '#64748B'} size={16} />
+          <Sparkles color={activeTab === 'TWIN' ? '#004D4D' : '#737784'} size={15} />
           <Text style={[styles.tabButtonText, activeTab === 'TWIN' && styles.tabButtonTextActive]}>
             Digital Health Twin
           </Text>
@@ -303,13 +304,15 @@ export default function LifestyleScreen() {
         {/* ============================================================== */}
         {activeTab === 'LOGS' && (
           <>
-            {/* 7-Day Lifestyle Quick Stats */}
+            {/* 7-Day Lifestyle Quick Stats (Alexandria Card) */}
             {stats && (
               <View style={styles.statsCard}>
                 <Text style={styles.statsCardTitle}>7-Day Habit Summary</Text>
                 <View style={styles.statsRow}>
                   <View style={styles.statBox}>
-                    <Activity color={theme.colors.primary} size={18} />
+                    <View style={styles.statIconBox}>
+                      <Activity color="#004D4D" size={16} />
+                    </View>
                     <Text style={styles.statValue}>
                       {stats.physicalActivity.totalMinutes} min
                     </Text>
@@ -317,7 +320,9 @@ export default function LifestyleScreen() {
                   </View>
                   <View style={styles.statDivider} />
                   <View style={styles.statBox}>
-                    <Moon color="#6366F1" size={18} />
+                    <View style={[styles.statIconBox, { backgroundColor: '#eef2ff' }]}>
+                      <Moon color="#6366f1" size={16} />
+                    </View>
                     <Text style={styles.statValue}>
                       {stats.sleep.averageHoursPerNight !== null
                         ? `${stats.sleep.averageHoursPerNight} h`
@@ -327,7 +332,9 @@ export default function LifestyleScreen() {
                   </View>
                   <View style={styles.statDivider} />
                   <View style={styles.statBox}>
-                    <Droplets color="#0284C7" size={18} />
+                    <View style={[styles.statIconBox, { backgroundColor: '#f0f9ff' }]}>
+                      <Droplets color="#0284c7" size={16} />
+                    </View>
                     <Text style={styles.statValue}>
                       {stats.hydration.dailyAverageMl !== null
                         ? `${stats.hydration.dailyAverageMl} mL`
@@ -376,7 +383,7 @@ export default function LifestyleScreen() {
               </View>
             ) : filteredRecords.length === 0 ? (
               <View style={styles.emptyContainer}>
-                <Activity color={theme.colors.textMuted} size={44} />
+                <Activity color={theme.colors.textMuted} size={40} />
                 <Text style={styles.emptyTitle}>No Lifestyle Records Found</Text>
                 <Text style={styles.emptyMessage}>
                   Track your daily physical activity, sleep, hydration, and nutrition to build a
@@ -386,7 +393,7 @@ export default function LifestyleScreen() {
                   style={styles.emptyCtaButton}
                   onPress={() => setIsAddModalOpen(true)}
                 >
-                  <Plus color={theme.colors.white} size={16} />
+                  <Plus color="#ffffff" size={16} />
                   <Text style={styles.emptyCtaText}>Log First Activity</Text>
                 </TouchableOpacity>
               </View>
@@ -395,7 +402,9 @@ export default function LifestyleScreen() {
                 <View key={r.id} style={styles.recordCard}>
                   <View style={styles.recordHeader}>
                     <View style={styles.recordCategoryRow}>
-                      {getCategoryIcon(r.category, 18)}
+                      <View style={styles.catIconWrap}>
+                        {getCategoryIcon(r.category, 16)}
+                      </View>
                       <Text style={styles.recordCategoryTitle}>
                         {r.category.replace(/_/g, ' ')}
                       </Text>
@@ -422,7 +431,7 @@ export default function LifestyleScreen() {
                         style={styles.iconBtn}
                         accessibilityLabel="Edit Entry"
                       >
-                        <Edit2 color="#64748B" size={14} />
+                        <Edit2 color="#737784" size={14} />
                       </TouchableOpacity>
 
                       <TouchableOpacity
@@ -430,7 +439,7 @@ export default function LifestyleScreen() {
                         style={styles.iconBtn}
                         accessibilityLabel="Delete Entry"
                       >
-                        <Trash2 color="#EF4444" size={14} />
+                        <Trash2 color="#ba1a1a" size={14} />
                       </TouchableOpacity>
                     </View>
                   </View>
@@ -455,16 +464,16 @@ export default function LifestyleScreen() {
                   {/* Reason for correction if edited */}
                   {r.reasonForCorrection && (
                     <View style={styles.correctionBox}>
-                      <Info color="#B45309" size={12} />
+                      <Info color="#b45309" size={12} />
                       <Text style={styles.correctionText}>
-                        Corrected: {r.reasonForCorrection}
+                        Reason for correction: {r.reasonForCorrection}
                       </Text>
                     </View>
                   )}
 
                   {/* Timestamp */}
                   <View style={styles.recordFooter}>
-                    <Clock color="#94A3B8" size={12} />
+                    <Clock color="#737784" size={12} />
                     <Text style={styles.recordDateText}>
                       {new Date(r.recordedAt).toLocaleString('en-IN', {
                         day: '2-digit',
@@ -485,10 +494,10 @@ export default function LifestyleScreen() {
         {/* ============================================================== */}
         {activeTab === 'TWIN' && (
           <>
-            {/* Read-Only Governance Banner */}
+            {/* Read-Only Governance Banner (Alexandria Card) */}
             <View style={styles.twinGovernanceCard}>
               <View style={styles.twinGovernanceHeader}>
-                <ShieldCheck color="#047857" size={18} />
+                <ShieldCheck color="#059669" size={18} />
                 <Text style={styles.twinGovernanceTitle}>
                   Personal Digital Health Twin (Read-Only)
                 </Text>
@@ -512,9 +521,9 @@ export default function LifestyleScreen() {
                     ]}
                   >
                     {alert.severity === 'WARNING' ? (
-                      <AlertTriangle color="#B45309" size={16} />
+                      <AlertTriangle color="#b45309" size={16} />
                     ) : (
-                      <Info color="#0284C7" size={16} />
+                      <Info color="#004D4D" size={16} />
                     )}
                     <Text
                       style={[
@@ -534,7 +543,9 @@ export default function LifestyleScreen() {
                 {/* Pillar 1: Glycemic & Vitals */}
                 <View style={styles.pillarCard}>
                   <View style={styles.pillarHeader}>
-                    <Heart color="#E11D48" size={18} />
+                    <View style={[styles.catIconWrap, { backgroundColor: '#fee2e2' }]}>
+                      <Heart color="#ba1a1a" size={16} />
+                    </View>
                     <Text style={styles.pillarTitle}>Glycemic & Vitals Profile</Text>
                   </View>
 
@@ -585,7 +596,9 @@ export default function LifestyleScreen() {
                 {/* Pillar 2: Lifestyle Habits */}
                 <View style={styles.pillarCard}>
                   <View style={styles.pillarHeader}>
-                    <Activity color={theme.colors.primary} size={18} />
+                    <View style={styles.catIconWrap}>
+                      <Activity color="#004D4D" size={16} />
+                    </View>
                     <Text style={styles.pillarTitle}>Lifestyle & Habit Trends</Text>
                   </View>
 
@@ -629,7 +642,9 @@ export default function LifestyleScreen() {
                 {/* Pillar 3: Medication Regimen */}
                 <View style={styles.pillarCard}>
                   <View style={styles.pillarHeader}>
-                    <Pill color="#0D9488" size={18} />
+                    <View style={[styles.catIconWrap, { backgroundColor: '#ecfdf5' }]}>
+                      <Pill color="#059669" size={16} />
+                    </View>
                     <Text style={styles.pillarTitle}>Medication Regimen & Adherence</Text>
                   </View>
 
@@ -653,7 +668,7 @@ export default function LifestyleScreen() {
                     {twin.metrics.medications.unreviewedCount > 0 && (
                       <View style={styles.vitalStatRow}>
                         <Text style={styles.vitalStatLabel}>Unreviewed Patient Entries:</Text>
-                        <Text style={[styles.vitalStatValue, { color: '#B45309' }]}>
+                        <Text style={[styles.vitalStatValue, { color: '#b45309' }]}>
                           {twin.metrics.medications.unreviewedCount} awaiting review
                         </Text>
                       </View>
@@ -664,7 +679,9 @@ export default function LifestyleScreen() {
                 {/* Pillar 4: Care Plan Progress */}
                 <View style={styles.pillarCard}>
                   <View style={styles.pillarHeader}>
-                    <CheckCircle2 color="#3B82F6" size={18} />
+                    <View style={[styles.catIconWrap, { backgroundColor: 'rgba(9, 76, 178, 0.08)' }]}>
+                      <CheckCircle2 color="#004D4D" size={16} />
+                    </View>
                     <Text style={styles.pillarTitle}>Care Plan Engagement</Text>
                   </View>
 
@@ -704,7 +721,7 @@ export default function LifestyleScreen() {
         )}
       </ScrollView>
 
-      {/* Modal: Add Lifestyle Entry */}
+      {/* Modal: Add Lifestyle Entry (Alexandria Sheet) */}
       <Modal
         visible={isAddModalOpen}
         animationType="slide"
@@ -713,10 +730,11 @@ export default function LifestyleScreen() {
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContainer}>
+            <View style={styles.modalTonalBar} />
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Record Daily Lifestyle</Text>
-              <TouchableOpacity onPress={() => setIsAddModalOpen(false)}>
-                <X color={theme.colors.textMuted} size={22} />
+              <TouchableOpacity onPress={() => setIsAddModalOpen(false)} style={styles.modalCloseBtn}>
+                <X color={theme.colors.textMuted} size={18} />
               </TouchableOpacity>
             </View>
 
@@ -768,6 +786,7 @@ export default function LifestyleScreen() {
                   <TextInput
                     style={styles.textInput}
                     placeholder="e.g. 45"
+                    placeholderTextColor="#737784"
                     keyboardType="numeric"
                     value={inputValue}
                     onChangeText={setInputValue}
@@ -788,6 +807,7 @@ export default function LifestyleScreen() {
               <TextInput
                 style={styles.textInput}
                 placeholder="e.g. Brisk Walking, Restful, Light Lunch"
+                placeholderTextColor="#737784"
                 value={inputQualitative}
                 onChangeText={setInputQualitative}
               />
@@ -797,6 +817,7 @@ export default function LifestyleScreen() {
               <TextInput
                 style={[styles.textInput, styles.textArea]}
                 placeholder="e.g. Felt energetic, took walk after dinner"
+                placeholderTextColor="#737784"
                 multiline
                 numberOfLines={3}
                 value={inputNotes}
@@ -835,15 +856,16 @@ export default function LifestyleScreen() {
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContainer}>
+            <View style={styles.modalTonalBar} />
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Correct Lifestyle Entry</Text>
-              <TouchableOpacity onPress={() => setIsEditModalOpen(false)}>
-                <X color={theme.colors.textMuted} size={22} />
+              <TouchableOpacity onPress={() => setIsEditModalOpen(false)} style={styles.modalCloseBtn}>
+                <X color={theme.colors.textMuted} size={18} />
               </TouchableOpacity>
             </View>
 
             <Text style={styles.modalSub}>
-              Editing a health or lifestyle log requires a documented reason for clinical audit
+              Editing a health or lifestyle log requires a documented Reason for correction for clinical audit
               preservation.
             </Text>
 
@@ -851,6 +873,7 @@ export default function LifestyleScreen() {
             <TextInput
               style={styles.textInput}
               keyboardType="numeric"
+              placeholderTextColor="#737784"
               value={editValue}
               onChangeText={setEditValue}
             />
@@ -858,14 +881,16 @@ export default function LifestyleScreen() {
             <Text style={styles.inputLabel}>Notes</Text>
             <TextInput
               style={styles.textInput}
+              placeholderTextColor="#737784"
               value={editNotes}
               onChangeText={setEditNotes}
             />
 
-            <Text style={styles.inputLabel}>Reason for Correction *</Text>
+            <Text style={styles.inputLabel}>Reason for correction *</Text>
             <TextInput
               style={[styles.textInput, styles.textArea]}
               placeholder="e.g. Corrected walking duration from 60 to 45 min"
+              placeholderTextColor="#737784"
               multiline
               numberOfLines={2}
               value={correctionReason}
@@ -900,53 +925,63 @@ export default function LifestyleScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: '#f8f9fc',
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
+    paddingHorizontal: 20,
     paddingVertical: 14,
-    backgroundColor: theme.colors.white,
+    backgroundColor: '#ffffff',
     borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
+    borderBottomColor: 'rgba(9, 76, 178, 0.08)',
   },
   headerTextContainer: {
     flex: 1,
   },
   screenTitle: {
+    fontFamily: 'Noto Serif',
     fontSize: 20,
     fontWeight: '700',
-    color: '#0F172A',
+    color: '#191c20',
   },
   screenSubtitle: {
-    fontSize: 12,
-    color: '#64748B',
+    fontFamily: 'Public Sans',
+    fontSize: 10.5,
+    fontWeight: '700',
+    color: '#33628b',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
     marginTop: 2,
   },
   addButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: theme.colors.primary,
+    backgroundColor: '#004D4D',
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 8,
-    gap: 4,
+    gap: 5,
+    shadowColor: '#004D4D',
+    shadowOpacity: 0.15,
+    shadowRadius: 3,
+    elevation: 1,
   },
   addButtonText: {
-    color: theme.colors.white,
-    fontWeight: '600',
-    fontSize: 13,
+    color: '#ffffff',
+    fontFamily: 'Public Sans',
+    fontWeight: '700',
+    fontSize: 12,
   },
   tabBar: {
     flexDirection: 'row',
-    backgroundColor: theme.colors.white,
+    backgroundColor: '#ffffff',
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
-    gap: 12,
+    borderBottomColor: '#f2f3f9',
+    gap: 8,
   },
   tabButton: {
     flex: 1,
@@ -954,38 +989,46 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 8,
-    borderRadius: 8,
-    backgroundColor: '#F1F5F9',
+    borderRadius: 999,
+    backgroundColor: '#eceef3',
     gap: 6,
   },
   tabButtonActive: {
-    backgroundColor: '#EFF6FF',
+    backgroundColor: 'rgba(9, 76, 178, 0.08)',
     borderWidth: 1,
-    borderColor: '#BFDBFE',
+    borderColor: 'rgba(9, 76, 178, 0.15)',
   },
   tabButtonText: {
-    fontSize: 12,
+    fontFamily: 'Public Sans',
+    fontSize: 11.5,
     fontWeight: '600',
-    color: '#64748B',
+    color: '#737784',
   },
   tabButtonTextActive: {
-    color: theme.colors.primary,
+    color: '#004D4D',
+    fontWeight: '700',
   },
   scrollContent: {
     padding: 16,
     gap: 14,
   },
   statsCard: {
-    backgroundColor: theme.colors.white,
-    borderRadius: 12,
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
     padding: 16,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: 'rgba(9, 76, 178, 0.08)',
+    shadowColor: '#004D4D',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.03,
+    shadowRadius: 6,
+    elevation: 1,
   },
   statsCardTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#334155',
+    fontFamily: 'Public Sans',
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#33628b',
     marginBottom: 12,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
@@ -998,20 +1041,32 @@ const styles = StyleSheet.create({
   statBox: {
     alignItems: 'center',
     gap: 4,
+    flex: 1,
+  },
+  statIconBox: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: 'rgba(9, 76, 178, 0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   statValue: {
+    fontFamily: 'Public Sans',
     fontSize: 16,
-    fontWeight: '700',
-    color: '#0F172A',
+    fontWeight: '800',
+    color: '#191c20',
   },
   statLabel: {
-    fontSize: 11,
-    color: '#64748B',
+    fontFamily: 'Inter',
+    fontSize: 10.5,
+    color: '#737784',
+    textAlign: 'center',
   },
   statDivider: {
     width: 1,
-    height: 30,
-    backgroundColor: '#E2E8F0',
+    height: 32,
+    backgroundColor: '#e1e2e8',
   },
   filterScroll: {
     flexDirection: 'row',
@@ -1019,21 +1074,22 @@ const styles = StyleSheet.create({
   filterChip: {
     paddingHorizontal: 12,
     paddingVertical: 6,
-    borderRadius: 20,
-    backgroundColor: '#F1F5F9',
+    borderRadius: 999,
+    backgroundColor: '#eceef3',
     marginRight: 8,
   },
   filterChipActive: {
-    backgroundColor: theme.colors.primary,
+    backgroundColor: '#004D4D',
   },
   filterChipText: {
-    fontSize: 12,
-    color: '#64748B',
-    fontWeight: '500',
+    fontFamily: 'Public Sans',
+    fontSize: 11,
+    color: '#737784',
+    fontWeight: '600',
   },
   filterChipTextActive: {
-    color: theme.colors.white,
-    fontWeight: '600',
+    color: '#ffffff',
+    fontWeight: '700',
   },
   loadingContainer: {
     padding: 40,
@@ -1041,52 +1097,60 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   loadingText: {
-    fontSize: 13,
-    color: '#64748B',
+    fontFamily: 'Inter',
+    fontSize: 12,
+    color: '#737784',
   },
   emptyContainer: {
-    padding: 40,
+    padding: 36,
     alignItems: 'center',
-    backgroundColor: theme.colors.white,
-    borderRadius: 12,
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: 'rgba(9, 76, 178, 0.08)',
     gap: 8,
   },
   emptyTitle: {
+    fontFamily: 'Noto Serif',
     fontSize: 16,
-    fontWeight: '600',
-    color: '#334155',
+    fontWeight: '700',
+    color: '#191c20',
     marginTop: 6,
   },
   emptyMessage: {
+    fontFamily: 'Inter',
     fontSize: 12,
-    color: '#64748B',
+    color: '#737784',
     textAlign: 'center',
     lineHeight: 18,
   },
   emptyCtaButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: theme.colors.primary,
-    paddingHorizontal: 14,
+    backgroundColor: '#004D4D',
+    paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 8,
     marginTop: 10,
     gap: 6,
   },
   emptyCtaText: {
-    color: theme.colors.white,
-    fontSize: 13,
-    fontWeight: '600',
+    color: '#ffffff',
+    fontFamily: 'Public Sans',
+    fontSize: 12,
+    fontWeight: '700',
   },
   recordCard: {
-    backgroundColor: theme.colors.white,
-    borderRadius: 12,
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
     padding: 14,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: 'rgba(9, 76, 178, 0.08)',
     gap: 6,
+    shadowColor: '#004D4D',
+    shadowOpacity: 0.02,
+    shadowRadius: 4,
+    elevation: 1,
   },
   recordHeader: {
     flexDirection: 'row',
@@ -1098,20 +1162,30 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
+  catIconWrap: {
+    width: 28,
+    height: 28,
+    borderRadius: 7,
+    backgroundColor: 'rgba(9, 76, 178, 0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   recordCategoryTitle: {
-    fontSize: 14,
+    fontFamily: 'Public Sans',
+    fontSize: 13,
     fontWeight: '700',
-    color: '#0F172A',
+    color: '#191c20',
   },
   provenancePill: {
-    backgroundColor: '#F1F5F9',
+    backgroundColor: '#f2f3f9',
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 4,
   },
   provenancePillText: {
-    fontSize: 10,
-    color: '#64748B',
+    fontFamily: 'Inter',
+    fontSize: 9.5,
+    color: '#737784',
     fontWeight: '600',
   },
   recordActionsRow: {
@@ -1121,7 +1195,7 @@ const styles = StyleSheet.create({
   iconBtn: {
     padding: 6,
     borderRadius: 6,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: '#f2f3f9',
   },
   recordDetailsRow: {
     flexDirection: 'row',
@@ -1129,35 +1203,39 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   recordMainValue: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: theme.colors.primary,
+    fontFamily: 'Public Sans',
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#004D4D',
   },
   recordQualitative: {
-    fontSize: 13,
-    color: '#475569',
+    fontFamily: 'Inter',
+    fontSize: 12,
+    color: '#434653',
   },
   recordNotes: {
-    fontSize: 12,
-    color: '#475569',
-    backgroundColor: '#F8FAFC',
+    fontFamily: 'Inter',
+    fontSize: 11.5,
+    color: '#434653',
+    backgroundColor: '#f2f3f9',
     padding: 8,
-    borderRadius: 6,
+    borderRadius: 8,
     marginTop: 2,
   },
   correctionBox: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FFFBEB',
+    backgroundColor: '#fffbeb',
     padding: 6,
-    borderRadius: 4,
+    borderRadius: 6,
     gap: 6,
     borderWidth: 1,
-    borderColor: '#FDE68A',
+    borderColor: '#fde68a',
   },
   correctionText: {
-    fontSize: 11,
-    color: '#B45309',
+    fontFamily: 'Inter',
+    fontSize: 10.5,
+    color: '#92400e',
   },
   recordFooter: {
     flexDirection: 'row',
@@ -1166,30 +1244,37 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   recordDateText: {
-    fontSize: 11,
-    color: '#94A3B8',
+    fontFamily: 'Inter',
+    fontSize: 10.5,
+    color: '#737784',
   },
   twinGovernanceCard: {
-    backgroundColor: '#ECFDF5',
-    padding: 14,
-    borderRadius: 12,
+    backgroundColor: '#ffffff',
+    padding: 16,
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: '#A7F3D0',
+    borderColor: 'rgba(9, 76, 178, 0.08)',
     gap: 6,
+    shadowColor: '#004D4D',
+    shadowOpacity: 0.03,
+    shadowRadius: 6,
+    elevation: 1,
   },
   twinGovernanceHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 8,
   },
   twinGovernanceTitle: {
-    fontSize: 13,
+    fontFamily: 'Noto Serif',
+    fontSize: 14,
     fontWeight: '700',
-    color: '#065F46',
+    color: '#059669',
   },
   twinGovernanceDesc: {
+    fontFamily: 'Inter',
     fontSize: 11,
-    color: '#047857',
+    color: '#434653',
     lineHeight: 16,
   },
   alertsContainer: {
@@ -1199,52 +1284,58 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     padding: 10,
-    borderRadius: 8,
+    borderRadius: 10,
     gap: 8,
     borderWidth: 1,
   },
   alertWarning: {
-    backgroundColor: '#FEF3C7',
-    borderColor: '#FDE68A',
+    backgroundColor: '#fffbeb',
+    borderColor: '#fde68a',
   },
   alertInfo: {
-    backgroundColor: '#F0F9FF',
-    borderColor: '#BAE6FD',
+    backgroundColor: 'rgba(9, 76, 178, 0.05)',
+    borderColor: 'rgba(9, 76, 178, 0.15)',
   },
   alertItemText: {
     flex: 1,
-    fontSize: 12,
+    fontFamily: 'Inter',
+    fontSize: 11.5,
     lineHeight: 16,
   },
   alertTextWarn: {
-    color: '#92400E',
+    color: '#92400e',
   },
   alertTextInfo: {
-    color: '#0369A1',
+    color: '#004D4D',
   },
   twinPillars: {
     gap: 12,
   },
   pillarCard: {
-    backgroundColor: theme.colors.white,
-    borderRadius: 12,
-    padding: 14,
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 16,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: 'rgba(9, 76, 178, 0.08)',
     gap: 10,
+    shadowColor: '#004D4D',
+    shadowOpacity: 0.03,
+    shadowRadius: 6,
+    elevation: 1,
   },
   pillarHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
     borderBottomWidth: 1,
-    borderBottomColor: '#F1F5F9',
+    borderBottomColor: '#f2f3f9',
     paddingBottom: 8,
   },
   pillarTitle: {
+    fontFamily: 'Noto Serif',
     fontSize: 14,
     fontWeight: '700',
-    color: '#0F172A',
+    color: '#191c20',
   },
   pillarBody: {
     gap: 8,
@@ -1255,17 +1346,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   vitalStatLabel: {
-    fontSize: 12,
-    color: '#64748B',
+    fontFamily: 'Inter',
+    fontSize: 11.5,
+    color: '#737784',
   },
   vitalStatValue: {
-    fontSize: 13,
+    fontFamily: 'Public Sans',
+    fontSize: 12.5,
     fontWeight: '700',
-    color: '#0F172A',
+    color: '#191c20',
   },
   noDataPlaceholder: {
-    fontSize: 12,
-    color: '#94A3B8',
+    fontFamily: 'Inter',
+    fontSize: 11.5,
+    color: '#737784',
     fontStyle: 'italic',
   },
   twinFooter: {
@@ -1273,38 +1367,59 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   twinFooterText: {
-    fontSize: 11,
-    color: '#94A3B8',
+    fontFamily: 'Inter',
+    fontSize: 10.5,
+    color: '#737784',
     textAlign: 'center',
-    lineHeight: 16,
+    lineHeight: 15,
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: 'rgba(25, 28, 32, 0.45)',
     justifyContent: 'flex-end',
   },
   modalContainer: {
-    backgroundColor: theme.colors.white,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
+    backgroundColor: '#ffffff',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
     padding: 20,
     maxHeight: '90%',
+    overflow: 'hidden',
+  },
+  modalTonalBar: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 4,
+    backgroundColor: '#004D4D',
   },
   modalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 8,
+    marginTop: 4,
+    marginBottom: 10,
   },
   modalTitle: {
-    fontSize: 18,
+    fontFamily: 'Noto Serif',
+    fontSize: 17,
     fontWeight: '700',
-    color: '#0F172A',
+    color: '#191c20',
+  },
+  modalCloseBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: '#f2f3f9',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   modalSub: {
-    fontSize: 12,
-    color: '#64748B',
-    marginBottom: 16,
+    fontFamily: 'Inter',
+    fontSize: 11.5,
+    color: '#737784',
+    marginBottom: 14,
     lineHeight: 16,
   },
   categoryPickerRow: {
@@ -1316,36 +1431,40 @@ const styles = StyleSheet.create({
   catPickerBtn: {
     paddingHorizontal: 12,
     paddingVertical: 6,
-    borderRadius: 16,
-    backgroundColor: '#F1F5F9',
+    borderRadius: 999,
+    backgroundColor: '#f2f3f9',
   },
   catPickerBtnActive: {
-    backgroundColor: theme.colors.primary,
+    backgroundColor: '#004D4D',
   },
   catPickerBtnText: {
-    fontSize: 12,
-    color: '#64748B',
-    fontWeight: '500',
+    fontFamily: 'Public Sans',
+    fontSize: 11,
+    color: '#737784',
+    fontWeight: '600',
   },
   catPickerBtnTextActive: {
-    color: theme.colors.white,
-    fontWeight: '600',
+    color: '#ffffff',
+    fontWeight: '700',
   },
   inputLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#334155',
+    fontFamily: 'Public Sans',
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#434653',
     marginBottom: 4,
+    textTransform: 'uppercase',
   },
   textInput: {
-    backgroundColor: '#F8FAFC',
+    backgroundColor: '#f8f9fc',
     borderWidth: 1,
-    borderColor: '#CBD5E1',
-    borderRadius: 8,
+    borderColor: '#c3c6d5',
+    borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 8,
-    fontSize: 14,
-    color: '#0F172A',
+    fontSize: 13,
+    fontFamily: 'Inter',
+    color: '#191c20',
     marginBottom: 12,
   },
   textArea: {
@@ -1362,28 +1481,29 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingVertical: 10,
     alignItems: 'center',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
+    borderRadius: 10,
+    backgroundColor: '#f2f3f9',
   },
   cancelBtnText: {
-    color: '#64748B',
-    fontWeight: '600',
-    fontSize: 14,
+    fontFamily: 'Public Sans',
+    color: '#737784',
+    fontWeight: '700',
+    fontSize: 13,
   },
   submitBtn: {
     flex: 1,
     paddingVertical: 10,
     alignItems: 'center',
-    borderRadius: 8,
-    backgroundColor: theme.colors.primary,
+    borderRadius: 10,
+    backgroundColor: '#004D4D',
   },
   btnDisabled: {
     opacity: 0.6,
   },
   submitBtnText: {
-    color: theme.colors.white,
-    fontWeight: '600',
-    fontSize: 14,
+    fontFamily: 'Public Sans',
+    color: '#ffffff',
+    fontWeight: '700',
+    fontSize: 13,
   },
 });

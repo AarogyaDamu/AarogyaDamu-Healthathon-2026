@@ -4,15 +4,18 @@ import rateLimit from 'express-rate-limit';
 import bcrypt from 'bcryptjs';
 import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import path from 'path';
+import fs from 'fs';
 import { z } from 'zod';
 import multer from 'multer';
 import { env } from './config/env';
 import { AuthenticatedRequest, requireAuth } from './middleware/auth';
 import { AuthorizationError, resolvePatientContext } from './permissions/evaluator';
 import { logAuditEvent } from './audit/auditLogger';
-import { deletePrivateFile, savePrivateFile } from './services/storageService';
+import { deletePrivateFile, generateValidSyntheticPdfBuffer, readPrivateFile, savePrivateFile } from './services/storageService';
 import { extractMedicalReportText, MedicalReportOcrError } from './services/ocrService';
+import { SarvamOcrService } from './services/sarvamOcrService';
 import { createAuthSession, hashToken, revokeAllAuthSessions, revokeAuthSession, rotateRefreshToken } from './services/authSessions';
+import { runWithTenantContext, preserveTenantContext } from './db/tenantContext';
 import { EmailDeliveryError, sendPasswordResetEmail } from './services/emailService';
 import { createRateLimitStore } from './services/rateLimitStore';
 import coordinationRouter from './routes/coordination.routes';
@@ -30,6 +33,13 @@ import syntheticAbhaRouter from './routes/syntheticAbha.routes';
 import damuRouter from './routes/damu.routes';
 import agentRouter from './routes/agent.routes';
 import { fhirRouter } from './routes/fhir.routes';
+import practiceRouter from './routes/practice.routes';
+import practiceBillingRouter from './routes/practiceBilling.routes';
+import consultationsExternalRouter from './routes/consultations.routes';
+import cgmRouter from './routes/cgm.routes';
+import sarvamOcrRouter from './routes/sarvamOcr.routes';
+import careTeamRouter from './routes/careTeam.routes';
+import clinicalReviewRouter from './routes/clinicalReview.routes';
 import { globalAgentExpiryWorker } from './ai/agent/agentExpiryWorker';
 import { evaluateClinicalSafety } from './safety/clinicalSafetyEvaluator';
 import { logClinicalAccessEvent, logClinicalMutationEvent, safeClinicalLog } from './audit/clinicalAuditLogger';
@@ -40,6 +50,7 @@ import { prisma } from './db/prisma';
 
 export { prisma } from './db/prisma';
 export const app = express();
+app.disable('x-powered-by');
 
 // Configure reverse-proxy trust for Render deployment:
 // Trust exactly one upstream proxy hop so express-rate-limit and req.ip
@@ -64,12 +75,28 @@ export function getAuthErrorStatus(err: any): number {
   return 500;
 }
 
-// Built-in Security Headers Middleware
-app.use((_req: Request, res: Response, next: NextFunction) => {
+// Built-in Security Headers Middleware (RFC 6797 & OWASP API Security Standard)
+app.use((req: Request, res: Response, next: NextFunction) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('X-XSS-Protection', '1; mode=block');
-  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  // Deprecated X-XSS-Protection replaced with modern standard (0)
+  res.setHeader('X-XSS-Protection', '0');
+
+  // HSTS: RFC 6797 compliant - emitted only on TLS/HTTPS connections or production
+  const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https';
+  if (isHttps) {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
+
+  // API Content Security Policy: strict 'none' for JSON REST endpoints
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+  );
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(self), geolocation=(), payment=()');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
   next();
 });
 
@@ -137,7 +164,7 @@ app.options('*', corsMiddleware);
 // Rate Limiting (Multi-instance aware)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 600,
+  max: env.APP_ENV === 'development' ? 5000 : 600,
   standardHeaders: true,
   legacyHeaders: false,
   store: createRateLimitStore('rl:global:', 15 * 60 * 1000),
@@ -159,6 +186,10 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 app.use('/api/coordination', coordinationRouter);
+app.use('/api/doctor', (req, res, next) => {
+  req.url = '/doctor' + req.url;
+  coordinationRouter(req, res, next);
+});
 app.use('/api/care-plans', carePlanRouter);
 app.use('/api/journey', journeyRouter);
 
@@ -178,8 +209,8 @@ if (env.APP_ENV === 'staging') {
     try {
       const result = await ensureStagingDemoDoctor(prisma);
       res.json(result);
-    } catch (err: any) {
-      res.status(500).json({ error: err?.message, stack: err?.stack });
+    } catch {
+      res.status(500).json({ error: 'Staging demo seed operation failed.' });
     }
   });
 }
@@ -218,13 +249,15 @@ import { safeStringEqual, createDoctorInvitation, verifyDoctorInvitation } from 
 export { safeStringEqual, createDoctorInvitation, verifyDoctorInvitation };
 
 async function recordSecurityEvent(action: string, req: Request, subject?: string): Promise<void> {
-  await prisma.securityAuditEvent.create({
-    data: {
-      action,
-      subject,
-      ipAddress: req.ip,
-      userAgent: req.headers['user-agent'],
-    },
+  return runWithTenantContext({ isSystemWorker: true, workerScope: 'SECURITY_RECORDER' }, async () => {
+    await prisma.securityAuditEvent.create({
+      data: {
+        action,
+        subject,
+        ipAddress: req.ip,
+        userAgent: req.headers['user-agent'],
+      },
+    });
   });
 }
 
@@ -320,10 +353,13 @@ const passwordResetCompletionRateLimiter = rateLimit({
 
 const loginRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: env.APP_ENV === 'staging' ? 100 : 10,
+  max: env.APP_ENV === 'development' || env.APP_ENV === 'staging' ? 200 : 10,
   standardHeaders: true,
   legacyHeaders: false,
   store: createRateLimitStore('rl:login:', 15 * 60 * 1000),
+  handler: (_req, res) => {
+    res.status(429).json({ error: 'Too many login attempts. Please try again later.' });
+  },
 });
 
 authRouter.post('/doctor-invitations', invitationRateLimiter, asyncRoute(async (req: Request, res: Response): Promise<void> => {
@@ -344,13 +380,15 @@ authRouter.post('/doctor-invitations', invitationRateLimiter, asyncRoute(async (
   const id = randomBytes(16).toString('hex');
   const invitation = createDoctorInvitation(parsed.data.email, id);
   const tokenHash = hashToken(invitation.token);
-  await prisma.doctorInvitation.create({
-    data: {
-      id,
-      email: parsed.data.email,
-      tokenHash,
-      expiresAt: new Date(invitation.expiresAt),
-    },
+  await runWithTenantContext({ isSystemWorker: true, workerScope: 'INVITATION_WORKER' }, async () => {
+    await prisma.doctorInvitation.create({
+      data: {
+        id,
+        email: parsed.data.email,
+        tokenHash,
+        expiresAt: new Date(invitation.expiresAt),
+      },
+    });
   });
   await recordSecurityEvent('DOCTOR_INVITATION_ISSUED', req, parsed.data.email);
   res.status(201).json({
@@ -375,22 +413,24 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
-    const user = await prisma.user.create({
-      data: {
-        email,
-        passwordHash,
-        isClinician: false,
-        profile: {
-          create: {
-            fullName,
-            diabetesType: 'UNKNOWN',
+    const { user, session } = await runWithTenantContext({ isSystemWorker: true, workerScope: 'REGISTRATION_WORKER' }, async () => {
+      const u = await prisma.user.create({
+        data: {
+          email,
+          passwordHash,
+          isClinician: false,
+          profile: {
+            create: {
+              fullName,
+              diabetesType: 'UNKNOWN',
+            },
           },
         },
-      },
-      include: { profile: true },
+        include: { profile: true },
+      });
+      const s = await createAuthSession(prisma, u);
+      return { user: u, session: s };
     });
-
-    const session = await createAuthSession(prisma, user);
 
     await logAuditEvent({
       userId: user.id,
@@ -434,14 +474,16 @@ authRouter.post('/doctor/register', async (req: Request, res: Response): Promise
   }
 
   try {
-    const storedInvitation = await prisma.doctorInvitation.findFirst({
-      where: {
-        id: invitation.id,
-        email,
-        tokenHash: invitation.tokenHash,
-        usedAt: null,
-        expiresAt: { gt: new Date() },
-      },
+    const storedInvitation = await runWithTenantContext({ isSystemWorker: true, workerScope: 'INVITATION_WORKER' }, async () => {
+      return prisma.doctorInvitation.findFirst({
+        where: {
+          id: invitation.id,
+          email,
+          tokenHash: invitation.tokenHash,
+          usedAt: null,
+          expiresAt: { gt: new Date() },
+        },
+      });
     });
     if (!storedInvitation) {
       await recordSecurityEvent('DOCTOR_INVITATION_REDEMPTION_REJECTED', req, email);
@@ -456,45 +498,49 @@ authRouter.post('/doctor/register', async (req: Request, res: Response): Promise
     }
 
     const passwordHash = await bcrypt.hash(parsed.data.password, 10);
-    const user = await prisma.$transaction(async (transaction) => {
-      const redemption = await transaction.doctorInvitation.updateMany({
-        where: {
-          id: invitation.id,
-          email,
-          tokenHash: invitation.tokenHash,
-          usedAt: null,
-          expiresAt: { gt: new Date() },
-        },
-        data: { usedAt: new Date() },
-      });
-      if (redemption.count !== 1) {
-        return null;
-      }
+    const { user, session } = await runWithTenantContext({ isSystemWorker: true, workerScope: 'INVITATION_WORKER' }, async () => {
+      const u = await prisma.$transaction(async (transaction) => {
+        const redemption = await transaction.doctorInvitation.updateMany({
+          where: {
+            id: invitation.id,
+            email,
+            tokenHash: invitation.tokenHash,
+            usedAt: null,
+            expiresAt: { gt: new Date() },
+          },
+          data: { usedAt: new Date() },
+        });
+        if (redemption.count !== 1) {
+          return null;
+        }
 
-      return transaction.user.create({
-        data: {
-          email,
-          passwordHash,
-          isClinician: true,
-          profile: {
-            create: {
-              fullName: parsed.data.fullName.trim(),
-              diabetesType: 'NOT_APPLICABLE',
-              primaryClinician: 'Specialist Clinician',
+        return transaction.user.create({
+          data: {
+            email,
+            passwordHash,
+            isClinician: true,
+            profile: {
+              create: {
+                fullName: parsed.data.fullName.trim(),
+                diabetesType: 'NOT_APPLICABLE',
+                primaryClinician: 'Specialist Clinician',
+              },
             },
           },
-        },
-        include: { profile: true },
+          include: { profile: true },
+        });
       });
+
+      if (!u) return { user: null, session: null };
+      const s = await createAuthSession(prisma, u);
+      return { user: u, session: s };
     });
 
-    if (!user) {
+    if (!user || !session) {
       await recordSecurityEvent('DOCTOR_INVITATION_REDEMPTION_REJECTED', req, email);
       res.status(403).json({ error: 'This doctor invitation is invalid, expired, or has already been used.' });
       return;
     }
-
-    const session = await createAuthSession(prisma, user);
     await recordSecurityEvent('DOCTOR_INVITATION_REDEEMED', req, email);
 
     await logAuditEvent({
@@ -530,7 +576,6 @@ authRouter.post('/login', loginRateLimiter, async (req: Request, res: Response):
 
     const user = await prisma.user.findUnique({
       where: { email },
-      include: { profile: true },
     });
 
     if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
@@ -544,7 +589,11 @@ authRouter.post('/login', loginRateLimiter, async (req: Request, res: Response):
       return;
     }
 
-    const session = await createAuthSession(prisma, user);
+    const { session, profile } = await runWithTenantContext({ userId: user.id }, async () => {
+      const p = await prisma.patientProfile.findUnique({ where: { userId: user.id } });
+      const s = await createAuthSession(prisma, user);
+      return { session: s, profile: p };
+    });
 
     await logAuditEvent({
       userId: user.id,
@@ -559,7 +608,7 @@ authRouter.post('/login', loginRateLimiter, async (req: Request, res: Response):
       ...session,
       csrfToken,
       user: { id: user.id, email: user.email, isSyntheticDemo: user.isSyntheticDemo, isClinician: user.isClinician },
-      profile: user.profile,
+      profile: profile || null,
     });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
@@ -568,7 +617,7 @@ authRouter.post('/login', loginRateLimiter, async (req: Request, res: Response):
 
 authRouter.post('/demo-session', async (req: Request, res: Response): Promise<void> => {
   try {
-    if (!env.ALLOW_DEMO_AUTH || env.NODE_ENV === 'production') {
+    if (!env.ALLOW_DEMO_AUTH || env.NODE_ENV === 'production' || env.APP_ENV !== 'development') {
       res.status(403).json({ error: 'Demo authentication is disabled in this environment.' });
       return;
     }
@@ -583,43 +632,45 @@ authRouter.post('/demo-session', async (req: Request, res: Response): Promise<vo
     }
 
     let demoUser: any = null;
-    if (requestedRole === 'CAREGIVER') {
-      demoUser = await prisma.user.findFirst({
-        where: { isSyntheticDemo: true, email: { contains: 'family' } },
-        include: { profile: true },
-      });
-    }
+    await runWithTenantContext({ isSystemWorker: true, workerScope: 'DEMO_WORKER' }, async () => {
+      if (requestedRole === 'CAREGIVER') {
+        demoUser = await prisma.user.findFirst({
+          where: { isSyntheticDemo: true, email: { contains: 'family' } },
+          include: { profile: true },
+        });
+      }
 
-    if (!demoUser) {
-      demoUser = await prisma.user.findFirst({
-        where: { isSyntheticDemo: true, isClinician: false },
-        include: { profile: true },
-      });
-    }
+      if (!demoUser) {
+        demoUser = await prisma.user.findFirst({
+          where: { isSyntheticDemo: true, isClinician: false },
+          include: { profile: true },
+        });
+      }
 
-    if (!demoUser) {
-      const passwordHash = await bcrypt.hash('DemoPassword123!', 10);
-      demoUser = await prisma.user.create({
-        data: {
-          email: 'demo.patient1@aarogyadamu.local',
-          passwordHash,
-          isSyntheticDemo: true,
-          isClinician: false,
-          profile: {
-            create: {
-              fullName: 'Ramesh Deshmukh',
-              diabetesType: 'TYPE_2_DIABETES',
-              diagnosisYear: 2021,
-              primaryClinician: 'Dr. Rupam Choudhary (Diabetologist)',
-              targetFastingMin: 80,
-              targetFastingMax: 130,
-              targetPostMealMax: 180,
+      if (!demoUser) {
+        const passwordHash = await bcrypt.hash('DemoPassword123!', 10);
+        demoUser = await prisma.user.create({
+          data: {
+            email: 'demo.patient1@aarogyadamu.local',
+            passwordHash,
+            isSyntheticDemo: true,
+            isClinician: false,
+            profile: {
+              create: {
+                fullName: 'Ramesh Deshmukh',
+                diabetesType: 'TYPE_2_DIABETES',
+                diagnosisYear: 2021,
+                primaryClinician: 'Dr. Rupam Choudhary (Diabetologist)',
+                targetFastingMin: 80,
+                targetFastingMax: 130,
+                targetPostMealMax: 180,
+              },
             },
           },
-        },
-        include: { profile: true },
-      });
-    }
+          include: { profile: true },
+        });
+      }
+    });
 
     const session = await createAuthSession(prisma, demoUser);
 
@@ -1201,7 +1252,8 @@ obsRouter.post('/', requireAuth, async (req: Request, res: Response): Promise<vo
       return;
     }
 
-    const numVal = Number(numericValue);
+    const rawVal = numericValue !== undefined && numericValue !== null ? numericValue : (req.body as any).value;
+    const numVal = Number(rawVal);
     if (isNaN(numVal) || numVal <= 0) {
       res.status(400).json({ error: 'Reading must be a positive number.' });
       return;
@@ -1307,7 +1359,11 @@ obsRouter.post('/', requireAuth, async (req: Request, res: Response): Promise<vo
     });
 
     res.status(201).json({
-      observation: obs,
+      observation: {
+        ...obs,
+        value: obs.numericValue,
+        type: req.body.type || obs.type,
+      },
       safetyEvaluation,
     });
   } catch (err: any) {
@@ -1387,7 +1443,7 @@ obsRouter.patch('/:id', requireAuth, async (req: Request, res: Response): Promis
     });
 
     const actorId = (req as any).user?.id || effectivePatientId;
-    void logClinicalMutationEvent({
+    await logClinicalMutationEvent({
       userId: effectivePatientId,
       actorId,
       action: 'OBSERVATION_AMENDED',
@@ -1615,67 +1671,63 @@ async function processMedicalReportOcr(
   actorId: string,
   file: Express.Multer.File,
 ): Promise<void> {
-  try {
-    const result = await extractMedicalReportText(file.buffer, file.mimetype);
-    const hasText = result.text.trim().length > 0;
-    const extractedData = {
-      provider: result.provider,
-      status: hasText ? 'COMPLETED' : 'NO_TEXT',
-      text: result.text,
-    };
+  await runWithTenantContext({ userId: actorId, patientId: userId }, async () => {
+    try {
+      // Process using modern Sarvam Document AI v1 with resilient local extraction fallback
+      const result = await SarvamOcrService.processDocument(
+        documentId,
+        userId,
+        undefined,
+        file.buffer,
+        file.mimetype,
+      );
 
-    await prisma.healthDocument.update({
-      where: { id: documentId },
-      data: {
-        processingStatus: hasText ? 'NEEDS_REVIEW' : 'OCR_NO_TEXT',
-        extractedData: JSON.stringify(extractedData),
-      notes: hasText ? null : `${result.provider} completed but found no readable text.`,
-      },
-    });
-    try {
-      await logAuditEvent({
-        userId,
-        actorId,
-        action: 'DOCUMENT_OCR_EXTRACTED',
-        entityType: 'HealthDocument',
-        entityId: documentId,
-        metadata: { provider: result.provider, status: extractedData.status },
-      });
-    } catch {
-      safeClinicalLog('error', 'Medical report OCR audit event could not be recorded');
+      try {
+        await logAuditEvent({
+          userId,
+          actorId,
+          action: 'DOCUMENT_OCR_EXTRACTED',
+          entityType: 'HealthDocument',
+          entityId: documentId,
+          metadata: { provider: result.engine, status: result.status, documentType: result.documentType },
+        });
+      } catch {
+        safeClinicalLog('error', 'Medical report OCR audit event could not be recorded');
+      }
+    } catch (error: any) {
+      const safeErrorMsg = SarvamOcrService.formatSafeOcrError(error);
+      safeClinicalLog('error', `Medical report OCR failed: ${error?.message}`);
+      try {
+        await prisma.healthDocument.update({
+          where: { id: documentId },
+          data: {
+            processingStatus: 'FAILED',
+            notes: safeErrorMsg,
+            extractedData: JSON.stringify({
+              provider: env.SARVAM_API_KEY ? 'SARVAM_DOC_AI' : 'LOCAL_FALLBACK',
+              engine: env.SARVAM_API_KEY ? 'SARVAM_DOCUMENT_AI' : 'LOCAL_FALLBACK',
+              status: 'FAILED',
+              error: safeErrorMsg,
+              doctorReviewStatus: 'NEEDS_ATTENTION',
+            }),
+          },
+        });
+        await logAuditEvent({
+          userId,
+          actorId,
+          action: 'DOCUMENT_OCR_FAILED',
+          entityType: 'HealthDocument',
+          entityId: documentId,
+          metadata: { error: safeErrorMsg },
+        });
+      } catch {
+        safeClinicalLog('error', 'Medical report OCR result could not be saved');
+      }
     }
-  } catch (error) {
-    const message = error instanceof MedicalReportOcrError
-      ? error.message
-      : 'Medical report OCR could not process this report. Please try again later.';
-    try {
-      await prisma.healthDocument.update({
-        where: { id: documentId },
-        data: {
-          processingStatus: 'EXTRACTION_FAILED',
-          notes: message,
-          extractedData: JSON.stringify({
-            provider: env.MEDICAL_REPORT_OCR_PROVIDER === 'synthetic' ? 'SYNTHETIC_DEMO_OCR' : 'GOOGLE_CLOUD_VISION',
-            status: 'FAILED',
-            error: message,
-          }),
-        },
-      });
-      await logAuditEvent({
-        userId,
-        actorId,
-        action: 'DOCUMENT_OCR_FAILED',
-        entityType: 'HealthDocument',
-        entityId: documentId,
-        metadata: { error: message },
-      });
-    } catch {
-      safeClinicalLog('error', 'Medical report OCR result could not be saved');
-    }
-  }
+  });
 }
 
-docRouter.post('/upload-report', requireAuth, reportUpload.single('file'), async (req: Request, res: Response): Promise<void> => {
+const handleDocumentUpload = async (req: Request, res: Response): Promise<void> => {
   let savedFile: { storagePath: string; fileSizeBytes: number } | undefined;
   let documentCreated = false;
   try {
@@ -1685,35 +1737,41 @@ docRouter.post('/upload-report', requireAuth, reportUpload.single('file'), async
       return;
     }
 
-    if (env.MEDICAL_REPORT_OCR_PROVIDER === 'google_vision' && req.file.mimetype === 'application/pdf' && !env.GOOGLE_CLOUD_STORAGE_BUCKET) {
-      res.status(503).json({
-        code: 'PDF_OCR_NOT_CONFIGURED',
-        error: 'PDF text extraction is not configured. Set GOOGLE_CLOUD_STORAGE_BUCKET on the API server, restart it, and upload the PDF again, or use MEDICAL_REPORT_OCR_PROVIDER=synthetic for the local showcase.',
-      });
-      return;
-    }
-
-    savedFile = await savePrivateFile(effectivePatientId, req.file.originalname, req.file.buffer);
+    savedFile = await savePrivateFile(effectivePatientId, req.file.originalname, req.file.buffer, req.file.mimetype);
     const requestedTitle = typeof req.body.title === 'string' ? req.body.title.trim() : '';
     const title = (requestedTitle || req.file.originalname.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ')).slice(0, 160);
     const issuingFacility = typeof req.body.issuingFacility === 'string'
       ? req.body.issuingFacility.trim().slice(0, 160)
       : '';
-    const document = await prisma.healthDocument.create({
-      data: {
-        userId: effectivePatientId,
-        title: title || 'Uploaded medical report',
-        category: 'LAB_REPORT',
-        issuingFacility: issuingFacility || undefined,
-        storagePath: savedFile.storagePath,
-        fileSizeBytes: savedFile.fileSizeBytes,
-        mimeType: req.file.mimetype,
-        processingStatus: 'PENDING',
-      },
-    });
-    documentCreated = true;
-
+    if (!savedFile || !req.file) {
+      res.status(400).json({ error: 'Failed to save uploaded file.' });
+      return;
+    }
+    const storagePath = savedFile.storagePath;
+    const fileSizeBytes = savedFile.fileSizeBytes;
+    const mimeType = req.file.mimetype;
     const actorId = (req as any).user.id as string;
+    const document = await runWithTenantContext(
+      {
+        userId: actorId,
+        patientId: effectivePatientId,
+      },
+      async () => {
+        return prisma.healthDocument.create({
+          data: {
+            userId: effectivePatientId,
+            title: title || 'Uploaded medical report',
+            category: 'LAB_REPORT',
+            issuingFacility: issuingFacility || undefined,
+            storagePath,
+            fileSizeBytes,
+            mimeType,
+            processingStatus: 'PENDING',
+          },
+        });
+      }
+    );
+    documentCreated = true;
     try {
       await logAuditEvent({
         userId: effectivePatientId,
@@ -1741,20 +1799,23 @@ docRouter.post('/upload-report', requireAuth, reportUpload.single('file'), async
         createdAt: document.createdAt,
       },
       extraction: {
-        provider: env.MEDICAL_REPORT_OCR_PROVIDER === 'synthetic' ? 'SYNTHETIC_DEMO_OCR' : 'GOOGLE_CLOUD_VISION',
+        provider: env.SARVAM_API_KEY ? 'SARVAM_DOC_AI' : 'LOCAL_FALLBACK',
         status: 'PENDING',
-        message: env.MEDICAL_REPORT_OCR_PROVIDER === 'synthetic'
-          ? 'Report securely saved. Synthetic demo OCR is preparing a clearly labelled sample result.'
-          : 'Report securely saved. Google Cloud Vision is extracting text.',
+        message: env.SARVAM_API_KEY
+          ? 'Report securely saved. Sarvam Document AI is extracting structured clinical data.'
+          : 'Report securely saved. High-fidelity OCR fallback parser is extracting clinical data.',
       },
     });
   } catch (err: any) {
     if (savedFile && !documentCreated) await deletePrivateFile(savedFile.storagePath);
     res.status(getAuthErrorStatus(err)).json({ error: err.message });
   }
-});
+};
 
-// 1. Get all stored documents with parsed data
+docRouter.post('/upload-report', requireAuth, preserveTenantContext(reportUpload.single('file')), handleDocumentUpload);
+docRouter.post('/', requireAuth, preserveTenantContext(reportUpload.single('file')), handleDocumentUpload);
+
+// 1. Get all stored documents with parsed data and distinct status separation
 docRouter.get('/', requireAuth, async (req: Request, res: Response): Promise<void> => {
   try {
     const { effectivePatientId } = await resolvePatientContext(req, 'VIEW_DOCUMENTS');
@@ -1772,78 +1833,358 @@ docRouter.get('/', requireAuth, async (req: Request, res: Response): Promise<voi
         extractedData: true,
         fileSizeBytes: true,
         mimeType: true,
+        storagePath: true,
         createdAt: true,
       },
     });
     res.json({
-      documents: documents.map((doc) => ({
-        ...doc,
-        extractedData: doc.extractedData ? JSON.parse(doc.extractedData) : null,
-      })),
+      documents: documents.map((doc) => {
+        let parsedExtracted: any = null;
+        try {
+          parsedExtracted = doc.extractedData ? JSON.parse(doc.extractedData) : null;
+        } catch {}
+        return {
+          id: doc.id,
+          title: doc.title,
+          category: doc.category,
+          issuingFacility: doc.issuingFacility,
+          reportDate: doc.reportDate,
+          notes: doc.notes,
+          processingStatus: doc.processingStatus,
+          ocrStatus: doc.processingStatus,
+          doctorReviewStatus: parsedExtracted?.doctorReviewStatus || 'PENDING',
+          extractedData: parsedExtracted,
+          fileSizeBytes: doc.fileSizeBytes,
+          mimeType: doc.mimeType,
+          hasOriginalFile: Boolean(doc.storagePath),
+          createdAt: doc.createdAt,
+        };
+      }),
     });
   } catch (err: any) {
     res.status(getAuthErrorStatus(err)).json({ error: err.message });
   }
 });
 
+// Helper to verify user has read access to the specified document
+async function verifyDocumentAccess(documentId: string, actor: any): Promise<any | null> {
+  const document = await prisma.healthDocument.findUnique({
+    where: { id: documentId },
+  });
+  if (!document) return null;
+
+  // Direct patient access
+  if (document.userId === actor.id) return document;
+
+  // Clinician access
+  if (actor.isClinician) {
+    const assignment = await prisma.doctorPatientAssignment.findFirst({
+      where: { doctorId: actor.id, patientId: document.userId, status: 'ACTIVE' },
+    });
+    if (assignment) return document;
+
+    const careTeam = await prisma.patientCareTeamMember.findFirst({
+      where: { patientId: document.userId, userId: actor.id, status: 'ACTIVE' },
+    });
+    if (careTeam) return document;
+
+    return null;
+  }
+
+  // Caregiver access
+  const consent = await prisma.caregiverConsent.findFirst({
+    where: {
+      patientId: document.userId,
+      caregiverEmail: actor.email,
+      status: 'ACTIVE',
+      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+    },
+  });
+  if (consent) return document;
+
+  return null;
+}
+
+function buildDevelopmentFallbackBuffer(document: { title: string; mimeType?: string | null }): { buffer: Buffer; ext: string } {
+  if (document.mimeType === 'text/plain') {
+    const textContent = `Diagnostic Report: ${document.title}\nPatient: Ramesh Deshmukh\nFacility: Metropolis Healthcare Pune\n\nFasting Blood Sugar: 118 mg/dL\nHbA1c: 6.3%\nPost-Prandial Glucose: 142 mg/dL`;
+    return { buffer: Buffer.from(textContent, 'utf8'), ext: '.txt' };
+  }
+  if (document.mimeType?.startsWith('image/')) {
+    return {
+      buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64'),
+      ext: '.png',
+    };
+  }
+  return {
+    buffer: generateValidSyntheticPdfBuffer(document.title),
+    ext: '.pdf',
+  };
+}
+
+async function loadDocumentFileContent(document: { id?: string; storagePath?: string | null; title: string; mimeType?: string | null }): Promise<{ buffer: Buffer; ext: string } | null> {
+  try {
+    if (document.storagePath) {
+      const stored = await readPrivateFile(document.storagePath);
+      if (stored) {
+        return stored;
+      }
+    }
+
+    // Never fabricate synthetic clinical report bytes when a persisted file is missing in production.
+    if (env.NODE_ENV === 'production') {
+      return null;
+    }
+
+    return buildDevelopmentFallbackBuffer(document);
+  } catch (err: any) {
+    safeClinicalLog('error', `Failed to load private document file: ${err?.message}`);
+    return null;
+  }
+}
+
 docRouter.get('/:id/download', requireAuth, async (req: Request, res: Response): Promise<void> => {
   try {
-    const { effectivePatientId } = await resolvePatientContext(req, 'VIEW_DOCUMENTS');
-    const document = await prisma.healthDocument.findFirst({
-      where: { id: req.params.id, userId: effectivePatientId },
-      select: { storagePath: true, title: true, mimeType: true },
-    });
-    if (!document?.storagePath) {
-      res.status(404).json({ error: 'Original report not found.' });
+    const actor = (req as any).user;
+    const document = await verifyDocumentAccess(req.params.id, actor);
+    if (!document) {
+      res.status(404).json({ error: 'Original report not found or unauthorized.' });
       return;
     }
-    res.type(document.mimeType ?? 'application/octet-stream');
+
+    const stored = await loadDocumentFileContent(document);
+    if (!stored) {
+      res.status(404).json({ error: 'Original report file not found on storage volume.' });
+      return;
+    }
+
+    try {
+      await logAuditEvent({
+        userId: document.userId,
+        actorId: actor.id,
+        action: 'DOCUMENT_DOWNLOADED',
+        entityType: 'HealthDocument',
+        entityId: document.id,
+      });
+    } catch {
+      safeClinicalLog('error', 'Medical report download audit event could not be recorded');
+    }
+
     const extensionByMimeType: Record<string, string> = {
       'application/pdf': '.pdf',
       'image/jpeg': '.jpg',
       'image/png': '.png',
       'image/webp': '.webp',
     };
-    const extension = extensionByMimeType[document.mimeType ?? ''] ?? '';
-    res.download(
-      document.storagePath,
-      `${document.title.replace(/[^a-zA-Z0-9_-]/g, '_')}${extension}`,
-    );
+    const extension = extensionByMimeType[document.mimeType ?? ''] ?? (stored.ext || '.pdf');
+    const safeFilename = `${document.title.replace(/[^a-zA-Z0-9_-]/g, '_')}${extension}`;
+    res.type(document.mimeType ?? 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"`);
+    res.send(stored.buffer);
   } catch (err: any) {
     res.status(getAuthErrorStatus(err)).json({ error: err.message });
   }
 });
 
-// Inline preview endpoint used by the OCR review screens. It has the same
-// patient-scope check as download, but deliberately keeps Content-Disposition
-// inline so PDFs and images can be compared with extracted text in-app.
+// Inline preview endpoint used by the OCR review screens.
 docRouter.get('/:id/preview', requireAuth, async (req: Request, res: Response): Promise<void> => {
   try {
-    const { effectivePatientId } = await resolvePatientContext(req, 'VIEW_DOCUMENTS');
-    const document = await prisma.healthDocument.findFirst({
-      where: { id: req.params.id, userId: effectivePatientId },
-      select: { storagePath: true, title: true, mimeType: true },
-    });
-    if (!document?.storagePath) {
-      res.status(404).json({ error: 'Original report not found.' });
+    const actor = (req as any).user;
+    const document = await verifyDocumentAccess(req.params.id, actor);
+    if (!document) {
+      res.status(404).json({ error: 'Original report not found or unauthorized.' });
       return;
     }
 
-    const resolvedPath = path.resolve(document.storagePath);
-    const storageRoot = `${path.resolve(env.STORAGE_DIR)}${path.sep}`;
-    if (!resolvedPath.startsWith(storageRoot)) {
-      res.status(404).json({ error: 'Original report not found.' });
+    const stored = await loadDocumentFileContent(document);
+    if (!stored) {
+      res.status(404).json({ error: 'Original report file not found on storage volume.' });
       return;
     }
 
-    res.type(document.mimeType ?? 'application/octet-stream');
+    res.type(document.mimeType ?? 'application/pdf');
     res.setHeader('Content-Disposition', 'inline');
-    // This route is only reachable after authentication and is consumed as a
-    // blob/embedded viewer by the trusted app. The global DENY header would
-    // prevent the PDF viewer from rendering inside the report-review modal.
     res.removeHeader('X-Frame-Options');
-    res.setHeader('Content-Security-Policy', `default-src 'none'; frame-ancestors ${env.WEB_APP_URL}`);
-    res.sendFile(resolvedPath);
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.setHeader('Content-Security-Policy', `default-src 'none'; frame-ancestors *`);
+    res.send(stored.buffer);
+  } catch (err: any) {
+    res.status(getAuthErrorStatus(err)).json({ error: err.message });
+  }
+});
+
+// Doctor Clinical Review Endpoint
+const reviewReportSchema = z.object({
+  reviewStatus: z.enum(['REVIEWED', 'NEEDS_ATTENTION']),
+  clinicalNotes: z.string().max(2000).optional(),
+  commitToTimeline: z.boolean().optional(),
+});
+
+docRouter.post('/:id/review', requireAuth, async (req: Request, res: Response): Promise<void> => {
+  try {
+    const actor = (req as any).user;
+    if (!actor?.isClinician) {
+      res.status(403).json({ error: 'Only authorized clinicians can record clinical reviews on medical reports.' });
+      return;
+    }
+
+    const { id } = req.params;
+    const { reviewStatus, clinicalNotes, commitToTimeline } = reviewReportSchema.parse(req.body);
+
+    const doc = await prisma.healthDocument.findUnique({
+      where: { id },
+    });
+
+    if (!doc) {
+      res.status(404).json({ error: 'Medical report not found.' });
+      return;
+    }
+
+    // Verify clinician is assigned to this patient or on care team
+    const assignment = await prisma.doctorPatientAssignment.findUnique({
+      where: { doctorId_patientId: { doctorId: actor.id, patientId: doc.userId } },
+    });
+    const careTeamMember = assignment ? null : await prisma.patientCareTeamMember.findFirst({
+      where: { patientId: doc.userId, userId: actor.id, status: 'ACTIVE' },
+    });
+    if (!assignment && !careTeamMember) {
+      res.status(403).json({ error: 'Forbidden: You are not assigned to this patient.' });
+      return;
+    }
+
+    let parsedExtracted: any = {};
+    try {
+      parsedExtracted = doc.extractedData ? JSON.parse(doc.extractedData) : {};
+    } catch {}
+
+    // Clinician identity & practice membership verification
+    const clinicianUser = await prisma.user.findUnique({
+      where: { id: actor.id },
+      include: {
+        profile: { select: { fullName: true } },
+        practiceMemberships: {
+          where: { isActive: true },
+          select: { practiceId: true, role: true },
+        },
+      },
+    });
+
+    if (!clinicianUser || !clinicianUser.isClinician) {
+      res.status(403).json({ error: 'Only authorized clinical personnel can review medical documents.' });
+      return;
+    }
+
+    const reviewerName = clinicianUser.profile?.fullName || (actor.email ? `Dr. ${actor.email.split('@')[0]}` : 'Assigned Clinician');
+    const nowIso = new Date().toISOString();
+
+    parsedExtracted.doctorReviewStatus = reviewStatus;
+    parsedExtracted.doctorNotes = clinicalNotes?.trim() || null;
+    parsedExtracted.reviewedById = actor.id;
+    parsedExtracted.reviewedByName = reviewerName;
+    parsedExtracted.reviewedAt = nowIso;
+
+    // Update document within tenant context
+    const updated = await runWithTenantContext(
+      { userId: actor.id, patientId: doc.userId },
+      async () => {
+        return prisma.healthDocument.update({
+          where: { id: doc.id },
+          data: {
+            extractedData: JSON.stringify(parsedExtracted),
+          },
+        });
+      }
+    );
+
+    // If an associated OCR job exists, update its approvalStatus
+    const latestJob = await prisma.ocrProcessingJob.findFirst({
+      where: { documentId: doc.id },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (latestJob) {
+      await runWithTenantContext(
+        { userId: actor.id, patientId: doc.userId },
+        async () => {
+          await prisma.ocrProcessingJob.update({
+            where: { id: latestJob.id },
+            data: {
+              approvalStatus: reviewStatus === 'REVIEWED' ? 'APPROVED' : 'NEEDS_ATTENTION',
+              reviewedById: actor.id,
+              reviewedAt: new Date(),
+              reviewerNotes: clinicalNotes?.trim() || null,
+            },
+          });
+        }
+      );
+    }
+
+    // If clinician explicitly requested committing verified lab values to timeline
+    if (commitToTimeline && reviewStatus === 'REVIEWED' && parsedExtracted.structuredLabs) {
+      const labs = parsedExtracted.structuredLabs;
+      const itemsToIngest: Array<{ type: string; val: number; unit: string; context: string }> = [];
+      if (labs.hba1c?.standardizedValue) {
+        itemsToIngest.push({ type: 'HBA1C', val: labs.hba1c.standardizedValue, unit: '%', context: 'LAB_CONFIRMED' });
+      }
+      if (labs.fastingBloodGlucose?.standardizedValue) {
+        itemsToIngest.push({ type: 'BLOOD_GLUCOSE', val: labs.fastingBloodGlucose.standardizedValue, unit: 'mg/dL', context: 'FASTING' });
+      }
+      if (labs.postPrandialGlucose?.standardizedValue) {
+        itemsToIngest.push({ type: 'BLOOD_GLUCOSE', val: labs.postPrandialGlucose.standardizedValue, unit: 'mg/dL', context: 'POST_MEAL_2HR' });
+      }
+
+      for (const item of itemsToIngest) {
+        const idempotencyKey = `doc_rev_${doc.id}_${item.type}_${item.context}_${item.val}`;
+        await runWithTenantContext(
+          { userId: actor.id, patientId: doc.userId },
+          async () => {
+            await prisma.healthObservation.upsert({
+              where: { idempotencyKey },
+              create: {
+                userId: doc.userId,
+                type: item.type,
+                numericValue: item.val,
+                unit: item.unit,
+                context: item.context,
+                sourceProvenance: 'LAB_REPORT',
+                idempotencyKey,
+              },
+              update: {},
+            });
+          }
+        );
+      }
+    }
+
+    try {
+      await logAuditEvent({
+        userId: doc.userId,
+        actorId: actor.id,
+        action: 'DOCUMENT_REVIEWED',
+        entityType: 'HealthDocument',
+        entityId: doc.id,
+        metadata: {
+          reviewStatus,
+          notes: clinicalNotes?.trim(),
+          committed: Boolean(commitToTimeline && reviewStatus === 'REVIEWED'),
+        },
+      });
+    } catch {
+      safeClinicalLog('error', 'Medical report review audit event could not be recorded');
+    }
+
+    res.json({
+      success: true,
+      message: `Medical report review recorded as ${reviewStatus}.`,
+      document: {
+        id: updated.id,
+        title: updated.title,
+        category: updated.category,
+        processingStatus: updated.processingStatus,
+        ocrStatus: updated.processingStatus,
+        doctorReviewStatus: reviewStatus,
+        extractedData: parsedExtracted,
+      },
+    });
   } catch (err: any) {
     res.status(getAuthErrorStatus(err)).json({ error: err.message });
   }
@@ -1853,6 +2194,13 @@ docRouter.delete('/:id', requireAuth, async (req: Request, res: Response): Promi
   try {
     const { effectivePatientId } = await resolvePatientContext(req, 'MANAGE_DOCUMENTS');
     const { id } = req.params;
+    const existing = await prisma.healthDocument.findFirst({
+      where: { id, userId: effectivePatientId },
+      select: { id: true, storagePath: true },
+    });
+    if (existing?.storagePath) {
+      await deletePrivateFile(existing.storagePath);
+    }
     await prisma.healthDocument.deleteMany({ where: { id, userId: effectivePatientId } });
     res.json({ success: true });
   } catch (err: any) {
@@ -1887,6 +2235,7 @@ consultRouter.post('/prepare', requireAuth, async (req: Request, res: Response):
 });
 
 app.use('/api/consultations', consultRouter);
+app.use('/api/consultations', consultationsExternalRouter);
 
 // ==========================================
 // 7. CAREGIVER CONSENTS ROUTER
@@ -2453,11 +2802,16 @@ app.get('/api/timeline', requireAuth, async (req: Request, res: Response): Promi
   try {
     const { effectivePatientId } = await resolvePatientContext(req, 'VIEW_OBSERVATIONS');
 
-    const [observations, tasks, consultations, documents] = await Promise.all([
+    const [observations, tasks, consultations, documents, notes] = await Promise.all([
       prisma.healthObservation.findMany({ where: { userId: effectivePatientId }, orderBy: { observedAt: 'desc' }, take: 20 }),
       prisma.careTask.findMany({ where: { userId: effectivePatientId }, orderBy: { createdAt: 'desc' }, take: 10 }),
       prisma.consultationPrep.findMany({ where: { userId: effectivePatientId }, orderBy: { createdAt: 'desc' }, take: 10 }),
       prisma.healthDocument.findMany({ where: { userId: effectivePatientId }, orderBy: { reportDate: 'desc' }, take: 10 }),
+      prisma.consultationNote.findMany({
+        where: { userId: effectivePatientId, sharedWithPatient: true, status: 'APPROVED' },
+        orderBy: { approvedAt: 'desc' },
+        take: 10,
+      }),
     ]);
 
     const events = [
@@ -2488,6 +2842,15 @@ app.get('/api/timeline', requireAuth, async (req: Request, res: Response): Promi
         title: `Document: ${d.title}`,
         details: `Facility: ${d.issuingFacility || 'Saved Report'}`,
         occurredAt: d.reportDate,
+      })),
+      ...notes.map((n) => ({
+        id: `note-${n.id}`,
+        eventType: 'CONSULTATION_NOTE',
+        title: `Doctor Consultation Note (${n.clinicianName || 'Treating Clinician'})`,
+        details: n.approvedNoteText || n.structuredNote || 'Clinical consultation finalized.',
+        clinicianName: n.clinicianName,
+        facilityName: 'Practice Clinic',
+        occurredAt: n.approvedAt || n.createdAt,
       })),
     ].sort((a, b) => new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime());
 
@@ -2540,7 +2903,13 @@ app.get('/api/analytics/longitudinal', requireAuth, async (req: Request, res: Re
 app.get('/api/navigation/emergency-contacts', requireAuth, async (req: Request, res: Response): Promise<void> => {
   try {
     const { effectivePatientId } = await resolvePatientContext(req, 'VIEW_OBSERVATIONS');
-    const consents = await prisma.caregiverConsent.findMany({ where: { patientId: effectivePatientId, status: 'ACTIVE' } });
+    const consents = await prisma.caregiverConsent.findMany({
+      where: {
+        patientId: effectivePatientId,
+        status: 'ACTIVE',
+        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+      },
+    });
 
     res.json({
       hotlines: [
@@ -2591,7 +2960,14 @@ app.use('/api/emergency', emergencyRouter);
 app.use('/api/abha', syntheticAbhaRouter);
 app.use('/api/damu', damuRouter);
 app.use('/api/agent', agentRouter);
+app.use('/api/ai/agent', agentRouter);
 app.use('/api/fhir/r4', fhirRouter);
+app.use('/api/practice', practiceRouter);
+app.use('/api/billing', practiceBillingRouter);
+app.use('/api/cgm', cgmRouter);
+app.use('/api/ocr', sarvamOcrRouter);
+app.use('/api/care-team', careTeamRouter);
+app.use('/api/clinical-review', clinicalReviewRouter);
 
 app.get('/api/audit-logs', requireAuth, async (req: Request, res: Response): Promise<void> => {
   try {
@@ -2618,13 +2994,18 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 
   const incidentId = randomBytes(8).toString('hex');
   const statusCode = err.status || err.statusCode || 500;
-  const message = err.message || 'Internal server error.';
+  const isProd = env.NODE_ENV === 'production';
+  const rawMessage = err.message || 'Internal server error.';
+  const message = (statusCode >= 500 && isProd)
+    ? 'An unexpected clinical service error occurred. Please contact practice support.'
+    : rawMessage;
   const code = err.code || (statusCode >= 500 ? 'INTERNAL_SERVER_ERROR' : 'REQUEST_ERROR');
 
-  safeClinicalLog('error', `[Unhandled Exception] incident=${incidentId} code=${code}: ${message}`, {
+  safeClinicalLog('error', `[Unhandled Exception] incident=${incidentId} code=${code}: ${rawMessage}`, {
     statusCode,
     code,
     incidentId,
+    stack: err.stack,
   });
 
   res.status(statusCode).json({
@@ -2651,8 +3032,8 @@ if (process.env.NODE_ENV !== 'test') {
       }
     }
 
-    const httpServer = app.listen(env.PORT, () => {
-      console.log(`AarogyaDamu Core API running on port ${env.PORT} [${env.NODE_ENV}]`);
+    const httpServer = app.listen(env.PORT, '0.0.0.0', () => {
+      console.log(`AarogyaDamu Core API running on 0.0.0.0:${env.PORT} [${env.NODE_ENV}/${env.APP_ENV}]`);
       if (env.ENABLE_AGENT_EXPIRY_WORKER) {
         globalAgentExpiryWorker.start();
       }
@@ -2671,6 +3052,7 @@ if (process.env.NODE_ENV !== 'test') {
       }, 10_000);
       shutdownTimeout.unref();
 
+      httpServer.closeIdleConnections?.();
       httpServer.close(() => {
         void prisma.$disconnect().then(
           () => {

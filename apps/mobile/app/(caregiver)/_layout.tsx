@@ -1,27 +1,47 @@
 import React from 'react';
 import { Tabs } from 'expo-router';
+import { Platform } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Home, CheckSquare, Pill, Activity, User } from 'lucide-react-native';
 import WorkspaceGuard from '../../src/features/coordination/WorkspaceGuard';
 import { theme } from '../../src/theme';
 
 export default function CaregiverLayout() {
+  const insets = useSafeAreaInsets();
+  const bottomPadding =
+    insets.bottom > 0
+      ? insets.bottom
+      : Platform.OS === 'android'
+        ? 10
+        : 8;
+
+  const tabHeight = 58 + bottomPadding;
+
   return (
     <WorkspaceGuard role="CAREGIVER">
       <Tabs
         screenOptions={{
           headerShown: false,
           tabBarActiveTintColor: theme.colors.primary,
-          tabBarInactiveTintColor: '#64748B',
+          tabBarInactiveTintColor: theme.colors.textMuted,
+          sceneStyle: { paddingTop: insets.top },
           tabBarStyle: {
-            height: 64,
-            paddingBottom: 8,
+            height: tabHeight,
+            paddingBottom: bottomPadding,
             paddingTop: 6,
-            backgroundColor: '#FFFFFF',
-            borderTopColor: '#E2E8F0',
+            backgroundColor: theme.colors.white,
+            borderTopColor: theme.colors.borderGhost,
+            borderTopWidth: 1,
+            elevation: 6,
+            shadowColor: '#004D4D',
+            shadowOffset: { width: 0, height: -3 },
+            shadowOpacity: 0.06,
+            shadowRadius: 10,
           },
           tabBarLabelStyle: {
-            fontSize: 11,
-            fontWeight: '600',
+            fontSize: 10,
+            fontWeight: '700',
+            letterSpacing: 0.2,
           },
         }}
       >

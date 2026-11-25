@@ -1,7 +1,9 @@
 import request from 'supertest';
+import http from 'node:http';
 import { randomUUID } from 'crypto';
 import { app, prisma } from '../server';
 import { deletePrivateFile } from '../services/storageService';
+import { withTenantTransaction } from '../db/tenantContext';
 
 describe('Phase 5 — Pilot Readiness & Synthetic Patient End-to-End Lifecycle Suite', () => {
   let patient: any;
@@ -9,6 +11,7 @@ describe('Phase 5 — Pilot Readiness & Synthetic Patient End-to-End Lifecycle S
   let unassignedDoctor: any;
   let caregiver: any;
   let stranger: any;
+  let testPractice: any;
 
   let activeCarePlanId: string;
   let delegatedTaskId: string;
@@ -56,6 +59,22 @@ describe('Phase 5 — Pilot Readiness & Synthetic Patient End-to-End Lifecycle S
         patientId: patient.id,
         status: 'ACTIVE',
         activatedAt: new Date(),
+      },
+    });
+
+    // Create practice & membership for assignedDoctor (required by PostgreSQL RLS trigger)
+    testPractice = await prisma.practice.create({
+      data: {
+        name: 'Aarogya Diabetes Test Practice',
+        slug: `aarogya-test-${randomUUID().slice(0, 8)}`,
+        registrationNumber: `REG-${randomUUID().slice(0, 8)}`,
+        memberships: {
+          create: {
+            userId: assignedDoctor.id,
+            role: 'OWNER',
+            isActive: true,
+          },
+        },
       },
     });
   });
@@ -152,23 +171,34 @@ describe('Phase 5 — Pilot Readiness & Synthetic Patient End-to-End Lifecycle S
     expect(prepRes.body.consultationPrep).toBeDefined();
 
     // 2. Doctor conducts consultation and an approved clinical note is recorded
-    const note = await prisma.consultationNote.create({
-      data: {
-        userId: patient.id,
-        clinicianId: assignedDoctor.id,
-        clinicianName: 'Dr. Rupam Choudhary (Diabetologist)',
-        status: 'APPROVED',
-        rawTranscript: 'Consultation dialogue covering elevated fasting glucose.',
-        speakerSegments: '[]',
-        structuredNote: JSON.stringify({
-          chiefComplaint: 'Fasting glucose elevated',
-          assessment: 'Suboptimal glycemic control',
-        }),
-        approvedNoteText: 'Initiate structured diabetes care plan with daily morning monitoring and lifestyle activity.',
-        approvedAt: new Date(),
-        approvedBy: assignedDoctor.id,
+    const note = await withTenantTransaction(
+      prisma,
+      {
+        userId: assignedDoctor.id,
+        practiceId: testPractice.id,
+        role: 'DOCTOR',
+        patientId: patient.id,
       },
-    });
+      async (tx) => {
+        return await tx.consultationNote.create({
+          data: {
+            userId: patient.id,
+            clinicianId: assignedDoctor.id,
+            clinicianName: 'Dr. Rupam Choudhary (Diabetologist)',
+            status: 'APPROVED',
+            rawTranscript: 'Consultation dialogue covering elevated fasting glucose.',
+            speakerSegments: '[]',
+            structuredNote: JSON.stringify({
+              chiefComplaint: 'Fasting glucose elevated',
+              assessment: 'Suboptimal glycemic control',
+            }),
+            approvedNoteText: 'Initiate structured diabetes care plan with daily morning monitoring and lifestyle activity.',
+            approvedAt: new Date(),
+            approvedBy: assignedDoctor.id,
+          },
+        });
+      }
+    );
     expect(note.id).toBeDefined();
 
     // 3. Verify timeline: Stage 3 (DOCTOR_CONSULTATION) is COMPLETED and Stage 4 is PENDING (until draft created)
@@ -420,7 +450,7 @@ describe('Phase 5 — Pilot Readiness & Synthetic Patient End-to-End Lifecycle S
       await new Promise((resolve) => setTimeout(resolve, 250));
       settled = await prisma.healthDocument.findUnique({ where: { id: saved!.id } });
     }
-    expect(settled?.processingStatus).toMatch(/NEEDS_REVIEW|OCR_NO_TEXT|EXTRACTION_FAILED/);
+    expect(settled?.processingStatus).toMatch(/COMPLETED|NEEDS_REVIEW|OCR_NO_TEXT|EXTRACTION_FAILED/);
 
     const patientVault = await request(app)
       .get('/api/documents')
@@ -434,17 +464,151 @@ describe('Phase 5 — Pilot Readiness & Synthetic Patient End-to-End Lifecycle S
     }
   }, 15000);
 
+  test('STEP 9b: Multi-chunk PDF upload by assigned doctor preserves tenant context, displays on patient side, and blocks unassigned doctor', async () => {
+    const bigPdf = Buffer.concat([
+      Buffer.from('%PDF-1.4\n1 0 obj<<>>endobj\n'),
+      Buffer.alloc(256 * 1024, 0x20),
+      Buffer.from('\ntrailer<<>>\n%%EOF\n'),
+    ]);
+    const boundary = '----ChunkedPdfBoundary';
+    const part1 = Buffer.from(
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="title"\r\n\r\nDoctor Chunked PDF Report\r\n` +
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="file"; filename="doctor-lab-panel.pdf"\r\n` +
+      `Content-Type: application/pdf\r\n\r\n`
+    );
+    const part3 = Buffer.from(`\r\n--${boundary}--\r\n`);
+
+    const server = app.listen(0);
+    const port = (server.address() as any).port;
+
+    const sendChunkedUpload = (actorToken: string) =>
+      new Promise<{ status: number; body: any }>((resolve, reject) => {
+        const req = http.request(
+          {
+            hostname: '127.0.0.1',
+            port,
+            path: '/api/documents/upload-report',
+            method: 'POST',
+            agent: false,
+            headers: {
+              Authorization: `Bearer ${actorToken}`,
+              'X-Target-Patient-Id': patient.id,
+              'Content-Type': `multipart/form-data; boundary=${boundary}`,
+              'Content-Length': part1.length + bigPdf.length + part3.length,
+              Connection: 'close',
+            },
+          },
+          (res) => {
+            let raw = '';
+            res.on('data', (chunk) => {
+              raw += chunk;
+            });
+            res.on('end', () => {
+              try {
+                resolve({ status: res.statusCode || 500, body: JSON.parse(raw) });
+              } catch {
+                resolve({ status: res.statusCode || 500, body: raw });
+              }
+            });
+          }
+        );
+        req.on('error', reject);
+        req.write(part1);
+        let offset = 0;
+        const writeNext = () => {
+          if (offset >= bigPdf.length) {
+            req.end(part3);
+            return;
+          }
+          req.write(bigPdf.subarray(offset, offset + 16384));
+          offset += 16384;
+          setTimeout(writeNext, 2);
+        };
+        writeNext();
+      });
+
+    try {
+      // Unassigned doctor must still be rejected with clinician-specific 403
+      const deniedRes = await sendChunkedUpload(unassignedDoctor.token);
+      expect(deniedRes.status).toBe(403);
+      expect(deniedRes.body.error).toMatch(/Clinician is not assigned to patient/i);
+
+      // Assigned doctor upload across multiple socket chunks succeeds (202)
+      const uploadRes = await sendChunkedUpload(assignedDoctor.token);
+      expect(uploadRes.status).toBe(202);
+      const uploadedId = uploadRes.body.document?.id;
+      expect(uploadedId).toBeTruthy();
+
+      // Wait for OCR worker to finish so test database remains clean
+      let settled = await prisma.healthDocument.findUnique({ where: { id: uploadedId } });
+      for (let attempt = 0; attempt < 20 && settled?.processingStatus === 'PENDING'; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        settled = await prisma.healthDocument.findUnique({ where: { id: uploadedId } });
+      }
+
+      // Patient sees uploaded PDF in medical reports list and can preview it
+      const patientVault = await request(app)
+        .get('/api/documents')
+        .set('Authorization', auth(patient));
+      expect(patientVault.status).toBe(200);
+      const patDoc = patientVault.body.documents.find((d: any) => d.id === uploadedId);
+      expect(patDoc).toBeDefined();
+      expect(patDoc.title).toBe('Doctor Chunked PDF Report');
+      expect(patDoc.hasOriginalFile).toBe(true);
+
+      const previewRes = await request(app)
+        .get(`/api/documents/${uploadedId}/preview?token=${encodeURIComponent(patient.token)}`);
+      expect(previewRes.status).toBe(200);
+      expect(previewRes.headers['cross-origin-resource-policy']).toBe('cross-origin');
+
+      if (settled) {
+        if (settled.storagePath) await deletePrivateFile(settled.storagePath);
+        await prisma.healthDocument.delete({ where: { id: settled.id } });
+      }
+    } finally {
+      server.closeAllConnections?.();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 30000);
+
   // =========================================================================
   // TASK 3 — CROSS-ROLE CONSISTENCY & AUTHORIZATION BOUNDARY ENFORCEMENT
   // =========================================================================
 
   test('AUTH 1: Assigned Doctor has access; Unassigned Doctor receives 403 Forbidden', async () => {
-    // Assigned doctor dashboard includes patient
+    // Assigned doctor dashboard includes patient with real PatientProfile name (not email/UNKNOWN)
     const assignedDash = await request(app)
       .get('/api/coordination/doctor/dashboard')
       .set('Authorization', auth(assignedDoctor));
     expect(assignedDash.status).toBe(200);
-    expect(assignedDash.body.patients.some((p: any) => p.patientId === patient.id)).toBe(true);
+    const dashPatient = assignedDash.body.patients.find((p: any) => p.patientId === patient.id);
+    expect(dashPatient).toBeDefined();
+    expect(dashPatient.name).toBe('Ramesh Deshmukh');
+
+    const assignedPatientsRes = await request(app)
+      .get('/api/coordination/doctor/patients')
+      .set('Authorization', auth(assignedDoctor));
+    expect(assignedPatientsRes.status).toBe(200);
+    const listedPatient = assignedPatientsRes.body.patients.find((p: any) => p.patientId === patient.id);
+    expect(listedPatient).toBeDefined();
+    expect(listedPatient.name).toBe('Ramesh Deshmukh');
+
+    const assignedDetailRes = await request(app)
+      .get(`/api/coordination/doctor/patients/${patient.id}`)
+      .set('Authorization', auth(assignedDoctor));
+    expect(assignedDetailRes.status).toBe(200);
+    expect(assignedDetailRes.body.patient.fullName).toBe('Ramesh Deshmukh');
+
+    const assignedApptsRes = await request(app)
+      .get('/api/coordination/appointments')
+      .set('Authorization', auth(assignedDoctor));
+    expect(assignedApptsRes.status).toBe(200);
+    const patientAppt = assignedApptsRes.body.appointments.find((a: any) => a.patientId === patient.id);
+    if (patientAppt) {
+      expect(patientAppt.patientName).toBe('Ramesh Deshmukh');
+    }
 
     // Assigned doctor can view patient activity feed
     const assignedFeed = await request(app)

@@ -49,11 +49,21 @@ describe('AarogyaDamu Terminology & LOINC Integration Suite', () => {
 
   describe('LOINC & UCUM Terminology', () => {
     it('maps glucose by specimen and timing context', () => {
-      const pocFasting = resolveLoincCoding({ type: 'BLOOD_GLUCOSE', context: 'FASTING', provenance: 'PATIENT_ENTERED' });
-      expect(pocFasting?.code).toBe(LOINC_CODES.GLUCOSE_BLOOD_GLUCOMETER.code);
+      const pocFasting = resolveLoincCoding({ type: 'BLOOD_GLUCOSE', context: 'FASTING', provenance: 'PATIENT_ENTERED', unit: 'mg/dL' });
+      expect(pocFasting?.code).toBe('41653-7');
+      expect(pocFasting?.display).toBe('Glucose [Mass/volume] in Capillary blood by Glucometer');
 
-      const labFasting = resolveLoincCoding({ type: 'BLOOD_GLUCOSE', context: 'FASTING', provenance: 'LAB_CONFIRMED' });
-      expect(labFasting?.code).toBe(LOINC_CODES.GLUCOSE_FASTING_SERUM.code);
+      const labFasting = resolveLoincCoding({ type: 'BLOOD_GLUCOSE', context: 'FASTING', provenance: 'LAB_CONFIRMED', unit: 'mg/dL' });
+      expect(labFasting?.code).toBe('1558-6');
+      expect(labFasting?.display).toBe('Fasting glucose [Mass/volume] in Serum or Plasma');
+
+      const molarLabFasting = resolveLoincCoding({ type: 'BLOOD_GLUCOSE', context: 'FASTING', provenance: 'LAB_CONFIRMED', unit: 'mmol/L' });
+      expect(molarLabFasting?.code).toBe('14771-0');
+      expect(molarLabFasting?.display).toBe('Fasting glucose [Moles/volume] in Serum or Plasma');
+
+      const molarBloodRandom = resolveLoincCoding({ type: 'BLOOD_GLUCOSE', context: 'RANDOM', unit: 'mmol/L' });
+      expect(molarBloodRandom?.code).toBe('15074-8');
+      expect(molarBloodRandom?.display).toBe('Glucose [Moles/volume] in Blood');
 
       const postMeal = resolveLoincCoding({ type: 'BLOOD_GLUCOSE', context: 'POST_MEAL_2HR' });
       expect(postMeal?.code).toBe(LOINC_CODES.GLUCOSE_POST_MEAL_2HR.code);

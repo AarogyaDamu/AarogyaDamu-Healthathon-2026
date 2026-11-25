@@ -14,9 +14,11 @@
     "prisma:migrate": "node scripts/prisma-command.cjs migrate dev --name init",
     "prisma:deploy": "node scripts/prisma-command.cjs migrate deploy",
     "prisma:status": "node scripts/prisma-command.cjs migrate status",
+    "db:provision": "node scripts/provision-prod-db.cjs",
     "prisma:seed": "tsx prisma/seed.ts",
     "prisma:seed:staging": "tsx scripts/seed-staging-demo.ts",
     "seed:staging": "tsx scripts/seed-staging-demo.ts",
+    "seed:pilot": "tsx scripts/seed-pilot-synthetic.ts",
     "test": "node scripts/run-tests.cjs"
   },
   "dependencies": {

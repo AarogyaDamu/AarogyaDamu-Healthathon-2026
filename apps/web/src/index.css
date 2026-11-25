@@ -4,17 +4,29 @@
 
 @layer base {
   :root {
-    --brand-teal: #0f766e;
+    --brand-teal: #0d9488;
     --brand-teal-light: #f0fdfa;
     --brand-teal-border: #ccfbf1;
+    --navy: #101A2E;
+    --navy-surface: #17243A;
+    --clinical-bg: #F4F7FA;
+    --text-primary: #172033;
+    --text-secondary: #65748B;
+    --border: #E2E8F0;
+    --risk-high: #E45B66;
+    --risk-warning: #E5A52E;
+    --risk-success: #159B77;
+    --card-radius: 0.75rem;
+    --input-h: 2.25rem;
+    --btn-h: 2.25rem;
   }
 
   body {
     margin: 0;
     padding: 0;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    background-color: #f8fafc;
-    color: #0f172a;
+    background-color: var(--clinical-bg);
+    color: var(--text-primary);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
@@ -25,7 +37,7 @@
 
   /* High contrast focus ring for accessibility */
   :focus-visible {
-    outline: 2px solid #0f766e !important;
+    outline: 2px solid var(--brand-teal) !important;
     outline-offset: 2px;
   }
 }

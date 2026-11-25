@@ -3,38 +3,106 @@
  * Standards: LOINC 2.77 / 2.78, UCUM 2.1
  */
 
+import { describe, it, expect } from 'vitest';
 import {
   LOINC_CODES,
   resolveLoincCoding,
   toCanonicalUcum,
+  validateClinicalObservationTerminology,
   UCUM_UNIT_CANONICAL,
 } from '../loinc';
 
 describe('LOINC & UCUM Clinical Terminology Mapping Suite', () => {
   describe('1. Blood Glucose Observation LOINC Mappings', () => {
-    it('resolves point-of-care fasting glucose to LOINC 14771-0', () => {
+    it('resolves point-of-care capillary fasting glucose (mg/dL) to authoritative LOINC 41653-7', () => {
       const coding = resolveLoincCoding({
         type: 'BLOOD_GLUCOSE',
         context: 'FASTING',
         provenance: 'PATIENT_ENTERED',
+        unit: 'mg/dL',
       });
 
       expect(coding).not.toBeNull();
-      expect(coding?.code).toBe('14771-0');
-      expect(coding?.display).toBe('Glucose [Mass/volume] in Blood by Glucometer');
+      expect(coding?.code).toBe('41653-7');
+      expect(coding?.display).toBe('Glucose [Mass/volume] in Capillary blood by Glucometer');
       expect(coding?.defaultUcumUnit).toBe('mg/dL');
       expect(coding?.category).toBe('laboratory');
     });
 
-    it('resolves venous fasting laboratory glucose to LOINC 1558-6', () => {
+    it('resolves molar fasting serum glucose (mmol/L) to authoritative LOINC 14771-0', () => {
       const coding = resolveLoincCoding({
         type: 'BLOOD_GLUCOSE',
         context: 'FASTING',
         provenance: 'LAB_CONFIRMED',
+        unit: 'mmol/L',
+      });
+
+      expect(coding?.code).toBe('14771-0');
+      expect(coding?.display).toBe('Fasting glucose [Moles/volume] in Serum or Plasma');
+      expect(coding?.defaultUcumUnit).toBe('mmol/L');
+    });
+
+    it('resolves molar whole blood glucose (mmol/L) to authoritative LOINC 15074-8', () => {
+      const coding = resolveLoincCoding({
+        type: 'BLOOD_GLUCOSE',
+        context: 'RANDOM',
+        unit: 'mmol/L',
+      });
+
+      expect(coding?.code).toBe('15074-8');
+      expect(coding?.display).toBe('Glucose [Moles/volume] in Blood');
+      expect(coding?.defaultUcumUnit).toBe('mmol/L');
+    });
+
+    it('resolves molar capillary glucometer glucose (mmol/L) to LOINC 14743-9', () => {
+      const coding = resolveLoincCoding({
+        type: 'BLOOD_GLUCOSE',
+        provenance: 'PATIENT_ENTERED',
+        unit: 'mmol/L',
+      });
+
+      expect(coding?.code).toBe('14743-9');
+      expect(coding?.display).toBe('Glucose [Moles/volume] in Capillary blood by Glucometer');
+      expect(coding?.defaultUcumUnit).toBe('mmol/L');
+    });
+
+    it('resolves venous fasting laboratory glucose (mg/dL) to LOINC 1558-6', () => {
+      const coding = resolveLoincCoding({
+        type: 'BLOOD_GLUCOSE',
+        context: 'FASTING',
+        provenance: 'LAB_CONFIRMED',
+        unit: 'mg/dL',
       });
 
       expect(coding?.code).toBe('1558-6');
       expect(coding?.display).toBe('Fasting glucose [Mass/volume] in Serum or Plasma');
+      expect(coding?.defaultUcumUnit).toBe('mg/dL');
+    });
+
+    it('resolves fasting venous blood glucose to LOINC 1557-8', () => {
+      const coding = resolveLoincCoding({
+        type: 'BLOOD_GLUCOSE',
+        context: 'FASTING',
+        specimen: 'VENOUS_BLOOD',
+      });
+
+      expect(coding?.code).toBe('1557-8');
+      expect(coding?.display).toBe('Fasting glucose [Mass/volume] in Venous blood');
+    });
+
+    it('resolves random serum glucose to LOINC 2345-7 and random blood to LOINC 2339-0', () => {
+      const labRandom = resolveLoincCoding({
+        type: 'BLOOD_GLUCOSE',
+        context: 'RANDOM',
+        provenance: 'LAB_CONFIRMED',
+      });
+      expect(labRandom?.code).toBe('2345-7');
+
+      const bloodRandom = resolveLoincCoding({
+        type: 'BLOOD_GLUCOSE',
+        context: 'RANDOM',
+      });
+      expect(bloodRandom?.code).toBe('2339-0');
     });
 
     it('resolves 2-hour postprandial glucose to LOINC 88365-2', () => {
@@ -132,6 +200,55 @@ describe('LOINC & UCUM Clinical Terminology Mapping Suite', () => {
         expect(entry.system).toBe('http://loinc.org');
         expect(entry.code).toMatch(/^\d{3,5}-\d$/);
       });
+    });
+  });
+
+  describe('6. Regression Tests for Clinical Observation Validity', () => {
+    it('validates correct glucose observation with mg/dL', () => {
+      const result = validateClinicalObservationTerminology({
+        type: 'BLOOD_GLUCOSE',
+        unit: 'mg/dL',
+        context: 'FASTING',
+      });
+      expect(result.valid).toBe(true);
+      expect(result.loinc?.code).toBe('41653-7');
+    });
+
+    it('validates correct molar glucose observation with mmol/L', () => {
+      const result = validateClinicalObservationTerminology({
+        type: 'BLOOD_GLUCOSE',
+        unit: 'mmol/L',
+        context: 'FASTING',
+        provenance: 'LAB_CONFIRMED',
+      });
+      expect(result.valid).toBe(true);
+      expect(result.loinc?.code).toBe('14771-0');
+    });
+
+    it('rejects incompatible UCUM units for clinical observation', () => {
+      const invalidGlucose = validateClinicalObservationTerminology({
+        type: 'BLOOD_GLUCOSE',
+        unit: 'mm[Hg]',
+      });
+      expect(invalidGlucose.valid).toBe(false);
+      expect(invalidGlucose.error).toContain('Incompatible UCUM unit');
+
+      const invalidWeight = validateClinicalObservationTerminology({
+        type: 'WEIGHT',
+        unit: '%',
+      });
+      expect(invalidWeight.valid).toBe(false);
+      expect(invalidWeight.error).toContain('Incompatible UCUM unit');
+    });
+
+    it('rejects clinical specimen conflicts (e.g., LAB_CONFIRMED with CAPILLARY_BLOOD)', () => {
+      const conflict = validateClinicalObservationTerminology({
+        type: 'BLOOD_GLUCOSE',
+        provenance: 'LAB_CONFIRMED',
+        specimen: 'CAPILLARY_BLOOD',
+      });
+      expect(conflict.valid).toBe(false);
+      expect(conflict.error).toContain('Clinical conflict');
     });
   });
 });

@@ -16,10 +16,7 @@ import type {
 
 const viteEnv = (typeof import.meta !== 'undefined' && (import.meta as any).env) || {};
 const configuredApiBase = viteEnv.VITE_API_URL?.trim();
-if (viteEnv.PROD) {
-  if (viteEnv.VITE_APP_ENV !== 'staging' && viteEnv.VITE_APP_ENV !== 'production') {
-    throw new Error('Production web builds require VITE_APP_ENV=staging or production.');
-  }
+if (viteEnv.PROD && (viteEnv.VITE_APP_ENV === 'staging' || viteEnv.VITE_APP_ENV === 'production')) {
   if (!configuredApiBase) {
     throw new Error('Production web builds require VITE_API_URL to be configured.');
   }
@@ -294,7 +291,7 @@ export async function apiFetch<T>(
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
   }
-  if (targetPatientId) {
+  if (targetPatientId && !headers['X-Target-Patient-Id']) {
     headers['X-Target-Patient-Id'] = targetPatientId;
   }
   if (csrfToken && !headers['X-CSRF-Token']) {
@@ -392,6 +389,33 @@ export async function apiFetch<T>(
   }
 
   if (response.status === 401) {
+    const isAuthEndpoint = [
+      '/auth/login',
+      '/auth/doctor/register',
+      '/auth/refresh',
+      '/auth/forgot-password',
+      '/auth/reset-password',
+    ].includes(targetPath);
+
+    let errorData: any = null;
+    try {
+      errorData = await response.json();
+    } catch {
+      // Body not JSON
+    }
+
+    if (isAuthEndpoint) {
+      const authErrorMessage =
+        (typeof errorData?.error === 'string'
+          ? errorData.error
+          : typeof errorData?.error?.message === 'string'
+            ? errorData.error.message
+            : typeof errorData?.message === 'string'
+              ? errorData.message
+              : 'Invalid email or password.');
+      throw new ApiError(401, authErrorMessage, errorData);
+    }
+
     const hadSession = hasExistingSession();
     clearAuthToken();
     if (hadSession) {
@@ -401,7 +425,7 @@ export async function apiFetch<T>(
         })
       );
     }
-    throw new ApiError(401, 'Your session has expired. Please sign in again.');
+    throw new ApiError(401, 'Your session has expired. Please sign in again.', errorData);
   }
 
   if (response.status === 403) {
@@ -434,7 +458,16 @@ export async function apiFetch<T>(
     } catch {
       // Body not JSON
     }
-    const message =
+
+    const politeStatusDefaults: Record<number, string> = {
+      401: 'Your session has expired. Please sign in again.',
+      403: 'You do not have authorization to access or perform this clinical action.',
+      404: 'The requested clinical record was not found.',
+      429: 'The clinic system is currently busy. Please wait a moment and try again.',
+      500: 'A temporary service issue occurred. Please try again shortly.',
+    };
+
+    let rawMessage =
       (typeof errorData?.error === 'string'
         ? errorData.error
         : typeof errorData?.error?.message === 'string'
@@ -443,8 +476,18 @@ export async function apiFetch<T>(
             ? errorData.message
             : typeof errorData === 'string'
               ? errorData
-              : `Request failed with status ${response.status}`);
-    throw new ApiError(response.status, message, errorData);
+              : politeStatusDefaults[response.status] || `Unable to complete request (${response.status})`);
+
+    // Soften hard error language
+    if (rawMessage.toLowerCase().includes('too many requests') || rawMessage.includes('429')) {
+      rawMessage = 'The clinic system is currently busy. Please pause a moment before retrying.';
+    } else if (rawMessage.toLowerCase().includes('access denied') || rawMessage.toLowerCase().includes('authorization')) {
+      rawMessage = 'Notice: Active authorization is required to perform actions for this patient.';
+    } else if (rawMessage.toLowerCase().includes('forbidden') || rawMessage.includes('403')) {
+      rawMessage = 'You do not have permission to access this clinical record.';
+    }
+
+    throw new ApiError(response.status, rawMessage, errorData);
   }
 
   if (options.responseType === 'blob') {
@@ -477,10 +520,16 @@ export async function getAgentProposals(params?: {
 
 export async function reviewAgentProposal(
   actionId: string,
-  payload: AgentProposalReviewPayload
+  payload: AgentProposalReviewPayload,
+  patientId?: string
 ): Promise<AgentProposalReviewResponse> {
+  const headers: Record<string, string> = {};
+  if (patientId) {
+    headers['X-Target-Patient-Id'] = patientId;
+  }
   return apiFetch<AgentProposalReviewResponse>(`/agent/proposals/${actionId}/clinician-review`, {
     method: 'POST',
+    headers,
     body: JSON.stringify(payload),
   });
 }
@@ -619,3 +668,257 @@ export async function getPatientJourneyMilestones(
 ): Promise<{ patientId: string; totalMilestones: number; milestones: JourneyMilestoneItem[] }> {
   return apiFetch(`/journey/milestones?patientId=${encodeURIComponent(patientId)}`);
 }
+
+// ==========================================
+// Commercial Practice & Doctor Platform API
+// ==========================================
+
+export async function getCurrentPractice(): Promise<{
+  hasPractice: boolean;
+  membershipId?: string;
+  role?: string;
+  practice?: any;
+  activeStaffCount?: number;
+}> {
+  return apiFetch('/practice/current');
+}
+
+export async function onboardPractice(payload: any): Promise<any> {
+  return apiFetch('/practice/onboard', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updatePracticeProfile(payload: any): Promise<any> {
+  return apiFetch('/practice/profile', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getPracticeStaff(): Promise<{ success: boolean; staff: any[] }> {
+  return apiFetch('/practice/staff');
+}
+
+export async function addPracticeStaff(email: string, role: string = 'RECEPTIONIST'): Promise<any> {
+  return apiFetch('/practice/staff', {
+    method: 'POST',
+    body: JSON.stringify({ email, role }),
+  });
+}
+
+export async function getConsultationTemplates(): Promise<{ success: boolean; templates: any[] }> {
+  return apiFetch('/consultations/workspace/templates');
+}
+
+export async function getPatientConsultations(patientId: string): Promise<{ success: boolean; notes: any[] }> {
+  return apiFetch(`/consultations/patient/${patientId}`);
+}
+
+export async function finalizeConsultationWorkspace(payload: any): Promise<any> {
+  return apiFetch('/consultations/workspace/finalize', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getCopilotPatientSummary(patientId: string, timeframeDays: number = 90): Promise<any> {
+  return apiFetch('/consultations/copilot/summarize-history', {
+    method: 'POST',
+    body: JSON.stringify({ patientId, timeframeDays }),
+  });
+}
+
+export async function getCopilotSoapDraft(patientId: string, chiefComplaint: string, appointmentId?: string): Promise<any> {
+  return apiFetch('/consultations/copilot/draft-note', {
+    method: 'POST',
+    body: JSON.stringify({ patientId, chiefComplaint, appointmentId }),
+  });
+}
+
+export async function getCopilotTrendComparison(patientId: string, metric: string = 'BLOOD_GLUCOSE', periodDays: number = 30): Promise<any> {
+  return apiFetch('/consultations/copilot/compare-trends', {
+    method: 'POST',
+    body: JSON.stringify({ patientId, metric, periodDays }),
+  });
+}
+
+export async function getCopilotMissingDocumentation(overdueDays: number = 90): Promise<any> {
+  return apiFetch(`/consultations/copilot/missing-documentation?overdueDays=${overdueDays}`);
+}
+
+export async function recordEncounterBilling(payload: any): Promise<any> {
+  return apiFetch('/billing/encounters', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getDailyCollectionsSummary(date?: string): Promise<{ success: boolean; summary: any }> {
+  const query = date ? `?date=${encodeURIComponent(date)}` : '';
+  return apiFetch(`/billing/daily-collections${query}`);
+}
+
+export async function listEncounterBillings(params?: { patientId?: string; paymentStatus?: string }): Promise<{ success: boolean; billings: any[] }> {
+  const q = new URLSearchParams();
+  if (params?.patientId) q.append('patientId', params.patientId);
+  if (params?.paymentStatus) q.append('paymentStatus', params.paymentStatus);
+  const qs = q.toString() ? `?${q.toString()}` : '';
+  return apiFetch(`/billing/encounters${qs}`);
+}
+
+export async function updateEncounterBillingStatus(
+  billingId: string,
+  payload: {
+    paymentStatus: 'PAID' | 'CANCELLED' | 'REFUNDED';
+    paymentMethod?: string;
+    transactionReference?: string;
+    notes?: string;
+  },
+): Promise<{ success: boolean; billing: any }> {
+  return apiFetch(`/billing/encounters/${billingId}/status`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+// ==========================================
+// CGM & WEARABLES CLIENT APIS
+// ==========================================
+
+export async function getCgmAnalytics(patientId: string, days: number = 14, isPregnant: boolean = false): Promise<any> {
+  return apiFetch(`/cgm/analytics/${patientId}?days=${days}&isPregnant=${isPregnant}`);
+}
+
+export async function getCgmDevices(patientId: string): Promise<{ success: boolean; devices: any[] }> {
+  return apiFetch(`/cgm/devices/${patientId}`);
+}
+
+export async function disconnectCgmDevice(deviceId: string): Promise<any> {
+  return apiFetch(`/cgm/devices/${deviceId}/disconnect`, {
+    method: 'POST',
+  });
+}
+
+export async function connectCgmDevice(payload: {
+  patientId: string;
+  provider: string;
+  deviceModel?: string;
+  serialNumber?: string;
+  dataSharingConsent: boolean;
+}): Promise<any> {
+  return apiFetch('/cgm/devices/connect', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function uploadCgmCsv(patientId: string, csvContent: string, providerName?: string): Promise<any> {
+  return apiFetch('/cgm/readings/upload-csv', {
+    method: 'POST',
+    body: JSON.stringify({ patientId, csvContent, providerName }),
+  });
+}
+
+export async function getCgmAgpReport(patientId: string, days: number = 14): Promise<any> {
+  return apiFetch(`/cgm/agp-report/${patientId}?days=${days}`);
+}
+
+// ==========================================
+// CLINICAL REVIEW CHECKLIST CLIENT APIS
+// ==========================================
+
+export async function getActiveClinicalReview(patientId: string): Promise<{ success: boolean; encounter: any }> {
+  return apiFetch(`/clinical-review/active/${patientId}`);
+}
+
+export async function updateChecklistItem(
+  encounterId: string,
+  payload: {
+    itemKey: string;
+    status: 'PENDING' | 'REVIEWED' | 'NEEDS_ATTENTION';
+    clinicalNotes?: string;
+    needsAttentionReason?: string;
+  },
+): Promise<{ success: boolean; encounter: any }> {
+  return apiFetch(`/clinical-review/${encounterId}/item`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function submitReviewToDoctor(encounterId: string): Promise<{ success: boolean; message: string }> {
+  return apiFetch(`/clinical-review/${encounterId}/submit-to-doctor`, {
+    method: 'POST',
+  });
+}
+
+export async function finalizeDoctorReview(
+  encounterId: string,
+  payload?: {
+    overallImpression?: string;
+    nextReviewDueDays?: number;
+    managementChangesSummary?: string;
+  },
+): Promise<{ success: boolean; encounter: any }> {
+  return apiFetch(`/clinical-review/${encounterId}/finalize-doctor-approval`, {
+    method: 'POST',
+    body: JSON.stringify(payload || {}),
+  });
+}
+
+// ==========================================
+// CARE TEAM & MULTIDISCIPLINARY COLLABORATION
+// ==========================================
+
+export async function getCareTeamMembers(patientId: string): Promise<{ success: boolean; members: any[] }> {
+  return apiFetch(`/coordination/care-team/${patientId}`);
+}
+
+export async function addCareTeamMember(
+  patientId: string,
+  payload: {
+    role: string;
+    fullName: string;
+    email?: string;
+    phone?: string;
+    organization?: string;
+    notes?: string;
+  },
+): Promise<{ success: boolean; member: any }> {
+  return apiFetch(`/coordination/care-team/${patientId}/members`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+// ==========================================
+// SARVAM AI OCR ENGINE
+// ==========================================
+
+export async function processOcrDocument(documentId: string): Promise<any> {
+  return apiFetch('/ocr/process-document', {
+    method: 'POST',
+    body: JSON.stringify({ documentId }),
+  });
+}
+
+export async function getOcrJob(jobId: string): Promise<{ success: boolean; job: any }> {
+  return apiFetch(`/ocr/jobs/${jobId}`);
+}
+
+export async function reviewOcrJob(
+  jobId: string,
+  payload: {
+    status: 'CONFIRMED' | 'REJECTED';
+    correctedValues?: Record<string, any>;
+    clinicianNotes?: string;
+  },
+): Promise<{ success: boolean; job: any }> {
+  return apiFetch(`/ocr/jobs/${jobId}/review`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+

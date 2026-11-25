@@ -2,11 +2,8 @@ import { type FC, useState, useEffect } from 'react';
 import {
   Home,
   Activity,
-  CalendarClock,
-  CheckSquare,
   FileText,
   MessageSquare,
-  User,
   LogOut,
   AlertOctagon,
   Stethoscope,
@@ -42,24 +39,18 @@ export const Navbar: FC<NavbarProps> = ({
       .catch(() => {});
   }, [currentTab]);
 
-  const allNavItems = [
-    { id: 'home', label: 'Home', icon: Home },
-    { id: 'health', label: 'Sugar Checks', icon: Activity },
-    { id: 'journey', label: 'My Journey', icon: CalendarClock },
-    { id: 'careplan', label: 'Care Plan', icon: FileText },
-    { id: 'tasks', label: 'To-Do', icon: CheckSquare },
-    { id: 'consultation', label: 'Visit Prep', icon: User },
-    { id: 'ask-damu', label: 'Ask Damu', icon: MessageSquare },
-    { id: 'caregiver', label: 'Caregiver', icon: Heart },
-    { id: 'emergency', label: 'Hypo Help', icon: AlertOctagon },
-    { id: 'profile', label: 'Profile', icon: User },
+  // 5 Canonical Primary Destinations per Section 4 Information Architecture
+  const primaryDestinations = [
+    { id: 'home', label: 'Home', icon: Home, aliases: [] },
+    { id: 'health', label: 'My Health', icon: Activity, aliases: ['glucose-devices', 'reports'] },
+    { id: 'careplan', label: 'Care Plan', icon: FileText, aliases: ['journey'] },
+    { id: 'caregiver', label: 'Care Team', icon: Heart, aliases: [] },
+    { id: 'ask-damu', label: 'Damu', icon: MessageSquare, aliases: [] },
   ];
 
   if (isClinician) {
-    allNavItems.splice(4, 0, { id: 'doctor', label: 'Doctor Hub', icon: Stethoscope });
+    primaryDestinations.splice(1, 0, { id: 'doctor', label: 'Doctor Hub', icon: Stethoscope, aliases: [] });
   }
-
-  const navItems = allNavItems;
 
   return (
     <header className="sticky top-0 z-40 border-b border-slate-200 bg-white shadow-xs">
@@ -80,59 +71,57 @@ export const Navbar: FC<NavbarProps> = ({
           </div>
         </div>
 
-        {/* Navigation Items */}
-        <nav className="flex items-center gap-0.5 sm:gap-1.5 overflow-x-auto">
-          {navItems.map((item) => {
+        {/* 5 Primary Navigation Destinations */}
+        <nav className="flex items-center gap-1 sm:gap-2">
+          {primaryDestinations.map((item) => {
             const Icon = item.icon;
-            const isActive = currentTab === item.id;
-            const isUrgent = item.id === 'emergency';
+            const isActive = currentTab === item.id || item.aliases.includes(currentTab);
             const isDoctor = item.id === 'doctor';
-            const isCaregiver = item.id === 'caregiver';
 
             return (
               <button
                 key={item.id}
                 type="button"
                 onClick={() => onSelectTab(item.id)}
-                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition whitespace-nowrap ${
-                  isUrgent
-                    ? isActive
-                      ? 'bg-rose-100 text-rose-800'
-                      : 'text-rose-700 hover:bg-rose-50'
-                    : isDoctor
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition whitespace-nowrap ${
+                  isDoctor
                     ? isActive
                       ? 'bg-slate-900 text-white'
                       : 'text-slate-800 hover:bg-slate-100'
-                    : isCaregiver
-                    ? isActive
-                      ? 'bg-teal-900 text-teal-100'
-                      : 'text-teal-900 hover:bg-teal-50'
                     : isActive
-                    ? 'bg-teal-50 text-teal-800'
+                    ? 'bg-teal-700 text-white shadow-2xs'
                     : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                 }`}
               >
                 <Icon
                   className={`h-3.5 w-3.5 ${
-                    isUrgent
-                      ? 'text-rose-600'
-                      : isDoctor
+                    isDoctor
                       ? isActive
                         ? 'text-teal-300'
                         : 'text-slate-700'
-                      : isCaregiver
-                      ? isActive
-                        ? 'text-teal-300'
-                        : 'text-teal-700'
                       : isActive
-                      ? 'text-teal-700'
+                      ? 'text-white'
                       : 'text-slate-500'
                   }`}
                 />
-                <span className="hidden lg:inline">{item.label}</span>
+                <span>{item.label}</span>
               </button>
             );
           })}
+
+          {/* Quick SOS Action */}
+          <button
+            type="button"
+            onClick={() => onSelectTab('emergency')}
+            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition whitespace-nowrap ${
+              currentTab === 'emergency'
+                ? 'bg-rose-600 text-white'
+                : 'text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200'
+            }`}
+          >
+            <AlertOctagon className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Hypo Help</span>
+          </button>
         </nav>
 
         {/* Right Actions: Notifications & Logout */}

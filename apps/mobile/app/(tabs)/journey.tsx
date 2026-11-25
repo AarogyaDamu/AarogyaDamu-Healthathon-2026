@@ -29,6 +29,8 @@ import {
   AlertCircle,
   ChevronRight,
   ShieldAlert,
+  User,
+  Sparkles,
 } from 'lucide-react-native';
 import {
   clinicalStore,
@@ -169,17 +171,17 @@ export default function JourneyScreen() {
 
     return (
       <Svg width={chartWidth} height={chartHeight}>
-        <Line x1={padX} y1={getY(140)} x2={chartWidth - padX} y2={getY(140)} stroke="#A7F3D0" strokeWidth={1} strokeDasharray="4 4" />
-        <Line x1={padX} y1={getY(70)} x2={chartWidth - padX} y2={getY(70)} stroke="#BFDBFE" strokeWidth={1} strokeDasharray="4 4" />
-        <Path d={pathD} fill="none" stroke={theme.colors.primary} strokeWidth={2.5} strokeLinecap="round" />
+        <Line x1={padX} y1={getY(140)} x2={chartWidth - padX} y2={getY(140)} stroke="#a7f3d0" strokeWidth={1} strokeDasharray="4 4" />
+        <Line x1={padX} y1={getY(70)} x2={chartWidth - padX} y2={getY(70)} stroke="#cfe5ff" strokeWidth={1} strokeDasharray="4 4" />
+        <Path d={pathD} fill="none" stroke="#004D4D" strokeWidth={2.5} strokeLinecap="round" />
         {data.map((d, i) => (
           <Circle
             key={d.id}
             cx={getX(i)}
             cy={getY(d.value)}
             r={4}
-            fill={d.value > 180 ? '#EF4444' : d.value < 70 ? '#3B82F6' : theme.colors.primary}
-            stroke="#FFFFFF"
+            fill={d.value > 180 ? '#ba1a1a' : d.value < 70 ? '#0284c7' : '#059669'}
+            stroke="#ffffff"
             strokeWidth={1.5}
           />
         ))}
@@ -189,55 +191,66 @@ export default function JourneyScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
-      {/* Header */}
+      {/* 1. Header (Alexandria Style) */}
       <View style={styles.header}>
         <View>
           <Text style={styles.headerSuper}>DIABETES CARE JOURNEY</Text>
           <Text style={styles.headerTitle}>My Journey</Text>
         </View>
 
-        {summaryData ? (
-          <View style={styles.stageProgressPill}>
-            <Compass color="#0F766E" size={13} />
-            <Text style={styles.stageProgressPillText}>
-              {summaryData.overallProgress.completedStagesCount} of {summaryData.overallProgress.totalStagesCount} Done
-            </Text>
+        <View style={styles.headerRight}>
+          {summaryData ? (
+            <View style={styles.stageProgressPill}>
+              <Compass color="#004D4D" size={13} />
+              <Text style={styles.stageProgressPillText}>
+                {summaryData.overallProgress.completedStagesCount} of {summaryData.overallProgress.totalStagesCount} Done
+              </Text>
+            </View>
+          ) : null}
+          <View style={styles.avatarCircle}>
+            <User color="#ffffff" size={16} />
           </View>
-        ) : null}
+        </View>
       </View>
 
-      {/* Main Tabs */}
-      <View style={styles.tabBar}>
-        <TouchableOpacity
-          style={[styles.tabItem, activeTab === 'OVERVIEW' && styles.tabItemActive]}
-          onPress={() => setActiveTab('OVERVIEW')}
+      {/* 2. Main Tabs (Alexandria Pill Segmented Bar) */}
+      <View style={styles.tabBarWrapper}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.tabBarScroll}
         >
-          <Text style={[styles.tabText, activeTab === 'OVERVIEW' && styles.tabTextActive]}>Overview</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.tabItem, activeTab === 'STAGES' && styles.tabItemActive]}
-          onPress={() => setActiveTab('STAGES')}
-        >
-          <Text style={[styles.tabText, activeTab === 'STAGES' && styles.tabTextActive]}>Milestones</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.tabItem, activeTab === 'DAILY' && styles.tabItemActive]}
-          onPress={() => setActiveTab('DAILY')}
-        >
-          <Text style={[styles.tabText, activeTab === 'DAILY' && styles.tabTextActive]}>Daily</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.tabItem, activeTab === 'TRENDS' && styles.tabItemActive]}
-          onPress={() => setActiveTab('TRENDS')}
-        >
-          <Text style={[styles.tabText, activeTab === 'TRENDS' && styles.tabTextActive]}>Trends</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.tabItem, activeTab === 'FOLLOW_UP' && styles.tabItemActive]}
-          onPress={() => setActiveTab('FOLLOW_UP')}
-        >
-          <Text style={[styles.tabText, activeTab === 'FOLLOW_UP' && styles.tabTextActive]}>Follow-up</Text>
-        </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.tabItem, activeTab === 'OVERVIEW' && styles.tabItemActive]}
+            onPress={() => setActiveTab('OVERVIEW')}
+          >
+            <Text style={[styles.tabText, activeTab === 'OVERVIEW' && styles.tabTextActive]}>Overview</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.tabItem, activeTab === 'STAGES' && styles.tabItemActive]}
+            onPress={() => setActiveTab('STAGES')}
+          >
+            <Text style={[styles.tabText, activeTab === 'STAGES' && styles.tabTextActive]}>Milestones</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.tabItem, activeTab === 'DAILY' && styles.tabItemActive]}
+            onPress={() => setActiveTab('DAILY')}
+          >
+            <Text style={[styles.tabText, activeTab === 'DAILY' && styles.tabTextActive]}>Daily</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.tabItem, activeTab === 'TRENDS' && styles.tabItemActive]}
+            onPress={() => setActiveTab('TRENDS')}
+          >
+            <Text style={[styles.tabText, activeTab === 'TRENDS' && styles.tabTextActive]}>Trends</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.tabItem, activeTab === 'FOLLOW_UP' && styles.tabItemActive]}
+            onPress={() => setActiveTab('FOLLOW_UP')}
+          >
+            <Text style={[styles.tabText, activeTab === 'FOLLOW_UP' && styles.tabTextActive]}>Follow-up</Text>
+          </TouchableOpacity>
+        </ScrollView>
       </View>
 
       <ScrollView
@@ -252,11 +265,11 @@ export default function JourneyScreen() {
           // 0. HEALTH PROGRESS DASHBOARD (PHASE 7 PRIMARY VIEW)
           // -------------------------------------------------------------
           <View style={{ gap: 14 }}>
-            {/* A. Overall Journey Stage Banner */}
+            {/* A. Overall Journey Stage Banner (Alexandria Hero Card) */}
             <View style={styles.overviewHeroCard}>
               <View style={styles.heroTopRow}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <Compass color="#5EEAD4" size={16} />
+                <View style={styles.stageTag}>
+                  <View style={styles.stageDot} />
                   <Text style={styles.heroSuperText}>CURRENT CARE STAGE</Text>
                 </View>
                 <Text style={styles.heroPctText}>{summaryData?.overallProgress.completionPercentage ?? 55}%</Text>
@@ -272,22 +285,38 @@ export default function JourneyScreen() {
                 </Text>
               ) : null}
 
-              {/* Progress bar */}
-              <View style={styles.progressBarTrack}>
-                <View
-                  style={[
-                    styles.progressBarFill,
-                    { width: `${summaryData?.overallProgress.completionPercentage ?? 55}%` },
-                  ]}
-                />
+              {/* Editorial Progress Gauge & Metrics */}
+              <View style={styles.gaugeContainer}>
+                <View style={styles.gaugeRow}>
+                  <View>
+                    <Text style={styles.gaugeLabel}>Milestone Completion</Text>
+                    <Text style={styles.gaugePct}>
+                      {summaryData?.overallProgress.completionPercentage ?? 55}%
+                    </Text>
+                  </View>
+                  <View style={styles.gaugeRight}>
+                    <Text style={styles.gaugeTargetLabel}>Clinical Target</Text>
+                    <Text style={styles.gaugeTargetVal}>Target HbA1c ≤ 6.7%</Text>
+                  </View>
+                </View>
+                <View style={styles.progressBarTrack}>
+                  <View
+                    style={[
+                      styles.progressBarFill,
+                      { width: `${summaryData?.overallProgress.completionPercentage ?? 55}%` },
+                    ]}
+                  />
+                </View>
               </View>
             </View>
 
             {/* B. Blood Glucose Progress Card */}
             <View style={styles.card}>
               <View style={styles.sectionHeaderRow}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <Activity color={theme.colors.primary} size={18} />
+                <View style={styles.sectionHeaderLeft}>
+                  <View style={styles.iconBox}>
+                    <Activity color="#004D4D" size={16} />
+                  </View>
                   <Text style={styles.sectionTitle}>Blood Glucose Progress</Text>
                 </View>
                 <TouchableOpacity onPress={() => setActiveTab('TRENDS')}>
@@ -319,7 +348,7 @@ export default function JourneyScreen() {
 
               {summaryData?.glucoseProgress.trendDelta7Days !== null && (
                 <View style={styles.trendRow}>
-                  <TrendingUp color="#0F766E" size={14} />
+                  <TrendingUp color="#004D4D" size={14} />
                   <Text style={styles.trendText}>
                     7d vs Prior 7d:{' '}
                     <Text style={{ fontWeight: '800' }}>
@@ -333,7 +362,7 @@ export default function JourneyScreen() {
 
               {summaryData?.glucoseProgress.missingMeasurementAlert ? (
                 <View style={styles.warningBanner}>
-                  <AlertCircle color="#D97706" size={14} />
+                  <AlertCircle color="#d97706" size={14} />
                   <Text style={styles.warningText}>{summaryData.glucoseProgress.missingMeasurementAlert}</Text>
                 </View>
               ) : null}
@@ -347,8 +376,10 @@ export default function JourneyScreen() {
             {/* C. Medication Adherence Card */}
             <View style={styles.card}>
               <View style={styles.sectionHeaderRow}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <Pill color="#059669" size={18} />
+                <View style={styles.sectionHeaderLeft}>
+                  <View style={[styles.iconBox, { backgroundColor: '#ecfdf5' }]}>
+                    <Pill color="#059669" size={16} />
+                  </View>
                   <Text style={styles.sectionTitle}>Medication Adherence</Text>
                 </View>
                 <TouchableOpacity onPress={() => router.push('/(tabs)/medications')}>
@@ -385,8 +416,10 @@ export default function JourneyScreen() {
             {/* D. Care Plan Progress */}
             <View style={styles.card}>
               <View style={styles.sectionHeaderRow}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <CheckCircle2 color="#4F46E5" size={18} />
+                <View style={styles.sectionHeaderLeft}>
+                  <View style={[styles.iconBox, { backgroundColor: '#eef2ff' }]}>
+                    <CheckCircle2 color="#4f46e5" size={16} />
+                  </View>
                   <Text style={styles.sectionTitle}>Doctor Care Tasks</Text>
                 </View>
                 <TouchableOpacity onPress={() => router.push('/(tabs)/tasks')}>
@@ -406,7 +439,7 @@ export default function JourneyScreen() {
 
               {(summaryData?.carePlanProgress.overdueTasksCount ?? 0) > 0 ? (
                 <View style={styles.overdueBanner}>
-                  <AlertTriangle color="#DC2626" size={14} />
+                  <AlertTriangle color="#ba1a1a" size={14} />
                   <Text style={styles.overdueText}>
                     {summaryData?.carePlanProgress.overdueTasksCount} doctor-assigned task(s) are overdue.
                   </Text>
@@ -419,8 +452,10 @@ export default function JourneyScreen() {
             {/* E. Health Insights & Observations */}
             <View style={styles.card}>
               <View style={styles.sectionHeaderRow}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <TrendingUp color="#0D9488" size={18} />
+                <View style={styles.sectionHeaderLeft}>
+                  <View style={[styles.iconBox, { backgroundColor: '#f0fdfa' }]}>
+                    <TrendingUp color="#0f766e" size={16} />
+                  </View>
                   <Text style={styles.sectionTitle}>Health Journey Insights</Text>
                 </View>
               </View>
@@ -439,9 +474,11 @@ export default function JourneyScreen() {
                       </View>
                       <Text style={styles.insightSummary}>{ins.summary}</Text>
                       {ins.suggestedDiscussion ? (
-                        <Text style={styles.insightDiscussion}>
-                          Discussion Points for Doctor: {ins.suggestedDiscussion}
-                        </Text>
+                        <View style={styles.insightDiscussionBox}>
+                          <Text style={styles.insightDiscussion}>
+                            Discussion Points for Doctor: {ins.suggestedDiscussion}
+                          </Text>
+                        </View>
                       ) : null}
                     </View>
                   ))}
@@ -626,7 +663,7 @@ export default function JourneyScreen() {
 
               {/* Crucial Clinical Distinction Note */}
               <View style={styles.provenanceNote}>
-                <Activity color="#0D9488" size={13} />
+                <Activity color="#004D4D" size={13} />
                 <Text style={styles.provenanceText}>
                   Actual self-monitored logs are recorded with provenance timestamps. Estimated A1c is derived from average blood glucose and does not replace a clinical venous lab draw.
                 </Text>
@@ -640,9 +677,9 @@ export default function JourneyScreen() {
                   <View key={chk.id} style={styles.checkupCard}>
                     <View style={styles.checkupIconCol}>
                       {chk.status === 'COMPLETED' ? (
-                        <CheckCircle2 color={theme.colors.success} size={18} />
+                        <CheckCircle2 color="#059669" size={18} />
                       ) : (
-                        <Clock color={theme.colors.warning} size={18} />
+                        <Clock color="#d97706" size={18} />
                       )}
                     </View>
                     <View style={{ flex: 1 }}>
@@ -665,7 +702,7 @@ export default function JourneyScreen() {
             {followUpData?.nextReviewDate ? (
               <View style={[styles.reviewCountdownCard, followUpData.isReviewOverdue && styles.reviewOverdueCard]}>
                 <View style={styles.reviewHeaderRow}>
-                  <Calendar color={followUpData.isReviewOverdue ? '#DC2626' : '#0D9488'} size={18} />
+                  <Calendar color={followUpData.isReviewOverdue ? '#ba1a1a' : '#004D4D'} size={18} />
                   <Text style={[styles.reviewHeaderTitle, followUpData.isReviewOverdue && styles.textRed]}>
                     {followUpData.isReviewOverdue ? 'Clinical Review Overdue' : 'Next Clinical Review'}
                   </Text>
@@ -683,25 +720,25 @@ export default function JourneyScreen() {
 
             <View style={styles.card}>
               <TouchableOpacity
-                style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingBottom: 12, marginBottom: 12, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' }}
+                style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingBottom: 12, marginBottom: 12, borderBottomWidth: 1, borderBottomColor: '#f2f3f9' }}
                 onPress={() => router.push('/(tabs)/tasks')}
                 activeOpacity={0.7}
               >
                 <View style={{ flex: 1, paddingRight: 8 }}>
-                  <Text style={{ fontSize: 13, fontWeight: '700', color: '#0F172A' }}>Your Care Plan</Text>
-                  <Text style={{ fontSize: 11, color: '#64748B', marginTop: 2 }}>
+                  <Text style={{ fontFamily: 'Public Sans', fontSize: 13.5, fontWeight: '700', color: '#191c20' }}>Your Care Plan</Text>
+                  <Text style={{ fontFamily: 'Inter', fontSize: 11, color: '#737784', marginTop: 2 }}>
                     Doctor-prescribed daily care tasks, instructions & adherence.
                   </Text>
                 </View>
-                <View style={{ paddingHorizontal: 10, paddingVertical: 5, backgroundColor: '#0F172A', borderRadius: 8 }}>
-                  <Text style={{ color: '#FFFFFF', fontSize: 11, fontWeight: '700' }}>Open Plan →</Text>
+                <View style={{ paddingHorizontal: 12, paddingVertical: 6, backgroundColor: '#004D4D', borderRadius: 8 }}>
+                  <Text style={{ fontFamily: 'Public Sans', color: '#ffffff', fontSize: 11, fontWeight: '700' }}>Open Plan →</Text>
                 </View>
               </TouchableOpacity>
 
               <Text style={styles.sectionTitle}>Upcoming Consultations</Text>
               {(followUpData?.upcomingAppointments ?? []).length === 0 ? (
                 <View style={styles.emptyCard}>
-                  <Clock color="#64748B" size={20} />
+                  <Clock color="#737784" size={20} />
                   <Text style={styles.emptyTitle}>No appointments scheduled</Text>
                 </View>
               ) : (
@@ -731,8 +768,10 @@ export default function JourneyScreen() {
             {followUpData?.assignedClinician ? (
               <View style={styles.card}>
                 <View style={styles.sectionHeaderRow}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <Stethoscope color="#0D9488" size={16} />
+                  <View style={styles.sectionHeaderLeft}>
+                    <View style={styles.iconBox}>
+                      <Stethoscope color="#004D4D" size={16} />
+                    </View>
                     <Text style={styles.sectionTitle}>Attending Clinician</Text>
                   </View>
                   <View style={styles.activeClinicianBadge}>
@@ -751,7 +790,7 @@ export default function JourneyScreen() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: '#FFFFFF' },
+  safeArea: { flex: 1, backgroundColor: '#f8f9fc' },
   header: {
     paddingHorizontal: 20,
     paddingTop: 10,
@@ -759,121 +798,274 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    backgroundColor: '#ffffff',
     borderBottomWidth: 1,
-    borderBottomColor: '#F1F5F9',
+    borderBottomColor: 'rgba(9, 76, 178, 0.08)',
   },
-  headerSuper: { fontSize: 10, fontWeight: '800', color: theme.colors.primary, letterSpacing: 0.8 },
-  headerTitle: { fontSize: 20, fontWeight: '900', color: '#0F172A' },
+  headerSuper: {
+    fontFamily: 'Public Sans',
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#004D4D',
+    letterSpacing: 0.8,
+  },
+  headerTitle: {
+    fontFamily: 'Noto Serif',
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#191c20',
+    marginTop: 2,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
   stageProgressPill: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    backgroundColor: '#F0FDFA',
+    backgroundColor: 'rgba(9, 76, 178, 0.08)',
     borderWidth: 1,
-    borderColor: '#99F6E4',
-    paddingHorizontal: 8,
+    borderColor: 'rgba(9, 76, 178, 0.15)',
+    paddingHorizontal: 9,
     paddingVertical: 4,
-    borderRadius: 8,
+    borderRadius: 999,
   },
-  stageProgressPillText: { fontSize: 11, fontWeight: '800', color: '#0F766E' },
-  tabBar: {
-    flexDirection: 'row',
-    backgroundColor: '#F8FAFC',
+  stageProgressPillText: {
+    fontFamily: 'Public Sans',
+    fontSize: 10.5,
+    fontWeight: '800',
+    color: '#004D4D',
+  },
+  avatarCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#004D4D',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tabBarWrapper: {
+    backgroundColor: '#ffffff',
     borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
-    paddingHorizontal: 12,
+    borderBottomColor: '#f2f3f9',
+  },
+  tabBarScroll: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    gap: 8,
   },
   tabItem: {
-    flex: 1,
-    paddingVertical: 12,
-    alignItems: 'center',
-    borderBottomWidth: 2,
-    borderBottomColor: 'transparent',
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: '#eceef3',
   },
-  tabItemActive: { borderBottomColor: theme.colors.primary },
-  tabText: { fontSize: 12, fontWeight: '700', color: '#64748B' },
-  tabTextActive: { color: theme.colors.primary, fontWeight: '900' },
+  tabItemActive: {
+    backgroundColor: '#004D4D',
+  },
+  tabText: {
+    fontFamily: 'Public Sans',
+    fontSize: 11.5,
+    fontWeight: '600',
+    color: '#737784',
+  },
+  tabTextActive: {
+    color: '#ffffff',
+    fontWeight: '700',
+  },
   scrollContent: { padding: 16 },
 
-  // Overview Hero Card
+  // Overview Hero Card (Alexandria Editorial Card)
   overviewHeroCard: {
-    backgroundColor: '#0F172A',
-    borderRadius: 16,
+    backgroundColor: '#ffffff',
+    borderRadius: 18,
     padding: 18,
-    shadowColor: '#000',
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    elevation: 3,
+    borderWidth: 1,
+    borderColor: 'rgba(9, 76, 178, 0.08)',
+    shadowColor: '#004D4D',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.05,
+    shadowRadius: 10,
+    elevation: 2,
+    gap: 8,
   },
   heroTopRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  heroSuperText: { fontSize: 10, fontWeight: '800', color: '#5EEAD4', letterSpacing: 0.6 },
-  heroPctText: { fontSize: 20, fontWeight: '900', color: '#2DD4BF' },
-  heroStageTitle: { fontSize: 18, fontWeight: '900', color: '#FFFFFF', marginTop: 6 },
-  heroSubText: { fontSize: 12, color: '#94A3B8', marginTop: 2 },
+  stageTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#f8e37f',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+  },
+  stageDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#004D4D',
+  },
+  heroSuperText: {
+    fontFamily: 'Public Sans',
+    fontSize: 9.5,
+    fontWeight: '800',
+    color: '#004D4D',
+    letterSpacing: 0.6,
+  },
+  heroPctText: {
+    fontFamily: 'Public Sans',
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#004D4D',
+  },
+  heroStageTitle: {
+    fontFamily: 'Noto Serif',
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#191c20',
+    marginTop: 2,
+  },
+  heroSubText: {
+    fontFamily: 'Inter',
+    fontSize: 12,
+    color: '#737784',
+  },
+  gaugeContainer: {
+    backgroundColor: '#f2f3f9',
+    borderRadius: 12,
+    padding: 12,
+    marginTop: 4,
+    gap: 8,
+  },
+  gaugeRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-end',
+  },
+  gaugeLabel: {
+    fontFamily: 'Public Sans',
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#33628b',
+    textTransform: 'uppercase',
+  },
+  gaugePct: {
+    fontFamily: 'Public Sans',
+    fontSize: 26,
+    fontWeight: '800',
+    color: '#004D4D',
+    marginTop: 2,
+  },
+  gaugeRight: {
+    alignItems: 'flex-end',
+  },
+  gaugeTargetLabel: {
+    fontFamily: 'Public Sans',
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#191c20',
+  },
+  gaugeTargetVal: {
+    fontFamily: 'Inter',
+    fontSize: 10.5,
+    color: '#737784',
+    marginTop: 1,
+  },
   progressBarTrack: {
     height: 6,
-    backgroundColor: '#1E293B',
-    borderRadius: 3,
-    marginTop: 14,
+    backgroundColor: '#e6e8ed',
+    borderRadius: 999,
     overflow: 'hidden',
   },
   progressBarFill: {
     height: 6,
-    backgroundColor: '#2DD4BF',
-    borderRadius: 3,
+    backgroundColor: '#004D4D',
+    borderRadius: 999,
   },
 
   // Metric Grids
   metricGrid: {
     flexDirection: 'row',
     gap: 10,
-    marginTop: 10,
+    marginTop: 8,
   },
   metricBox: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: '#f2f3f9',
     padding: 12,
     borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
   },
-  metricLabel: { fontSize: 11, fontWeight: '700', color: '#64748B' },
-  metricBigVal: { fontSize: 18, fontWeight: '900', color: '#0F172A', marginTop: 4 },
-  metricSub: { fontSize: 10, color: '#94A3B8', marginTop: 2 },
-  doseBreakdownText: { fontSize: 11, fontWeight: '600', color: '#334155', marginTop: 2 },
+  metricLabel: {
+    fontFamily: 'Public Sans',
+    fontSize: 10.5,
+    fontWeight: '700',
+    color: '#737784',
+  },
+  metricBigVal: {
+    fontFamily: 'Public Sans',
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#191c20',
+    marginTop: 4,
+  },
+  metricSub: {
+    fontFamily: 'Inter',
+    fontSize: 10,
+    color: '#737784',
+    marginTop: 2,
+  },
+  doseBreakdownText: {
+    fontFamily: 'Inter',
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#434653',
+    marginTop: 2,
+  },
 
   trendRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: '#F0FDFA',
-    padding: 10,
-    borderRadius: 10,
-    marginTop: 10,
-    borderWidth: 1,
-    borderColor: '#CCFBF1',
-  },
-  trendText: { fontSize: 11, color: '#0F766E' },
-  warningBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: '#FFFBEB',
+    backgroundColor: '#f8f9fc',
     padding: 10,
     borderRadius: 10,
     marginTop: 8,
     borderWidth: 1,
-    borderColor: '#FDE68A',
+    borderColor: 'rgba(9, 76, 178, 0.08)',
   },
-  warningText: { fontSize: 11, color: '#92400E', fontWeight: '600' },
+  trendText: {
+    fontFamily: 'Inter',
+    fontSize: 11,
+    color: '#004D4D',
+  },
+  warningBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#fffbeb',
+    padding: 10,
+    borderRadius: 10,
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: '#fde68a',
+  },
+  warningText: {
+    fontFamily: 'Inter',
+    fontSize: 11,
+    color: '#92400e',
+    fontWeight: '600',
+  },
   nonCausationNote: {
+    fontFamily: 'Inter',
     fontSize: 10,
-    color: '#94A3B8',
-    marginTop: 10,
+    color: '#737784',
+    marginTop: 8,
     fontStyle: 'italic',
     lineHeight: 14,
   },
@@ -883,87 +1075,165 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginTop: 10,
+    marginTop: 8,
   },
-  taskProgressNum: { fontSize: 15, fontWeight: '800', color: '#0F172A' },
-  taskProgressPct: { fontSize: 15, fontWeight: '900', color: '#4F46E5' },
+  taskProgressNum: {
+    fontFamily: 'Public Sans',
+    fontSize: 13.5,
+    fontWeight: '700',
+    color: '#191c20',
+  },
+  taskProgressPct: {
+    fontFamily: 'Public Sans',
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#004D4D',
+  },
   overdueBanner: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: '#FEF2F2',
-    padding: 8,
+    backgroundColor: '#fef2f2',
+    padding: 10,
     borderRadius: 8,
     marginTop: 8,
     borderWidth: 1,
-    borderColor: '#FECACA',
+    borderColor: '#fecaca',
   },
-  overdueText: { fontSize: 11, color: '#B91C1C', fontWeight: '700' },
-  onScheduleText: { fontSize: 11, color: '#059669', fontWeight: '700', marginTop: 8 },
+  overdueText: {
+    fontFamily: 'Inter',
+    fontSize: 11,
+    color: '#ba1a1a',
+    fontWeight: '700',
+  },
+  onScheduleText: {
+    fontFamily: 'Inter',
+    fontSize: 11,
+    color: '#059669',
+    fontWeight: '700',
+    marginTop: 8,
+  },
 
   // Insight Cards
   insightCard: {
-    backgroundColor: '#F8FAFC',
+    backgroundColor: '#f2f3f9',
     borderRadius: 12,
     padding: 12,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
   },
   insightHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  insightTitle: { fontSize: 13, fontWeight: '800', color: '#0F172A', flex: 1 },
+  insightTitle: {
+    fontFamily: 'Public Sans',
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#191c20',
+    flex: 1,
+  },
   periodPill: {
-    backgroundColor: '#E2E8F0',
-    paddingHorizontal: 6,
+    backgroundColor: '#e6e8ed',
+    paddingHorizontal: 7,
     paddingVertical: 2,
     borderRadius: 6,
   },
-  periodPillText: { fontSize: 9, fontWeight: '700', color: '#475569' },
-  insightSummary: { fontSize: 11, color: '#334155', marginTop: 4, lineHeight: 16 },
+  periodPillText: {
+    fontFamily: 'Public Sans',
+    fontSize: 9.5,
+    fontWeight: '700',
+    color: '#434653',
+  },
+  insightSummary: {
+    fontFamily: 'Inter',
+    fontSize: 11.5,
+    color: '#434653',
+    marginTop: 4,
+    lineHeight: 16,
+  },
+  insightDiscussionBox: {
+    backgroundColor: '#ffffff',
+    padding: 8,
+    borderRadius: 8,
+    marginTop: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(9, 76, 178, 0.08)',
+  },
   insightDiscussion: {
+    fontFamily: 'Inter',
     fontSize: 11,
     fontWeight: '700',
-    color: '#0F766E',
-    backgroundColor: '#F0FDFA',
-    padding: 6,
-    borderRadius: 6,
+    color: '#004D4D',
+  },
+  emptySubText: {
+    fontFamily: 'Inter',
+    fontSize: 12,
+    color: '#737784',
+    fontStyle: 'italic',
     marginTop: 6,
   },
-  emptySubText: { fontSize: 12, color: '#64748B', fontStyle: 'italic', marginTop: 6 },
-  linkText: { fontSize: 11, fontWeight: '800', color: theme.colors.primary },
+  linkText: {
+    fontFamily: 'Public Sans',
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#004D4D',
+  },
 
   // Common Card Styles
   card: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#ffffff',
     borderRadius: 16,
     padding: 16,
     borderWidth: 1,
-    borderColor: '#F1F5F9',
-    shadowColor: '#000000',
+    borderColor: 'rgba(9, 76, 178, 0.08)',
+    shadowColor: '#004D4D',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 8,
-    elevation: 2,
+    shadowOpacity: 0.03,
+    shadowRadius: 6,
+    elevation: 1,
   },
   sectionHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  sectionTitle: { fontSize: 15, fontWeight: '800', color: '#0F172A' },
-  sectionSub: { fontSize: 11, color: '#64748B', marginTop: 2 },
-  pctBadge: {
-    backgroundColor: '#F0FDFA',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#99F6E4',
+  sectionHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
-  pctBadgeText: { fontSize: 12, fontWeight: '800', color: '#0F766E' },
+  iconBox: {
+    width: 28,
+    height: 28,
+    borderRadius: 7,
+    backgroundColor: 'rgba(9, 76, 178, 0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sectionTitle: {
+    fontFamily: 'Noto Serif',
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#191c20',
+  },
+  sectionSub: {
+    fontFamily: 'Inter',
+    fontSize: 11,
+    color: '#737784',
+    marginTop: 2,
+  },
+  pctBadge: {
+    backgroundColor: 'rgba(9, 76, 178, 0.08)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
+  pctBadgeText: {
+    fontFamily: 'Public Sans',
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#004D4D',
+  },
 
   // Stages Timeline Styles
   stagesList: { marginTop: 16 },
@@ -973,145 +1243,154 @@ const styles = StyleSheet.create({
     width: 24,
     height: 24,
     borderRadius: 12,
-    backgroundColor: '#F1F5F9',
+    backgroundColor: '#eceef3',
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 2,
-    borderColor: '#CBD5E1',
+    borderColor: '#c3c6d5',
   },
   nodeCompleted: { backgroundColor: '#059669', borderColor: '#059669' },
-  nodeCurrent: { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary },
-  nodeOverdue: { backgroundColor: '#DC2626', borderColor: '#DC2626' },
-  nodeUpcoming: { backgroundColor: '#F8FAFC', borderColor: '#E2E8F0' },
-  stageOrderNum: { fontSize: 10, fontWeight: '800', color: '#64748B' },
-  textWhite: { color: '#FFFFFF' },
-  stageTrackLine: { width: 2, flex: 1, backgroundColor: '#E2E8F0', marginVertical: 4 },
+  nodeCurrent: { backgroundColor: '#004D4D', borderColor: '#004D4D' },
+  nodeOverdue: { backgroundColor: '#ba1a1a', borderColor: '#ba1a1a' },
+  nodeUpcoming: { backgroundColor: '#f8f9fc', borderColor: '#e1e2e8' },
+  stageOrderNum: { fontFamily: 'Public Sans', fontSize: 10, fontWeight: '800', color: '#737784' },
+  textWhite: { color: '#ffffff' },
+  stageTrackLine: { width: 2, flex: 1, backgroundColor: '#e6e8ed', marginVertical: 4 },
   stageBody: { flex: 1, paddingBottom: 18 },
   stageTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  stageTitle: { fontSize: 13, fontWeight: '800', color: '#0F172A', flex: 1 },
-  statusTag: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
-  statusTagText: { fontSize: 9, fontWeight: '800' },
-  tagGood: { backgroundColor: '#ECFDF5' },
+  stageTitle: { fontFamily: 'Noto Serif', fontSize: 13.5, fontWeight: '700', color: '#191c20', flex: 1 },
+  statusTag: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 },
+  statusTagText: { fontFamily: 'Public Sans', fontSize: 9.5, fontWeight: '800' },
+  tagGood: { backgroundColor: '#ecfdf5' },
   textGood: { color: '#059669' },
-  tagActive: { backgroundColor: '#F0FDFA' },
-  textActive: { color: theme.colors.primary },
-  tagWarn: { backgroundColor: '#FEF2F2' },
-  textWarn: { color: '#DC2626' },
-  tagUpcoming: { backgroundColor: '#F8FAFC' },
-  textUpcoming: { color: '#94A3B8' },
-  stageDesc: { fontSize: 11, color: '#64748B', marginTop: 4, lineHeight: 16 },
-  stageMeta: { fontSize: 10, fontWeight: '700', color: '#059669', marginTop: 4 },
-  stageMetaPending: { fontSize: 10, color: '#94A3B8', marginTop: 4 },
+  tagActive: { backgroundColor: 'rgba(9, 76, 178, 0.08)' },
+  textActive: { color: '#004D4D' },
+  tagWarn: { backgroundColor: '#fef2f2' },
+  textWarn: { color: '#ba1a1a' },
+  tagUpcoming: { backgroundColor: '#eceef3' },
+  textUpcoming: { color: '#737784' },
+  stageDesc: { fontFamily: 'Inter', fontSize: 11, color: '#434653', marginTop: 4, lineHeight: 16 },
+  stageMeta: { fontFamily: 'Inter', fontSize: 10, fontWeight: '700', color: '#059669', marginTop: 4 },
+  stageMetaPending: { fontFamily: 'Inter', fontSize: 10, color: '#737784', marginTop: 4 },
 
   // Daily Journey Styles
   carePlanBanner: {
-    backgroundColor: '#ECFDF5',
+    backgroundColor: '#ffffff',
     borderWidth: 1,
-    borderColor: '#A7F3D0',
+    borderColor: 'rgba(9, 76, 178, 0.08)',
     padding: 16,
     borderRadius: 16,
+    shadowColor: '#004D4D',
+    shadowOpacity: 0.03,
+    shadowRadius: 6,
+    elevation: 1,
   },
   bannerTop: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  bannerTitle: { fontSize: 11, fontWeight: '800', color: '#059669', letterSpacing: 0.5 },
-  planHeading: { fontSize: 16, fontWeight: '900', color: '#064E3B', marginTop: 4 },
-  instBox: { backgroundColor: '#FFFFFF', padding: 10, borderRadius: 10, marginTop: 8 },
-  instLabel: { fontSize: 10, fontWeight: '800', color: '#059669' },
-  instText: { fontSize: 12, color: '#334155', marginTop: 2 },
-  taskCountText: { fontSize: 11, fontWeight: '700', color: '#64748B' },
+  bannerTitle: { fontFamily: 'Public Sans', fontSize: 10.5, fontWeight: '800', color: '#059669', letterSpacing: 0.5 },
+  planHeading: { fontFamily: 'Noto Serif', fontSize: 16, fontWeight: '700', color: '#191c20', marginTop: 4 },
+  instBox: { backgroundColor: '#f2f3f9', padding: 10, borderRadius: 10, marginTop: 8 },
+  instLabel: { fontFamily: 'Public Sans', fontSize: 10, fontWeight: '800', color: '#059669' },
+  instText: { fontFamily: 'Inter', fontSize: 11.5, color: '#434653', marginTop: 2 },
+  taskCountText: { fontFamily: 'Public Sans', fontSize: 11, fontWeight: '700', color: '#737784' },
   emptyCard: { alignItems: 'center', paddingVertical: 16, gap: 6 },
-  emptyTitle: { fontSize: 12, fontWeight: '700', color: '#64748B' },
+  emptyTitle: { fontFamily: 'Inter', fontSize: 12, fontWeight: '700', color: '#737784' },
   taskItem: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
     padding: 10,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: '#f2f3f9',
     borderRadius: 10,
   },
-  taskBullet: { width: 6, height: 6, borderRadius: 3, backgroundColor: theme.colors.primary },
-  taskTitle: { fontSize: 12, fontWeight: '700', color: '#0F172A' },
-  taskTime: { fontSize: 10, color: '#64748B', marginTop: 2 },
-  medCard: { padding: 10, backgroundColor: '#F8FAFC', borderRadius: 10 },
-  medName: { fontSize: 12, fontWeight: '800', color: '#0F172A' },
-  medDose: { fontSize: 11, color: '#64748B', marginTop: 2 },
+  taskBullet: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#004D4D' },
+  taskTitle: { fontFamily: 'Public Sans', fontSize: 12, fontWeight: '700', color: '#191c20' },
+  taskTime: { fontFamily: 'Inter', fontSize: 10, color: '#737784', marginTop: 2 },
+  medCard: { padding: 10, backgroundColor: '#f2f3f9', borderRadius: 10 },
+  medName: { fontFamily: 'Public Sans', fontSize: 12, fontWeight: '800', color: '#191c20' },
+  medDose: { fontFamily: 'Inter', fontSize: 11, color: '#737784', marginTop: 2 },
 
   // Trends Tab Styles
   metricSwitcherRow: {
     flexDirection: 'row',
-    backgroundColor: '#F1F5F9',
+    backgroundColor: '#eceef3',
     borderRadius: 10,
-    padding: 2,
+    padding: 3,
     marginBottom: 12,
+    gap: 4,
   },
   metricTabBtn: { flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: 8 },
-  metricTabBtnActive: { backgroundColor: '#FFFFFF', elevation: 1 },
-  metricTabTitle: { fontSize: 11, fontWeight: '700', color: '#64748B' },
-  metricTabTitleActive: { color: theme.colors.primary, fontWeight: '800' },
+  metricTabBtnActive: { backgroundColor: '#ffffff', elevation: 1 },
+  metricTabTitle: { fontFamily: 'Public Sans', fontSize: 11, fontWeight: '700', color: '#737784' },
+  metricTabTitleActive: { color: '#004D4D', fontWeight: '800' },
   comparisonBox: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-  comparisonValue: { fontSize: 20, fontWeight: '900', color: '#0F172A' },
-  comparisonBadge: { backgroundColor: '#F0FDFA', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
-  comparisonBadgeText: { fontSize: 10, fontWeight: '800', color: '#0F766E' },
+  comparisonValue: { fontFamily: 'Public Sans', fontSize: 20, fontWeight: '800', color: '#191c20', fontVariant: ['tabular-nums'] },
+  comparisonBadge: { backgroundColor: 'rgba(9, 76, 178, 0.08)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
+  comparisonBadgeText: { fontFamily: 'Public Sans', fontSize: 10, fontWeight: '800', color: '#004D4D' },
   chartContainer: { alignItems: 'center', paddingVertical: 6 },
   chartEmpty: { height: 140, justifyContent: 'center', alignItems: 'center', gap: 6 },
-  chartEmptyText: { fontSize: 11, color: '#94A3B8' },
+  chartEmptyText: { fontFamily: 'Inter', fontSize: 11, color: '#737784' },
   provenanceNote: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 6,
-    backgroundColor: '#F0FDFA',
+    backgroundColor: '#f8f9fc',
     padding: 10,
     borderRadius: 10,
     marginTop: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(9, 76, 178, 0.08)',
   },
-  provenanceText: { fontSize: 10, color: '#0F766E', flex: 1, lineHeight: 14 },
+  provenanceText: { fontFamily: 'Inter', fontSize: 10, color: '#004D4D', flex: 1, lineHeight: 14 },
   checkupsList: { gap: 8, marginTop: 10 },
   checkupCard: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
     padding: 10,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: '#f2f3f9',
     borderRadius: 10,
   },
   checkupIconCol: { width: 24, alignItems: 'center' },
-  checkupTitle: { fontSize: 12, fontWeight: '700', color: '#0F172A' },
-  checkupDoctor: { fontSize: 10, color: '#64748B', marginTop: 2 },
-  statusBadge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
-  statusText: { fontSize: 9, fontWeight: '800' },
-  badgeGood: { backgroundColor: '#ECFDF5' },
-  badgeWarn: { backgroundColor: '#FFFBEB' },
+  checkupTitle: { fontFamily: 'Public Sans', fontSize: 12, fontWeight: '700', color: '#191c20' },
+  checkupDoctor: { fontFamily: 'Inter', fontSize: 10, color: '#737784', marginTop: 2 },
+  statusBadge: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 },
+  statusText: { fontFamily: 'Public Sans', fontSize: 9.5, fontWeight: '800' },
+  badgeGood: { backgroundColor: '#ecfdf5' },
+  badgeWarn: { backgroundColor: '#fffbeb' },
 
   // Follow-up Tab Styles
   reviewCountdownCard: {
-    backgroundColor: '#F0FDFA',
+    backgroundColor: '#ffffff',
     borderWidth: 1,
-    borderColor: '#99F6E4',
+    borderColor: 'rgba(9, 76, 178, 0.08)',
     padding: 16,
     borderRadius: 16,
+    shadowColor: '#004D4D',
+    shadowOpacity: 0.03,
+    shadowRadius: 6,
+    elevation: 1,
   },
-  reviewOverdueCard: { backgroundColor: '#FEF2F2', borderColor: '#FECACA' },
+  reviewOverdueCard: { backgroundColor: '#fef2f2', borderColor: '#fecaca' },
   reviewHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  reviewHeaderTitle: { fontSize: 12, fontWeight: '800', color: '#0F766E' },
-  textRed: { color: '#DC2626' },
-  reviewDateDisplay: { fontSize: 18, fontWeight: '900', color: '#0F172A', marginTop: 6 },
-  reviewSub: { fontSize: 11, color: '#64748B', marginTop: 4, lineHeight: 16 },
+  reviewHeaderTitle: { fontFamily: 'Public Sans', fontSize: 11.5, fontWeight: '800', color: '#004D4D' },
+  textRed: { color: '#ba1a1a' },
+  reviewDateDisplay: { fontFamily: 'Noto Serif', fontSize: 18, fontWeight: '700', color: '#191c20', marginTop: 6 },
+  reviewSub: { fontFamily: 'Inter', fontSize: 11, color: '#737784', marginTop: 4, lineHeight: 16 },
   apptCard: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: 12,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: '#f2f3f9',
     borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
   },
-  apptDoctor: { fontSize: 13, fontWeight: '800', color: '#0F172A' },
-  apptDate: { fontSize: 11, color: '#0D9488', fontWeight: '700', marginTop: 2 },
-  apptReason: { fontSize: 11, color: '#64748B', marginTop: 2 },
+  apptDoctor: { fontFamily: 'Public Sans', fontSize: 13, fontWeight: '700', color: '#191c20' },
+  apptDate: { fontFamily: 'Inter', fontSize: 11, color: '#004D4D', fontWeight: '700', marginTop: 2 },
+  apptReason: { fontFamily: 'Inter', fontSize: 11, color: '#737784', marginTop: 2 },
   serverBadge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
-  serverBadgeText: { fontSize: 10, fontWeight: '800' },
-  activeClinicianBadge: { backgroundColor: '#F0FDFA', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
-  activeClinicianText: { fontSize: 10, fontWeight: '800', color: '#0F766E' },
-  clinicianName: { fontSize: 14, fontWeight: '800', color: '#0F172A', marginTop: 6 },
-  clinicianEmail: { fontSize: 11, color: '#64748B', marginTop: 2 },
+  serverBadgeText: { fontFamily: 'Public Sans', fontSize: 10, fontWeight: '800' },
+  activeClinicianBadge: { backgroundColor: 'rgba(9, 76, 178, 0.08)', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
+  activeClinicianText: { fontFamily: 'Public Sans', fontSize: 10, fontWeight: '800', color: '#004D4D' },
+  clinicianName: { fontFamily: 'Noto Serif', fontSize: 14, fontWeight: '700', color: '#191c20', marginTop: 6 },
+  clinicianEmail: { fontFamily: 'Inter', fontSize: 11, color: '#737784', marginTop: 2 },
 });

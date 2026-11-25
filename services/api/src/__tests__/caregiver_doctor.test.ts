@@ -1,6 +1,7 @@
 import request from 'supertest';
 import { randomUUID } from 'crypto';
 import { app, prisma } from '../server';
+import { withTenantTransaction } from '../db/tenantContext';
 
 describe('Caregiver Connect & Doctor Command Center Suite (Phase 4)', () => {
   let patient: any;
@@ -31,12 +32,30 @@ describe('Caregiver Connect & Doctor Command Center Suite (Phase 4)', () => {
     return user;
   }
 
+  let practice: any;
+
   beforeAll(async () => {
     patient = await register('Coordination Patient');
     assignedDoctor = await register('Dr. Sudhir Deshmukh', true);
     unassignedDoctor = await register('Dr. Pooja Sharma', true);
     caregiver = await register('Coordination Caregiver');
     stranger = await register('Unauthorized Stranger');
+
+    const suffix = Date.now();
+    practice = await prisma.practice.create({
+      data: {
+        name: `Coordination Practice ${suffix}`,
+        slug: `coordination-practice-${suffix}`,
+        registrationNumber: `REG-COORD-${suffix}`,
+        memberships: {
+          create: {
+            userId: assignedDoctor.id,
+            role: 'OWNER',
+            isActive: true,
+          },
+        },
+      },
+    });
 
     // Create an ACTIVE doctor-patient assignment for assignedDoctor
     await prisma.doctorPatientAssignment.create({
@@ -411,20 +430,31 @@ describe('Caregiver Connect & Doctor Command Center Suite (Phase 4)', () => {
       },
     });
 
-    await prisma.consultationNote.create({
-      data: {
-        userId: patient.id,
-        clinicianId: assignedDoctor.id,
-        clinicianName: 'Dr. Sudhir Deshmukh',
-        status: 'APPROVED',
-        rawTranscript: 'Consultation dialogue transcript',
-        speakerSegments: '[]',
-        structuredNote: '{}',
-        approvedNoteText: 'Patient shows stable glycemic control. Advised to continue current diet and metformin.',
-        approvedAt: new Date(),
-        approvedBy: assignedDoctor.id,
+    await withTenantTransaction(
+      prisma,
+      {
+        userId: assignedDoctor.id,
+        practiceId: practice.id,
+        role: 'DOCTOR',
+        patientId: patient.id,
       },
-    });
+      async (tx) => {
+        return await tx.consultationNote.create({
+          data: {
+            userId: patient.id,
+            clinicianId: assignedDoctor.id,
+            clinicianName: 'Dr. Sudhir Deshmukh',
+            status: 'APPROVED',
+            rawTranscript: 'Consultation dialogue transcript',
+            speakerSegments: '[]',
+            structuredNote: '{}',
+            approvedNoteText: 'Patient shows stable glycemic control. Advised to continue current diet and metformin.',
+            approvedAt: new Date(),
+            approvedBy: assignedDoctor.id,
+          },
+        });
+      }
+    );
 
     await prisma.appointment.create({
       data: {

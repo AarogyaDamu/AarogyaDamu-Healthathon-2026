@@ -96,7 +96,7 @@ export const SUPPORTED_LANGUAGES = [
 ];
 
 const GROQ_STT_MODEL = 'whisper-large-v3-turbo';
-const GROQ_LLM_MODEL = 'openai/gpt-oss-120b';
+const GROQ_LLM_MODEL = process.env.GROQ_LLM_MODEL || 'openai/gpt-oss-120b';
 
 /**
  * Redacts any occurrence of API keys from error messages and logs.
@@ -667,7 +667,7 @@ export class GroqDamuProvider implements DamuVoiceProvider {
       const formData = new FormData();
       formData.append(
         'file',
-        new Blob([normalized.buffer], { type: normalized.mimeType }),
+        new Blob([new Uint8Array(normalized.buffer)], { type: normalized.mimeType }),
         normalized.filename
       );
       formData.append('model', GROQ_STT_MODEL);
@@ -739,12 +739,16 @@ export class GroqDamuProvider implements DamuVoiceProvider {
       };
     }
 
-    // 3. Groq Llama 3.3 Chat Completion
+    // 3. Groq Llama 3.3 / GPT-OSS Chat Completion
     const systemPrompt = `You are Damu, a warm, culturally respectful, multilingual AI diabetes companion for AarogyaDamu.
 Your goal is to support patients with diabetes education, lifestyle awareness (diet, physical activity, sleep), and care plan comprehension.
-CRITICAL SAFETY BOUNDARIES:
-- You are NOT a doctor and cannot diagnose, prescribe, adjust insulin dosages, or alter prescriptions.
-- If the patient asks for medication changes, politely refuse and instruct them to contact their physician.
+CRITICAL CLINICAL BOUNDARIES & TARGET GUIDELINES:
+- You are NOT a doctor and cannot diagnose, prescribe, adjust insulin dosages, or alter prescriptions. Never present general AI responses as personalized prescriptions.
+- If the patient asks for medication changes, politely refuse and instruct them to contact their treating physician.
+- Clinical Target Education:
+  * Distinguish normal non-diabetic fasting reference ranges (70–99 mg/dL) from ADA preprandial targets for adults with diabetes (80–130 mg/dL).
+  * Postprandial target for adults with diabetes is <180 mg/dL (1-2 hours after meal).
+  * Emphasize that all target ranges are general clinical guideposts and must be individualized by their treating clinician.
 - Keep responses concise (under 3-4 sentences), encouraging, and suitable for text-to-speech listening.
 - Patient context: ${params.patientContext ? JSON.stringify(params.patientContext) : 'Not provided'}.
 Language: reply naturally in the patient's selected language (${params.language || 'en-IN'}).`;
@@ -862,7 +866,7 @@ export class SarvamDamuProvider implements DamuVoiceProvider {
       const formData = new FormData();
       formData.append(
         'file',
-        new Blob([normalized.buffer], { type: normalized.mimeType }),
+        new Blob([new Uint8Array(normalized.buffer)], { type: normalized.mimeType }),
         normalized.filename
       );
       formData.append('model', env.SARVAM_STT_MODEL || SARVAM_STT_MODEL);
@@ -950,9 +954,13 @@ export class SarvamDamuProvider implements DamuVoiceProvider {
 
     const systemPrompt = `You are Damu, a warm, culturally respectful, multilingual AI diabetes companion for AarogyaDamu.
 Your goal is to support patients with diabetes education, lifestyle awareness (diet, physical activity, sleep), and care plan comprehension.
-CRITICAL SAFETY BOUNDARIES:
-- You are NOT a doctor and cannot diagnose, prescribe, adjust insulin dosages, or alter prescriptions.
-- If the patient asks for medication changes, politely refuse and instruct them to contact their physician.
+CRITICAL CLINICAL BOUNDARIES & TARGET GUIDELINES:
+- You are NOT a doctor and cannot diagnose, prescribe, adjust insulin dosages, or alter prescriptions. Never present general AI responses as personalized prescriptions.
+- If the patient asks for medication changes, politely refuse and instruct them to contact their treating physician.
+- Clinical Target Education:
+  * Distinguish normal non-diabetic fasting reference ranges (70–99 mg/dL) from ADA preprandial targets for adults with diabetes (80–130 mg/dL).
+  * Postprandial target for adults with diabetes is <180 mg/dL (1-2 hours after meal).
+  * Emphasize that all target ranges are general clinical guideposts and must be individualized by their treating clinician.
 - Keep responses concise (under 3-4 sentences), encouraging, and suitable for text-to-speech listening.
 - Patient context: ${params.patientContext ? JSON.stringify(params.patientContext) : 'Not provided'}.
 Language: reply naturally in the patient's selected language (${params.language || 'hi-IN'}).`;
@@ -1181,8 +1189,8 @@ export class MockDamuProvider implements DamuVoiceProvider {
       };
     }
 
-    if (lower.includes('fasting') || lower.includes('glucose') || lower.includes('sugar')) {
-      const response = `Fasting blood glucose is typically measured after at least 8 hours without food. Standard target ranges are often between 80 to 130 mg/dL, though your personal care plan defines your exact targets.`;
+    if (lower.includes('fasting') || lower.includes('glucose') || lower.includes('sugar') || lower.includes('ada')) {
+      const response = `For non-pregnant adults with diabetes, standard ADA preprandial (fasting) targets are 80 to 130 mg/dL, whereas normal fasting glucose for adults without diabetes is 70 to 99 mg/dL. These are general educational guideposts; your treating clinician will establish your individualized clinical targets.`;
       return {
         textResponse: response,
         spokenText: response,

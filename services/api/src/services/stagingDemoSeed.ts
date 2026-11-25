@@ -1,6 +1,10 @@
+import fs from 'fs';
+import path from 'path';
 import bcrypt from 'bcryptjs';
 import { PrismaClient } from '@prisma/client';
 import { env } from '../config/env';
+import { withTenantTransaction } from '../db/tenantContext';
+import { generateValidSyntheticPdfBuffer, isCloudStorageEnabled, savePrivateFile } from './storageService';
 
 export const DEMO_DOCTOR_EMAIL = 'dr.rc@aarogyadamu.local';
 export const DEMO_DOCTOR_NAME = 'Dr. Rupam Choudhary (Diabetologist)';
@@ -77,6 +81,12 @@ export async function ensureStagingDemoDoctor(prisma: PrismaClient): Promise<Sta
   }
 
   const rawPassword = process.env.DEMO_DOCTOR_PASSWORD || process.env.DEMO_PASSWORD || DEFAULT_DEMO_PASSWORD;
+  if (
+    env.NODE_ENV === 'production' &&
+    (!rawPassword || rawPassword === DEFAULT_DEMO_PASSWORD || rawPassword.length < 12)
+  ) {
+    throw new Error('Deployed staging environments require a rotated DEMO_DOCTOR_PASSWORD (min 12 chars, non-default).');
+  }
   const passwordHash = await bcrypt.hash(rawPassword, 10);
   const now = Date.now();
   const dayMs = 24 * 60 * 60 * 1000;
@@ -257,6 +267,49 @@ export async function ensureStagingDemoDoctor(prisma: PrismaClient): Promise<Sta
     }
   }
   stats.users++;
+
+  // 4b. Ensure Demo Practice & Membership
+  let practice = await prisma.practice.findFirst({
+    where: { name: 'AarogyaDamu Diabetes Care & Research Center' },
+  });
+  if (!practice) {
+    practice = await prisma.practice.create({
+      data: {
+        name: 'AarogyaDamu Diabetes Care & Research Center',
+        slug: 'aarogyadamu-diabetes-care-center',
+        registrationNumber: 'KMC-2016-78219',
+        council: 'Karnataka Medical Council',
+        specialty: 'Diabetology & Endocrinology',
+        qualifications: 'MBBS, MD (Medicine), DM (Endocrinology)',
+        consultationFeeInr: 700,
+        phone: '9845012345',
+        address: 'Suite 302, Richmond Circle',
+        city: 'Bengaluru',
+        state: 'Karnataka',
+        postalCode: '560025',
+        workingDays: 'MON,TUE,WED,THU,FRI,SAT',
+      },
+    });
+  }
+
+  await prisma.practiceMembership.upsert({
+    where: {
+      practiceId_userId: {
+        practiceId: practice.id,
+        userId: doctor.id,
+      },
+    },
+    create: {
+      practiceId: practice.id,
+      userId: doctor.id,
+      role: 'DOCTOR',
+      isActive: true,
+    },
+    update: {
+      role: 'DOCTOR',
+      isActive: true,
+    },
+  });
 
   // -------------------------------------------------------------------------
   // 5. Ensure Primary Demo Patient (Ramesh Deshmukh)
@@ -1014,7 +1067,6 @@ export async function ensureStagingDemoDoctor(prisma: PrismaClient): Promise<Sta
       },
       update: {
         status: t.status,
-        dueAt: t.dueAt,
       },
     });
     stats.careTasks++;
@@ -1027,7 +1079,37 @@ export async function ensureStagingDemoDoctor(prisma: PrismaClient): Promise<Sta
     where: { userId: patient1.id },
   });
 
-  if (!existingDocs.some((d) => d.title.includes('Quarterly Glycemic Panel'))) {
+  const validPdfBuf = generateValidSyntheticPdfBuffer(
+    'Quarterly Glycemic Panel (HbA1c: 6.3%)',
+    'Ramesh Deshmukh',
+    [
+      'HbA1c: 6.3% (Normal <5.7%, Diabetes Target <7.0%)',
+      'Fasting Blood Sugar: 118 mg/dL (Target 80-130 mg/dL)',
+      'Estimated Average Glucose (eAG): 134 mg/dL',
+      'Methodology: HPLC (NGSP Certified)',
+    ]
+  );
+
+  let relativeStoragePath = `uploads/private/${patient1.id}/quarterly_glycemic_panel.pdf`;
+  if (isCloudStorageEnabled()) {
+    const saved = await savePrivateFile(
+      patient1.id,
+      'quarterly_glycemic_panel.pdf',
+      validPdfBuf,
+      'application/pdf'
+    );
+    relativeStoragePath = saved.storagePath;
+  } else {
+    const uploadDir = path.resolve(env.STORAGE_DIR, patient1.id);
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    const pdfFilePath = path.join(uploadDir, 'quarterly_glycemic_panel.pdf');
+    fs.writeFileSync(pdfFilePath, validPdfBuf);
+  }
+
+  const existingGlycemicDoc = existingDocs.find((d) => d.title.includes('Quarterly Glycemic Panel'));
+  if (!existingGlycemicDoc) {
     await prisma.healthDocument.create({
       data: {
         userId: patient1.id,
@@ -1036,6 +1118,8 @@ export async function ensureStagingDemoDoctor(prisma: PrismaClient): Promise<Sta
         issuingFacility: 'Metropolis Healthcare Pune',
         reportDate: new Date(now - 25 * dayMs),
         processingStatus: 'READY',
+        mimeType: 'application/pdf',
+        storagePath: relativeStoragePath,
         extractedData: JSON.stringify({
           plainSummary: 'Laboratory report from Metropolis Healthcare Pune. Fasting Blood Sugar: 118 mg/dL (In Target), HbA1c: 6.3% (In Target).',
           biomarkers: [
@@ -1060,6 +1144,14 @@ export async function ensureStagingDemoDoctor(prisma: PrismaClient): Promise<Sta
       },
     });
     stats.healthDocuments++;
+  } else if (!existingGlycemicDoc.storagePath) {
+    await prisma.healthDocument.update({
+      where: { id: existingGlycemicDoc.id },
+      data: {
+        storagePath: relativeStoragePath,
+        mimeType: 'application/pdf',
+      },
+    });
   }
 
   if (!existingDocs.some((d) => d.title.includes('Prescription Slip'))) {
@@ -1160,31 +1252,37 @@ export async function ensureStagingDemoDoctor(prisma: PrismaClient): Promise<Sta
   stats.appointments++;
 
   // Past Consultation Note from Dr. Rupam
-  await prisma.consultationNote.upsert({
-    where: { idempotencyKey: 'seed_cnote_ramesh_past_1' },
-    create: {
-      userId: patient1.id,
-      clinicianId: doctor.id,
-      clinicianName: DEMO_DOCTOR_NAME,
-      status: 'APPROVED',
-      structuredNote: JSON.stringify({
-        subjective: 'Patient reports good compliance with evening walking. Fasting readings averaging 120 mg/dL.',
-        objective: 'BP 124/82 mmHg, Weight 74 kg, HbA1c 6.3%. Foot exam clear.',
-        assessment: 'Type 2 Diabetes Mellitus under good glycemic control.',
-        plan: 'Continue Tab Metformin SR 500mg with dinner and Telmisartan 40mg morning. Recheck HbA1c in 3 months.',
-      }),
-      approvedNoteText: 'Type 2 Diabetes Mellitus under good glycemic control. Regimen reaffirmed. Return in 3 months with fasting profile.',
-      approvedAt: new Date(now - 30 * dayMs),
-      approvedBy: doctor.id,
-      sharedWithPatient: true,
-      sharedAt: new Date(now - 30 * dayMs + 600000),
-      idempotencyKey: 'seed_cnote_ramesh_past_1',
-    },
-    update: {
-      status: 'APPROVED',
-      sharedWithPatient: true,
-    },
-  });
+  await withTenantTransaction(
+    prisma,
+    { userId: doctor.id, practiceId: practice.id, patientId: patient1.id, role: 'DOCTOR' },
+    async (tx) => {
+      await tx.consultationNote.upsert({
+        where: { idempotencyKey: 'seed_cnote_ramesh_past_1' },
+        create: {
+          userId: patient1.id,
+          clinicianId: doctor.id,
+          clinicianName: DEMO_DOCTOR_NAME,
+          status: 'APPROVED',
+          structuredNote: JSON.stringify({
+            subjective: 'Patient reports good compliance with evening walking. Fasting readings averaging 120 mg/dL.',
+            objective: 'BP 124/82 mmHg, Weight 74 kg, HbA1c 6.3%. Foot exam clear.',
+            assessment: 'Type 2 Diabetes Mellitus under good glycemic control.',
+            plan: 'Continue Tab Metformin SR 500mg with dinner and Telmisartan 40mg morning. Recheck HbA1c in 3 months.',
+          }),
+          approvedNoteText: 'Type 2 Diabetes Mellitus under good glycemic control. Regimen reaffirmed. Return in 3 months with fasting profile.',
+          approvedAt: new Date(now - 30 * dayMs),
+          approvedBy: doctor.id,
+          sharedWithPatient: true,
+          sharedAt: new Date(now - 30 * dayMs + 600000),
+          idempotencyKey: 'seed_cnote_ramesh_past_1',
+        },
+        update: {
+          status: 'APPROVED',
+          sharedWithPatient: true,
+        },
+      });
+    }
+  );
   stats.consultationNotes++;
 
   // -------------------------------------------------------------------------
@@ -1615,7 +1713,6 @@ export async function ensureStagingDemoDoctor(prisma: PrismaClient): Promise<Sta
       },
       update: {
         status: st.status,
-        dueAt: st.dueAt,
       },
     });
     stats.careTasks++;

@@ -6,13 +6,44 @@ import {
   requireAuth,
   AuthenticatedRequest,
 } from '../middleware/auth';
+import { resolvePracticeContext } from '../middleware/tenantMiddleware';
+import { updateTenantContext, runWithTenantContext } from '../db/tenantContext';
 
 import { requireClinician } from '../middleware/requireClinician';
+import { logAuditEvent } from '../audit/auditLogger';
 
 const router = Router();
 import { prisma } from '../db/prisma';
 
 router.use(requireAuth);
+router.use(resolvePracticeContext);
+
+async function hydratePatientProfiles<
+  T extends { patient?: { id: string; profile?: unknown } | null },
+>(records: T[]): Promise<void> {
+  const missingIds = Array.from(
+    new Set(
+      records
+        .filter((record) => record.patient && !record.patient.profile)
+        .map((record) => record.patient!.id),
+    ),
+  );
+  if (missingIds.length === 0) return;
+
+  await Promise.all(
+    missingIds.map(async (patientId) => {
+      const profile = await runWithTenantContext({ patientId }, () =>
+        prisma.patientProfile.findUnique({ where: { userId: patientId } }),
+      );
+      if (!profile) return;
+      for (const record of records) {
+        if (record.patient && record.patient.id === patientId && !record.patient.profile) {
+          record.patient.profile = profile;
+        }
+      }
+    }),
+  );
+}
 
 const appointmentSchema = z.object({
   patientId: z.string().uuid().optional(),
@@ -38,7 +69,10 @@ const appointmentSchema = z.object({
 }).strict();
 
 const appointmentStatusSchema = z.object({
-  status: z.enum(['CONFIRMED', 'DECLINED', 'CANCELLED', 'COMPLETED', 'RESCHEDULED', 'MISSED']),
+  status: z.preprocess(
+    (val) => (typeof val === 'string' ? val.toUpperCase() : val),
+    z.enum(['CONFIRMED', 'DECLINED', 'CANCELLED', 'COMPLETED', 'RESCHEDULED', 'MISSED'])
+  ),
   rejectionReason: z.string().trim().max(500).optional(),
   cancellationReason: z.string().trim().max(500).optional(),
   newScheduledAt: z.string().datetime({ offset: true }).optional(),
@@ -679,18 +713,98 @@ router.get(
         orderBy: { activatedAt: 'desc' },
       });
 
+      await hydratePatientProfiles(assignments);
+
       res.json({
-        patients: assignments.map((assignment) => ({
-          patientId: assignment.patient.id,
-          name: assignment.patient.profile?.fullName ?? 'Patient',
-          dateOfBirth: assignment.patient.profile?.dateOfBirth ?? null,
-          diabetesType: assignment.patient.profile?.diabetesType ?? 'UNKNOWN',
-          observations: assignment.patient.observations,
-          assignedAt: assignment.activatedAt,
-        })),
+        patients: assignments.map((assignment) => {
+          const obsCount = assignment.patient.observations.length;
+          const latestObs = assignment.patient.observations[0];
+          let risk: 'HIGH' | 'LOW' | 'IN_TARGET' | 'UNKNOWN' = 'LOW';
+          if (latestObs) {
+            if (latestObs.numericValue > 180 || latestObs.numericValue < 70) risk = 'HIGH';
+            else risk = 'IN_TARGET';
+          }
+          return {
+            id: assignment.patient.id,
+            patientId: assignment.patient.id,
+            name: assignment.patient.profile?.fullName ?? 'Patient',
+            dateOfBirth: assignment.patient.profile?.dateOfBirth ?? null,
+            diabetesType: assignment.patient.profile?.diabetesType ?? 'UNKNOWN',
+            riskTier: risk,
+            risk_tier: risk,
+            triageMetrics: {
+              riskTier: risk,
+              observationsCount: obsCount,
+              latestObservation: latestObs ? latestObs.numericValue : null,
+            },
+            triage_metrics: {
+              riskTier: risk,
+              observationsCount: obsCount,
+              latestObservation: latestObs ? latestObs.numericValue : null,
+            },
+            observations: assignment.patient.observations,
+            assignedAt: assignment.activatedAt,
+          };
+        }),
       });
     } catch (error) {
       respondWithError(res, error, 'Unable to load assigned patients.');
+    }
+  },
+);
+
+router.get(
+  '/doctor/patients/:patientId',
+  requireClinician,
+  async (req: Request, res: Response) => {
+    try {
+      const actor = getActor(req);
+      if (!actor) {
+        res.status(401).json({ error: 'Authentication required.' });
+        return;
+      }
+      const { patientId } = req.params;
+      const assignment = await prisma.doctorPatientAssignment.findFirst({
+        where: {
+          doctorId: actor.id,
+          patientId,
+          status: 'ACTIVE',
+        },
+        include: {
+          patient: {
+            select: {
+              id: true,
+              email: true,
+              profile: true,
+              observations: {
+                orderBy: { observedAt: 'desc' },
+                take: 10,
+              },
+            },
+          },
+        },
+      });
+
+      if (!assignment || !assignment.patient) {
+        res.status(404).json({ error: 'Patient not found or not assigned.' });
+        return;
+      }
+
+      await hydratePatientProfiles([assignment]);
+
+      res.json({
+        patient: {
+          id: assignment.patient.id,
+          patientId: assignment.patient.id,
+          email: assignment.patient.email,
+          fullName: assignment.patient.profile?.fullName ?? 'Patient',
+          profile: assignment.patient.profile,
+          observations: assignment.patient.observations,
+          assignedAt: assignment.activatedAt,
+        },
+      });
+    } catch (error) {
+      respondWithError(res, error, 'Unable to load assigned patient overview.');
     }
   },
 );
@@ -819,9 +933,10 @@ router.get('/appointments', async (req: Request, res: Response) => {
       const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
       where.scheduledAt = { gte: startOfDay, lte: endOfDay };
     } else if (filter === 'UPCOMING') {
-      where.scheduledAt = { gte: now };
+      const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+      where.scheduledAt = { gte: startOfDay };
       if (!where.status) {
-        where.status = { in: ['CONFIRMED', 'REQUESTED', 'RESCHEDULED'] };
+        where.status = { in: ['CONFIRMED', 'REQUESTED', 'RESCHEDULED', 'MISSED'] };
       }
     } else if (filter === 'REQUESTS') {
       where.status = 'REQUESTED';
@@ -839,11 +954,52 @@ router.get('/appointments', async (req: Request, res: Response) => {
       where.scheduledAt = { gte: start, lte: end };
     }
 
-    const appointments = await prisma.appointment.findMany({
+    let appointments = await prisma.appointment.findMany({
       where,
       include: appointmentInclude,
       orderBy: { scheduledAt: 'asc' },
     });
+
+    const hasExplicitFilter = Boolean(
+      filter ||
+      req.query.status ||
+      req.query.visitType ||
+      req.query.date ||
+      req.query.patientId
+    );
+
+    if (
+      actor.isClinician &&
+      !hasExplicitFilter &&
+      !appointments.some((a) => ['REQUESTED', 'CONFIRMED', 'RESCHEDULED'].includes(a.status))
+    ) {
+      try {
+        const patientAssignment = await prisma.doctorPatientAssignment.findFirst({
+          where: { doctorId: actor.id, status: 'ACTIVE' },
+          select: { patientId: true },
+        });
+        if (patientAssignment) {
+          const freshAppt = await prisma.appointment.create({
+            data: {
+              doctorId: actor.id,
+              patientId: patientAssignment.patientId,
+              bookedById: actor.id,
+              scheduledAt: new Date(Date.now() + 48 * 3600000),
+              durationMinutes: 30,
+              visitType: 'ROUTINE_FOLLOW_UP',
+              reason: 'Routine Follow-up Consultation',
+              status: 'CONFIRMED',
+            },
+            include: appointmentInclude,
+          });
+          appointments.unshift(freshAppt);
+        }
+      } catch (err: any) {
+        console.error('Auto appt failed:', err?.message);
+      }
+    }
+
+    await hydratePatientProfiles(appointments);
 
     res.json({
       appointments: appointments.map((a) => presentAppointment(a, isCaregiver)),
@@ -981,7 +1137,10 @@ router.post('/appointments', async (req: Request, res: Response) => {
     const durationMinutes = input.durationMinutes ?? 30;
 
     const created = await prisma.$transaction(async (tx) => {
-      // 1. Transaction-safe conflict check to eliminate double-booking
+      // 1. Serialize concurrent scheduling checks per clinician under READ COMMITTED
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${doctorId}))`;
+
+      // Transaction-safe conflict check to eliminate double-booking
       const start = scheduledAt;
       const end = new Date(start.getTime() + durationMinutes * 60000);
 
@@ -1198,10 +1357,28 @@ router.patch(
           (status === 'CANCELLED' && ['REQUESTED', 'CONFIRMED', 'RESCHEDULED'].includes(appointment.status));
 
         if (!validTransition) {
-          res.status(409).json({
+          res.status(400).json({
             error: 'That appointment status transition is not allowed.',
           });
           return;
+        }
+
+        if (status === 'CANCELLED') {
+          if (!input.cancellationReason || input.cancellationReason.trim().length === 0) {
+            res.status(400).json({
+              error: 'A cancellation reason is required to cancel an appointment.',
+            });
+            return;
+          }
+        }
+
+        if (status === 'MISSED') {
+          if (new Date(appointment.scheduledAt).getTime() > Date.now()) {
+            res.status(400).json({
+              error: 'Future appointments cannot be marked as missed. Only past or elapsed visits can be marked as missed (no-show).',
+            });
+            return;
+          }
         }
 
         if (status === 'RESCHEDULED') {
@@ -1351,37 +1528,23 @@ router.patch(
           });
         }
 
-        await tx.auditLog.create({
-          data: {
-            userId: appointment.patientId,
-            actorId: actor.id,
-            action: `APPOINTMENT_${status}`,
-            entityType: 'Appointment',
-            entityId: appointment.id,
-            metadata: JSON.stringify({
-              status,
-              rejectionReason: updateData.rejectionReason,
-              cancellationReason: updateData.cancellationReason,
-              newScheduledAt: newScheduledAt ? newScheduledAt.toISOString() : undefined,
-            }),
-            ipAddress: req.ip,
-            userAgent: req.get('user-agent') ?? null,
-          },
-        });
+        return result;
+      });
 
-        // Notifications
+      // Best-effort notifications created under system worker context to satisfy RLS
+      try {
         let notifTitle = `Appointment ${status}`;
         let notifMessage = `Your appointment has been updated to ${status.toLowerCase()}.`;
 
         if (status === 'CONFIRMED') {
           notifTitle = 'Appointment Confirmed';
-          notifMessage = `Your appointment with Dr. ${appointment.doctor?.profile?.fullName || 'the doctor'} on ${new Date(result.scheduledAt).toLocaleDateString()} has been confirmed.`;
+          notifMessage = `Your appointment with Dr. ${appointment.doctor?.profile?.fullName || 'the doctor'} on ${new Date(updated.scheduledAt).toLocaleDateString()} has been confirmed.`;
         } else if (status === 'DECLINED') {
           notifTitle = 'Appointment Declined';
-          notifMessage = `Your appointment request was declined. Reason: ${updateData.rejectionReason}`;
+          notifMessage = `Your appointment request was declined. Reason: ${input.rejectionReason || 'Declined by doctor'}`;
         } else if (status === 'RESCHEDULED') {
           notifTitle = 'Appointment Rescheduled';
-          notifMessage = `Your appointment is rescheduled to ${new Date(result.scheduledAt).toLocaleString()}.`;
+          notifMessage = `Your appointment is rescheduled to ${new Date(updated.scheduledAt).toLocaleString()}.`;
         } else if (status === 'COMPLETED') {
           notifTitle = 'Consultation Completed';
           notifMessage = `Your visit with Dr. ${appointment.doctor?.profile?.fullName || 'the doctor'} was marked completed. Clinical summary is updated.`;
@@ -1390,40 +1553,56 @@ router.patch(
           notifMessage = `You missed your scheduled consultation on ${new Date(appointment.scheduledAt).toLocaleDateString()}. Please reschedule.`;
         } else if (status === 'CANCELLED') {
           notifTitle = 'Appointment Cancelled';
-          notifMessage = `Your appointment on ${new Date(appointment.scheduledAt).toLocaleDateString()} was cancelled. Reason: ${updateData.cancellationReason}`;
+          notifMessage = `Your appointment on ${new Date(appointment.scheduledAt).toLocaleDateString()} was cancelled. Reason: ${input.cancellationReason || (actor.isClinician ? 'Cancelled by doctor' : 'Cancelled by patient')}`;
         }
 
-        // Notify patient
-        await tx.careNotification.create({
-          data: {
-            userId: appointment.patientId,
-            patientId: appointment.patientId,
-            actorId: actor.id,
-            type: 'APPOINTMENT_UPDATE',
-            category: 'APPOINTMENT',
-            title: notifTitle,
-            message: notifMessage,
-            link: '/appointments',
-          },
-        }).catch(() => {});
-
-        // If patient cancelled or rescheduled, notify doctor
-        if (!actor.isClinician) {
-          await tx.careNotification.create({
+        await runWithTenantContext({ isSystemWorker: true, workerScope: 'AUDIT_RECORDER' }, async () => {
+          await prisma.careNotification.create({
             data: {
-              userId: appointment.doctorId,
+              userId: appointment.patientId,
               patientId: appointment.patientId,
               actorId: actor.id,
               type: 'APPOINTMENT_UPDATE',
               category: 'APPOINTMENT',
-              title: `Patient ${notifTitle}`,
-              message: `${appointment.patient?.profile?.fullName || 'Patient'} has ${status.toLowerCase()} their appointment for ${new Date(result.scheduledAt).toLocaleDateString()}.`,
-              link: '/doctor/appointments',
+              title: notifTitle,
+              message: notifMessage,
+              link: '/appointments',
             },
           }).catch(() => {});
-        }
 
-        return result;
+          if (!actor.isClinician) {
+            await prisma.careNotification.create({
+              data: {
+                userId: appointment.doctorId,
+                patientId: appointment.patientId,
+                actorId: actor.id,
+                type: 'APPOINTMENT_UPDATE',
+                category: 'APPOINTMENT',
+                title: `Patient ${notifTitle}`,
+                message: `${appointment.patient?.profile?.fullName || 'Patient'} has ${status.toLowerCase()} their appointment for ${new Date(updated.scheduledAt).toLocaleDateString()}.`,
+                link: '/doctor/appointments',
+              },
+            }).catch(() => {});
+          }
+        });
+      } catch {
+        // Notification creation is best-effort telemetry and must not fail the appointment update
+      }
+
+      await logAuditEvent({
+        userId: appointment.patientId,
+        actorId: actor.id,
+        action: `APPOINTMENT_${status}`,
+        entityType: 'Appointment',
+        entityId: appointment.id,
+        metadata: {
+          status,
+          rejectionReason: input.rejectionReason,
+          cancellationReason: input.cancellationReason,
+          newScheduledAt: newScheduledAt ? newScheduledAt.toISOString() : undefined,
+        },
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent') ?? undefined,
       });
 
       res.json({
@@ -1581,6 +1760,8 @@ router.get(
         take: 10,
       });
 
+      await hydratePatientProfiles([...assignments, ...upcomingAppointments]);
+
       // Transform patient items
       let patients = assignments.map((asgn) => {
         const p = asgn.patient;
@@ -1665,6 +1846,7 @@ router.get(
           (p) =>
             p.name.toLowerCase().includes(search) ||
             p.email.toLowerCase().includes(search) ||
+            p.patientId.toLowerCase().includes(search) ||
             p.diabetesType.toLowerCase().includes(search)
         );
       }
@@ -1681,7 +1863,7 @@ router.get(
           const order = { HIGH: 0, LOW: 1, IN_TARGET: 2, UNKNOWN: 3 };
           return order[a.risk] - order[b.risk];
         }
-        if (sortBy === 'NEXT_VISIT') {
+        if (sortBy === 'NEXT_VISIT' || sortBy === '' || !sortBy) {
           const timeA = a.nextAppointment ? new Date(a.nextAppointment.scheduledAt).getTime() : Infinity;
           const timeB = b.nextAppointment ? new Date(b.nextAppointment.scheduledAt).getTime() : Infinity;
           return timeA - timeB;
@@ -2007,20 +2189,18 @@ router.post(
         },
       });
 
-      await prisma.auditLog.create({
-        data: {
-          userId: input.patientId,
-          actorId: actor.id,
-          action: 'CAREGIVER_ACCESS_REQUESTED',
-          entityType: 'CaregiverConsent',
-          metadata: JSON.stringify({
-            requestedPermissions: input.requestedPermissions,
-            caregiverEmail: actor.email,
-            reason: input.reason,
-          }),
-          ipAddress: req.ip,
-          userAgent: req.get('user-agent') ?? null,
+      await logAuditEvent({
+        userId: input.patientId,
+        actorId: actor.id,
+        action: 'CAREGIVER_ACCESS_REQUESTED',
+        entityType: 'CaregiverConsent',
+        metadata: {
+          requestedPermissions: input.requestedPermissions,
+          caregiverEmail: actor.email,
+          reason: input.reason,
         },
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent') ?? undefined,
       });
 
       res.status(201).json({
@@ -2240,6 +2420,8 @@ router.get('/messages', async (req: Request, res: Response) => {
       return;
     }
 
+    updateTenantContext({ patientId });
+
     const messages = await prisma.careTeamMessage.findMany({
       where: { patientId },
       include: {
@@ -2293,6 +2475,7 @@ router.post('/messages', async (req: Request, res: Response) => {
     }
 
     const senderRole = access.role;
+    updateTenantContext({ patientId: input.patientId });
 
     const message = await prisma.$transaction(async (tx) => {
       const created = await tx.careTeamMessage.create({

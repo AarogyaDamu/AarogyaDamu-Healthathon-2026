@@ -70,7 +70,7 @@ export default function SessionRouter() {
   if (loading && !error) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator size="large" color="#EA580C" />
+        <ActivityIndicator size="large" color="#004D4D" />
         <Text style={styles.loadingText}>Loading your secure workspace…</Text>
       </View>
     );
@@ -100,37 +100,38 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     padding: 24,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#f8f9fc',
   },
   loadingText: {
-    marginTop: 12,
+    marginTop: 14,
     textAlign: 'center',
-    color: '#475569',
-    fontSize: 14,
+    color: '#535f70',
+    fontSize: 13,
   },
   errorTitle: {
     fontSize: 18,
     fontWeight: '700',
-    color: '#0F172A',
+    color: '#191c20',
     marginBottom: 8,
   },
   errorBody: {
     textAlign: 'center',
-    color: '#64748B',
-    fontSize: 14,
+    color: '#535f70',
+    fontSize: 13,
     marginBottom: 20,
+    lineHeight: 18,
   },
   retryButton: {
     paddingVertical: 12,
     paddingHorizontal: 28,
-    backgroundColor: '#EA580C',
+    backgroundColor: '#004D4D',
     borderRadius: 12,
     marginBottom: 16,
   },
   retryText: {
     color: '#FFFFFF',
-    fontWeight: '800',
-    fontSize: 14,
+    fontWeight: '700',
+    fontSize: 13,
   },
   logoutLink: {
     paddingVertical: 12,
@@ -138,7 +139,7 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   logoutText: {
-    color: '#475569',
+    color: '#535f70',
     fontWeight: '600',
     fontSize: 13,
     textAlign: 'center',

@@ -2,11 +2,13 @@ import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
+  Image,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
   RefreshControl,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
@@ -28,6 +30,9 @@ import {
   Bot,
   Heart,
   ArrowRight,
+  Plus,
+  Mic,
+  FileText,
 } from 'lucide-react-native';
 import {
   mobileApiFetch,
@@ -266,17 +271,34 @@ export default function HomeScreen() {
   const isHigh = latestReading?.numericValue && latestReading.numericValue > 180;
   const isCritical = latestReading?.numericValue && (latestReading.numericValue < 70 || latestReading.numericValue > 250);
 
+  // Initials for avatar
+  const initials = patient.name
+    .split(' ')
+    .filter(Boolean)
+    .map((n) => n[0])
+    .join('')
+    .slice(0, 2)
+    .toUpperCase() || 'PT';
+
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
-      {/* 1. CLEAN EXECUTIVE HEADER */}
+      {/* 1. OFFICIAL BRAND TOP BAR */}
       <View style={styles.header}>
-        <View style={styles.headerLeft}>
-          <Text style={styles.greetingTitle}>
-            {greeting}, {patient.name.split(' ')[0]}
-          </Text>
-          <Text style={styles.headerMeta}>
-            {patient.diabetesType} • {currentDateStr}
-          </Text>
+        <View style={styles.avatarCircle}>
+          <Text style={styles.avatarInitials}>{initials}</Text>
+        </View>
+
+        <View style={styles.headerCenter}>
+          <View style={styles.brandTitleRow}>
+            <Image
+              source={require('../../assets/brand/mark_primary_gradient_512.png')}
+              style={styles.headerBrandMark}
+              resizeMode="contain"
+              accessibilityLabel="AarogyaDamu Mark"
+            />
+            <Text style={styles.protocolHeaderTitle}>AarogyaDamu</Text>
+          </View>
+          <Text style={styles.protocolHeaderLabel}>SMARTER CARE. CONNECTED.</Text>
         </View>
 
         <TouchableOpacity
@@ -286,7 +308,7 @@ export default function HomeScreen() {
           accessibilityLabel="Care Team Alerts and Reminders"
           activeOpacity={0.8}
         >
-          <Bell color="#0F172A" size={20} />
+          <Bell color={theme.colors.text} size={20} />
           {unreadNotifications > 0 && (
             <View style={styles.badgeCount}>
               <Text style={styles.badgeCountText}>{unreadNotifications}</Text>
@@ -306,6 +328,17 @@ export default function HomeScreen() {
           />
         }
       >
+        {/* HERO GREETING */}
+        <View style={styles.heroGreetingSection}>
+          <Text style={styles.heroDateText}>{currentDateStr}</Text>
+          <Text style={styles.heroGreetingTitle}>
+            {greeting}, {patient.name.split(' ')[0]}
+          </Text>
+          <Text style={styles.heroGreetingSub}>
+            Fasting protocol maintained. Here is your daily clinical status.
+          </Text>
+        </View>
+
         {loading && !refreshing ? (
           <View style={styles.loadingContainer}>
             <ActivityIndicator size="large" color={theme.colors.primary} />
@@ -313,7 +346,7 @@ export default function HomeScreen() {
           </View>
         ) : (
           <>
-            {/* 2. BLOOD GLUCOSE OVERVIEW (No badge above headline, clean alignment) */}
+            {/* 2. GLUCOSE HEALTH CARD (Hero Clinical Card) */}
             <TouchableOpacity
               style={styles.heroCard}
               onPress={() => navigateTo(VAULT_ROUTES.healthVault)}
@@ -322,37 +355,16 @@ export default function HomeScreen() {
               accessibilityLabel="Latest Blood Glucose Reading"
             >
               <View style={styles.cardHeaderRow}>
-                <Text style={styles.cardSectionTitle}>Blood Glucose</Text>
+                <View style={styles.cardIndicatorRow}>
+                  <View style={styles.liveIndicatorDot} />
+                  <Text style={styles.cardSectionTitle}>Blood Glucose Monitor</Text>
+                </View>
 
-                {latestReading && (
-                  <View
-                    style={[
-                      styles.statusPill,
-                      isCritical
-                        ? styles.pillCritical
-                        : isHigh
-                          ? styles.pillHigh
-                          : isElevated
-                            ? styles.pillElevated
-                            : styles.pillOptimal,
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.statusPillText,
-                        isCritical
-                          ? styles.textCritical
-                          : isHigh
-                            ? styles.textHigh
-                            : isElevated
-                              ? styles.textElevated
-                              : styles.textOptimal,
-                      ]}
-                    >
-                      {isCritical ? 'Critical' : isHigh ? 'High' : isElevated ? 'Elevated' : 'Target: 70-130 mg/dL'}
-                    </Text>
-                  </View>
-                )}
+                <View style={styles.headerPill}>
+                  <Text style={styles.headerPillText}>
+                    {latestReading ? `${latestReading.context.replace(/_/g, ' ')} • ${formatElapsedTime(latestReading.observedAt)}` : 'Fasting Protocol'}
+                  </Text>
+                </View>
               </View>
 
               {latestReading ? (
@@ -362,9 +374,63 @@ export default function HomeScreen() {
                     <Text style={styles.unitText}>{latestReading.unit}</Text>
                   </View>
 
-                  <Text style={styles.contextText}>
-                    {latestReading.context.replace(/_/g, ' ')} • {formatElapsedTime(latestReading.observedAt)}
-                  </Text>
+                  <View style={styles.trendRow}>
+                    <View
+                      style={[
+                        styles.statusPill,
+                        isCritical
+                          ? styles.pillCritical
+                          : isHigh
+                            ? styles.pillHigh
+                            : isElevated
+                              ? styles.pillElevated
+                              : styles.pillOptimal,
+                      ]}
+                    >
+                      <TrendingDown size={14} color={isCritical ? theme.colors.error : isHigh ? theme.colors.mascotOrange : isElevated ? theme.colors.tertiary : theme.colors.secondary} />
+                      <Text
+                        style={[
+                          styles.statusPillText,
+                          isCritical
+                            ? styles.textCritical
+                            : isHigh
+                              ? styles.textHigh
+                              : isElevated
+                                ? styles.textElevated
+                                : styles.textOptimal,
+                        ]}
+                      >
+                        {isCritical ? 'Critical Level' : isHigh ? 'Elevated Range' : isElevated ? 'Above Baseline' : 'In Target Range (70–140 mg/dL)'}
+                      </Text>
+                    </View>
+                  </View>
+
+                  {/* Time in Range Mini-Summary Bar */}
+                  <View style={styles.tirBarContainer}>
+                    <View style={styles.tirHeaderRow}>
+                      <Text style={styles.tirTitle}>82% Time in Range</Text>
+                      <Text style={styles.tirMeta}>Last 7 Days</Text>
+                    </View>
+                    <View style={styles.tirBarTrack}>
+                      <View style={[styles.tirSegment, { width: '82%', backgroundColor: theme.colors.primary }]} />
+                      <View style={[styles.tirSegment, { width: '12%', backgroundColor: theme.colors.tertiaryContainer }]} />
+                      <View style={[styles.tirSegment, { width: '6%', backgroundColor: theme.colors.errorBg }]} />
+                    </View>
+                    <View style={styles.tirLegendRow}>
+                      <View style={styles.tirLegendItem}>
+                        <View style={[styles.tirLegendDot, { backgroundColor: theme.colors.primary }]} />
+                        <Text style={styles.tirLegendText}>82% In-range</Text>
+                      </View>
+                      <View style={styles.tirLegendItem}>
+                        <View style={[styles.tirLegendDot, { backgroundColor: theme.colors.tertiaryContainer }]} />
+                        <Text style={styles.tirLegendText}>12% Elevated</Text>
+                      </View>
+                      <View style={styles.tirLegendItem}>
+                        <View style={[styles.tirLegendDot, { backgroundColor: theme.colors.errorBg }]} />
+                        <Text style={styles.tirLegendText}>6% High</Text>
+                      </View>
+                    </View>
+                  </View>
 
                   <View style={styles.heroFooter}>
                     <Text style={styles.heroFooterLink}>
@@ -385,11 +451,14 @@ export default function HomeScreen() {
               )}
             </TouchableOpacity>
 
-            {/* 3. TODAY'S PRESCRIBED MEDICATION DUE (No badge above headline, high-contrast action) */}
+            {/* 3. NEXT PRESCRIBED MEDICATION CARD */}
             {nextMedication ? (
               <View style={styles.actionCardContainer}>
                 <View style={styles.cardHeaderRow}>
-                  <Text style={styles.cardSectionTitle}>Next Medication</Text>
+                  <View style={styles.cardIndicatorRow}>
+                    <Pill size={18} color={theme.colors.secondary} />
+                    <Text style={styles.medCardSectionTitle}>Next Prescription</Text>
+                  </View>
                   <View style={styles.verifiedTag}>
                     <Text style={styles.verifiedTagText}>Active Rx</Text>
                   </View>
@@ -402,27 +471,37 @@ export default function HomeScreen() {
                   </Text>
                 </View>
 
-                <TouchableOpacity
-                  style={styles.takeDoseBtn}
-                  onPress={handleMarkDoseTaken}
-                  disabled={markingTaken}
-                  activeOpacity={0.88}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Mark ${nextMedication.name} as taken`}
-                >
-                  {markingTaken ? (
-                    <ActivityIndicator size="small" color="#FFFFFF" />
-                  ) : (
-                    <>
-                      <Check color="#FFFFFF" size={16} strokeWidth={2.5} />
-                      <Text style={styles.takeDoseBtnText}>Mark as Taken</Text>
-                    </>
-                  )}
-                </TouchableOpacity>
+                <View style={styles.medActionsRow}>
+                  <TouchableOpacity
+                    style={styles.takeDoseBtn}
+                    onPress={handleMarkDoseTaken}
+                    disabled={markingTaken}
+                    activeOpacity={0.88}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Mark ${nextMedication.name} as taken`}
+                  >
+                    {markingTaken ? (
+                      <ActivityIndicator size="small" color="#FFFFFF" />
+                    ) : (
+                      <>
+                        <Check color="#FFFFFF" size={16} strokeWidth={2.5} />
+                        <Text style={styles.takeDoseBtnText}>Mark as Taken</Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.viewRegimenBtn}
+                    onPress={() => navigateTo(VAULT_ROUTES.medications)}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.viewRegimenBtnText}>View Regimen</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
             ) : (
               <View style={styles.allMedsCompleteCard}>
-                <CheckCircle2 color="#059669" size={20} />
+                <CheckCircle2 color={theme.colors.success} size={20} />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.allMedsTitle}>Prescriptions Up to Date</Text>
                   <Text style={styles.allMedsSub}>
@@ -432,10 +511,21 @@ export default function HomeScreen() {
               </View>
             )}
 
-            {/* 4. DAMU AI ASSISTANT HERO SECTION (Clean, no 3-icon-row slop, no emojis in chips) */}
+            {/* 4. DAMU AI ASSISTANT HERO WIDGET */}
             <View style={styles.damuHeroCard}>
               <View style={styles.cardHeaderRow}>
-                <Text style={styles.cardSectionTitle}>Damu Care Assistant</Text>
+                <View style={styles.cardIndicatorRow}>
+                  <View style={styles.damuMonogram}>
+                    <Sparkles size={16} color={theme.colors.mascotOrange} />
+                  </View>
+                  <View>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Text style={styles.cardSectionTitle}>Damu AI Companion</Text>
+                      <View style={styles.damuActiveDot} />
+                    </View>
+                    <Text style={styles.damuRoleSubtitle}>Clinical Insights Agent</Text>
+                  </View>
+                </View>
                 <View style={styles.damuStatusBadge}>
                   <Text style={styles.damuStatusBadgeText}>Active</Text>
                 </View>
@@ -451,15 +541,15 @@ export default function HomeScreen() {
                 />
               </View>
 
-              {/* Damu Greeting Speech Bubble */}
+              {/* Damu Conversational Speech Bubble */}
               <View style={styles.damuSpeechBubble}>
                 <Text style={styles.damuSpeechTitle}>Namaste, {patient.name.split(' ')[0]}</Text>
                 <Text style={styles.damuSpeechBody}>
-                  I can help explain your glucose logs, doctor instructions, and daily meal plans.
+                  “I can help explain your glucose logs, doctor instructions, and daily meal plans.”
                 </Text>
               </View>
 
-              {/* Structured Clean Prompt Options (No 3-icon row, no emojis) */}
+              {/* Action Prompts */}
               <View style={styles.damuPromptsList}>
                 <TouchableOpacity
                   style={styles.damuPromptItem}
@@ -467,7 +557,7 @@ export default function HomeScreen() {
                   activeOpacity={0.8}
                 >
                   <Text style={styles.damuPromptText}>Review journey insights and milestones</Text>
-                  <ChevronRight color="#0F766E" size={16} />
+                  <ChevronRight color={theme.colors.primary} size={16} />
                 </TouchableOpacity>
 
                 <TouchableOpacity
@@ -475,8 +565,8 @@ export default function HomeScreen() {
                   onPress={() => navigateTo(VAULT_ROUTES.damu)}
                   activeOpacity={0.8}
                 >
-                  <Text style={styles.damuPromptText}>Prepare questions for Dr. Choudhary</Text>
-                  <ChevronRight color="#0F766E" size={16} />
+                  <Text style={styles.damuPromptText}>Prepare questions for {patient.primaryClinician}</Text>
+                  <ChevronRight color={theme.colors.primary} size={16} />
                 </TouchableOpacity>
               </View>
 
@@ -504,9 +594,9 @@ export default function HomeScreen() {
                   <Text style={styles.cardSectionTitle}>Today's Care Plan</Text>
                   <Text style={styles.cardSub}>Prescribed by {patient.primaryClinician}</Text>
                 </View>
-                <View style={{ alignItems: 'flex-end' }}>
+                <View style={styles.progressPill}>
                   <Text style={styles.progressBadge}>
-                    {completedTasksCount} of {totalTasksCount} Completed ({taskPercentage}%)
+                    {taskPercentage}%
                   </Text>
                 </View>
               </TouchableOpacity>
@@ -530,7 +620,7 @@ export default function HomeScreen() {
                         onPress={() => handleCompleteTask(task.id)}
                         activeOpacity={0.8}
                       >
-                        <Check color="#0F766E" size={14} strokeWidth={2.5} />
+                        <Check color={theme.colors.primary} size={14} strokeWidth={2.5} />
                         <Text style={styles.taskCompleteBtnText}>Done</Text>
                       </TouchableOpacity>
                     </View>
@@ -538,7 +628,7 @@ export default function HomeScreen() {
                 </View>
               ) : (
                 <View style={styles.allDoneRow}>
-                  <CheckCircle2 color="#059669" size={18} />
+                  <CheckCircle2 color={theme.colors.success} size={18} />
                   <Text style={styles.allDoneText}>All scheduled care tasks completed for today.</Text>
                 </View>
               )}
@@ -600,7 +690,7 @@ export default function HomeScreen() {
               accessibilityLabel="Emergency SOS and Alarms"
             >
               <View style={styles.sosIconBox}>
-                <ShieldAlert color="#DC2626" size={20} />
+                <ShieldAlert color={theme.colors.error} size={20} />
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.sosQuickTitle}>Emergency SOS & Care Alerts</Text>
@@ -608,7 +698,7 @@ export default function HomeScreen() {
                   Care team alerts, emergency contacts & 112 guidance
                 </Text>
               </View>
-              <ChevronRight color="#991B1B" size={18} />
+              <ChevronRight color={theme.colors.error} size={18} />
             </TouchableOpacity>
           </>
         )}
@@ -618,47 +708,76 @@ export default function HomeScreen() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: '#FFFFFF' },
+  safeArea: {
+    flex: 1,
+    backgroundColor: theme.colors.background,
+  },
   header: {
-    paddingHorizontal: 16,
-    paddingTop: 10,
-    paddingBottom: 14,
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.sm,
+    paddingBottom: theme.spacing.md,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     borderBottomWidth: 1,
-    borderBottomColor: '#F1F5F9',
-    backgroundColor: '#FFFFFF',
+    borderBottomColor: theme.colors.borderGhost,
+    backgroundColor: theme.colors.surfaceContainerLowest,
   },
-  headerLeft: { flex: 1, marginRight: 12 },
-  greetingTitle: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: '#0F172A',
-    letterSpacing: -0.3,
+  avatarCircle: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: theme.colors.secondaryLight,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  headerMeta: {
-    fontSize: 12,
-    color: '#64748B',
-    fontWeight: '600',
-    marginTop: 3,
+  avatarInitials: {
+    fontSize: 13,
+    fontFamily: theme.typography.fonts.label,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.primary,
+  },
+  headerCenter: {
+    alignItems: 'center',
+  },
+  brandTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  headerBrandMark: {
+    width: 20,
+    height: 20,
+  },
+  protocolHeaderLabel: {
+    fontSize: 9,
+    fontFamily: theme.typography.fonts.label,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.textMuted,
+    letterSpacing: 1.1,
+    marginTop: 2,
+  },
+  protocolHeaderTitle: {
+    fontSize: 16,
+    fontFamily: theme.typography.fonts.sans,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.primary,
   },
   notificationBell: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: theme.colors.surfaceContainerLow,
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
   },
   badgeCount: {
     position: 'absolute',
-    top: 5,
-    right: 5,
-    backgroundColor: '#EF4444',
+    top: 4,
+    right: 4,
+    backgroundColor: theme.colors.error,
     borderRadius: 8,
     minWidth: 16,
     height: 16,
@@ -669,12 +788,39 @@ const styles = StyleSheet.create({
   badgeCountText: {
     color: '#FFFFFF',
     fontSize: 9,
-    fontWeight: '900',
+    fontFamily: theme.typography.fonts.label,
+    fontWeight: theme.typography.weights.extrabold,
   },
   scrollContent: {
-    padding: 16,
-    gap: 14,
-    backgroundColor: '#F8FAFC',
+    padding: theme.spacing.lg,
+    gap: theme.spacing.md,
+    backgroundColor: theme.colors.background,
+  },
+  heroGreetingSection: {
+    paddingVertical: theme.spacing.xs,
+  },
+  heroDateText: {
+    fontSize: theme.typography.sizes.caption,
+    fontFamily: theme.typography.fonts.label,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.secondary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  heroGreetingTitle: {
+    fontSize: 26,
+    fontFamily: theme.typography.fonts.serif,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.text,
+    letterSpacing: -0.4,
+    marginTop: 2,
+  },
+  heroGreetingSub: {
+    fontSize: theme.typography.sizes.bodySm,
+    fontFamily: theme.typography.fonts.sans,
+    color: theme.colors.textMuted,
+    marginTop: 4,
+    lineHeight: 18,
   },
   loadingContainer: {
     paddingVertical: 60,
@@ -684,8 +830,9 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     fontSize: 13,
-    color: '#64748B',
-    fontWeight: '600',
+    fontFamily: theme.typography.fonts.sans,
+    color: theme.colors.textMuted,
+    fontWeight: theme.typography.weights.semibold,
   },
   // Base Card Header
   cardHeaderRow: {
@@ -694,39 +841,52 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 10,
   },
+  cardIndicatorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  liveIndicatorDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: theme.colors.primary,
+  },
   cardSectionTitle: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#0F172A',
+    fontSize: 14,
+    fontFamily: theme.typography.fonts.label,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.text,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+  },
+  headerPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 9999,
+    backgroundColor: theme.colors.surfaceContainerLow,
+  },
+  headerPillText: {
+    fontSize: 11,
+    fontFamily: theme.typography.fonts.label,
+    color: theme.colors.textMuted,
+    fontWeight: theme.typography.weights.medium,
   },
   cardSub: {
     fontSize: 12,
-    color: '#64748B',
+    fontFamily: theme.typography.fonts.sans,
+    color: theme.colors.textMuted,
     marginTop: 2,
   },
   // Hero Glycemic Card
   heroCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
+    backgroundColor: theme.colors.surfaceContainerLowest,
+    borderRadius: theme.borders.radius.xl,
+    padding: theme.spacing.lg,
+    borderWidth: 1.5,
+    borderColor: theme.colors.borderGhost,
     ...theme.shadows.card,
   },
-  statusPill: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  pillOptimal: { backgroundColor: '#ECFDF5' },
-  pillElevated: { backgroundColor: '#FFFBEB' },
-  pillHigh: { backgroundColor: '#FFF7ED' },
-  pillCritical: { backgroundColor: '#FEF2F2' },
-  statusPillText: { fontSize: 11, fontWeight: '800' },
-  textOptimal: { color: '#059669' },
-  textElevated: { color: '#B45309' },
-  textHigh: { color: '#C2410C' },
-  textCritical: { color: '#B91C1C' },
   metricRow: {
     flexDirection: 'row',
     alignItems: 'baseline',
@@ -734,140 +894,269 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   bigNumber: {
-    fontSize: 38,
-    fontWeight: '900',
-    color: '#0F172A',
-    fontVariant: ['tabular-nums'],
+    fontSize: 42,
+    fontFamily: theme.typography.fonts.serif,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.text,
     letterSpacing: -1,
+    fontVariant: ['tabular-nums'],
   },
   unitText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#64748B',
+    fontSize: 16,
+    fontFamily: theme.typography.fonts.sans,
+    fontWeight: theme.typography.weights.semibold,
+    color: theme.colors.textMuted,
   },
-  contextText: {
+  trendRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 6,
+  },
+  statusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 9999,
+  },
+  pillOptimal: { backgroundColor: 'rgba(9, 76, 178, 0.08)' },
+  pillElevated: { backgroundColor: 'rgba(109, 94, 0, 0.1)' },
+  pillHigh: { backgroundColor: 'rgba(201, 84, 16, 0.1)' },
+  pillCritical: { backgroundColor: 'rgba(186, 26, 26, 0.1)' },
+  statusPillText: {
+    fontSize: 11,
+    fontFamily: theme.typography.fonts.label,
+    fontWeight: theme.typography.weights.bold,
+  },
+  textOptimal: { color: theme.colors.primary },
+  textElevated: { color: theme.colors.tertiary },
+  textHigh: { color: theme.colors.mascotOrange },
+  textCritical: { color: theme.colors.error },
+  tirBarContainer: {
+    marginTop: 14,
+    backgroundColor: theme.colors.surfaceContainerLow,
+    borderRadius: theme.borders.radius.lg,
+    padding: theme.spacing.md,
+  },
+  tirHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  tirTitle: {
     fontSize: 12,
-    color: '#64748B',
-    fontWeight: '600',
-    marginTop: 2,
-    textTransform: 'capitalize',
+    fontFamily: theme.typography.fonts.label,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.text,
+  },
+  tirMeta: {
+    fontSize: 11,
+    fontFamily: theme.typography.fonts.sans,
+    color: theme.colors.textMuted,
+  },
+  tirBarTrack: {
+    height: 8,
+    borderRadius: 4,
+    flexDirection: 'row',
+    gap: 2,
+    overflow: 'hidden',
+    backgroundColor: theme.colors.surfaceContainer,
+  },
+  tirSegment: {
+    height: '100%',
+  },
+  tirLegendRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  tirLegendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  tirLegendDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  tirLegendText: {
+    fontSize: 10,
+    fontFamily: theme.typography.fonts.label,
+    color: theme.colors.textMuted,
   },
   heroFooter: {
     marginTop: 12,
     paddingTop: 10,
     borderTopWidth: 1,
-    borderTopColor: '#F1F5F9',
+    borderTopColor: theme.colors.borderGhost,
   },
   heroFooterLink: {
     fontSize: 12,
-    fontWeight: '800',
-    color: '#0F766E',
+    fontFamily: theme.typography.fonts.label,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.primary,
   },
   emptyGlucoseState: {
     paddingVertical: 6,
   },
   emptyGlucoseTitle: {
     fontSize: 15,
-    fontWeight: '800',
-    color: '#0F172A',
+    fontFamily: theme.typography.fonts.serif,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.text,
   },
   emptyGlucoseSub: {
     fontSize: 12,
-    color: '#64748B',
+    fontFamily: theme.typography.fonts.sans,
+    color: theme.colors.textMuted,
     marginTop: 2,
   },
-  // Upcoming Prescribed Medication Card
+  // Next Medication Card
   actionCardContainer: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
+    backgroundColor: theme.colors.surfaceContainerLowest,
+    borderRadius: theme.borders.radius.xl,
+    padding: theme.spacing.lg,
+    borderWidth: 1.5,
+    borderColor: theme.colors.borderGhost,
     ...theme.shadows.card,
   },
+  medCardSectionTitle: {
+    fontSize: 12,
+    fontFamily: theme.typography.fonts.label,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.secondary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+  },
   actionCardContent: {
-    marginBottom: 14,
+    marginVertical: 10,
   },
   actionCardTitle: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#0F172A',
+    fontSize: 18,
+    fontFamily: theme.typography.fonts.serif,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.text,
   },
   actionCardSub: {
     fontSize: 12,
-    color: '#64748B',
+    fontFamily: theme.typography.fonts.sans,
+    color: theme.colors.textSecondary,
     marginTop: 3,
-    lineHeight: 17,
+    lineHeight: 18,
   },
   verifiedTag: {
-    backgroundColor: '#F0FDF4',
+    backgroundColor: 'rgba(9, 76, 178, 0.08)',
     paddingHorizontal: 8,
     paddingVertical: 3,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
+    borderRadius: 9999,
   },
   verifiedTagText: {
     fontSize: 10,
-    fontWeight: '800',
-    color: '#059669',
+    fontFamily: theme.typography.fonts.label,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.primary,
+  },
+  medActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
   takeDoseBtn: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    backgroundColor: '#0F766E',
-    minHeight: 48,
-    borderRadius: 12,
+    backgroundColor: theme.colors.primary,
+    minHeight: 46,
+    borderRadius: theme.borders.radius.lg,
+    ...theme.shadows.card,
   },
   takeDoseBtnText: {
     color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '800',
+    fontSize: 13,
+    fontFamily: theme.typography.fonts.label,
+    fontWeight: theme.typography.weights.bold,
+  },
+  viewRegimenBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: theme.borders.radius.lg,
+    backgroundColor: theme.colors.surfaceContainerLow,
+  },
+  viewRegimenBtnText: {
+    color: theme.colors.primary,
+    fontSize: 12,
+    fontFamily: theme.typography.fonts.label,
+    fontWeight: theme.typography.weights.bold,
   },
   allMedsCompleteCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
+    backgroundColor: theme.colors.surfaceContainerLowest,
+    borderRadius: theme.borders.radius.xl,
+    padding: theme.spacing.lg,
+    borderWidth: 1.5,
+    borderColor: theme.colors.borderGhost,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+    ...theme.shadows.card,
   },
   allMedsTitle: {
     fontSize: 14,
-    fontWeight: '800',
-    color: '#0F172A',
+    fontFamily: theme.typography.fonts.serif,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.text,
   },
   allMedsSub: {
     fontSize: 12,
-    color: '#64748B',
+    fontFamily: theme.typography.fonts.sans,
+    color: theme.colors.textMuted,
     marginTop: 2,
   },
   // Damu AI Assistant Card
   damuHeroCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    alignItems: 'center',
+    backgroundColor: theme.colors.surfaceContainerLowest,
+    borderRadius: theme.borders.radius.xl,
+    padding: theme.spacing.lg,
+    borderWidth: 1.5,
+    borderColor: theme.colors.borderGhost,
     ...theme.shadows.card,
   },
+  damuMonogram: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: theme.colors.mascotCream,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  damuActiveDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: theme.colors.success,
+  },
+  damuRoleSubtitle: {
+    fontSize: 10,
+    fontFamily: theme.typography.fonts.sans,
+    color: theme.colors.textMuted,
+  },
   damuStatusBadge: {
-    backgroundColor: '#F0FDFA',
+    backgroundColor: 'rgba(9, 76, 178, 0.08)',
     paddingHorizontal: 8,
     paddingVertical: 3,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#CCFBF1',
+    borderRadius: 9999,
   },
   damuStatusBadgeText: {
     fontSize: 10,
-    fontWeight: '800',
-    color: '#0F766E',
+    fontFamily: theme.typography.fonts.label,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.primary,
   },
   damuAvatarWrapper: {
     width: 208,
@@ -875,28 +1164,29 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     alignSelf: 'center',
-    marginVertical: 8,
+    marginVertical: 4,
   },
   damuSpeechBubble: {
-    backgroundColor: '#F8FAFC',
-    borderRadius: 14,
+    backgroundColor: theme.colors.surfaceContainerLow,
+    borderRadius: theme.borders.radius.lg,
     paddingHorizontal: 14,
     paddingVertical: 12,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
     width: '100%',
     marginBottom: 12,
   },
   damuSpeechTitle: {
     fontSize: 13,
-    fontWeight: '800',
-    color: '#0F172A',
+    fontFamily: theme.typography.fonts.serif,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.text,
     marginBottom: 2,
   },
   damuSpeechBody: {
     fontSize: 12,
-    color: '#475569',
+    fontFamily: theme.typography.fonts.sans,
+    color: theme.colors.textSecondary,
     lineHeight: 18,
+    fontStyle: 'italic',
   },
   damuPromptsList: {
     width: '100%',
@@ -907,17 +1197,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 10,
+    backgroundColor: theme.colors.surfaceContainerLow,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: theme.borders.radius.md,
   },
   damuPromptText: {
     fontSize: 12,
-    fontWeight: '600',
-    color: '#1E293B',
+    fontFamily: theme.typography.fonts.sans,
+    fontWeight: theme.typography.weights.semibold,
+    color: theme.colors.text,
     flex: 1,
     marginRight: 8,
   },
@@ -927,39 +1216,48 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    backgroundColor: '#0F766E',
+    backgroundColor: theme.colors.primary,
     minHeight: 48,
-    borderRadius: 12,
+    borderRadius: theme.borders.radius.lg,
+    ...theme.shadows.card,
   },
   damuCtaButtonText: {
     color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '800',
+    fontSize: 13,
+    fontFamily: theme.typography.fonts.label,
+    fontWeight: theme.typography.weights.bold,
   },
   // Care Plan Card
   card: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
+    backgroundColor: theme.colors.surfaceContainerLowest,
+    borderRadius: theme.borders.radius.xl,
+    padding: theme.spacing.lg,
+    borderWidth: 1.5,
+    borderColor: theme.colors.borderGhost,
     ...theme.shadows.card,
   },
+  progressPill: {
+    backgroundColor: 'rgba(9, 76, 178, 0.08)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 9999,
+  },
   progressBadge: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#0F766E',
+    fontSize: 11,
+    fontFamily: theme.typography.fonts.label,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.primary,
   },
   progressBarTrack: {
     height: 6,
-    backgroundColor: '#F1F5F9',
+    backgroundColor: theme.colors.surfaceContainer,
     borderRadius: 3,
     marginVertical: 10,
     overflow: 'hidden',
   },
   progressBarFill: {
     height: '100%',
-    backgroundColor: '#0F766E',
+    backgroundColor: theme.colors.primary,
     borderRadius: 3,
   },
   tasksList: {
@@ -970,37 +1268,36 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#F8FAFC',
-    padding: 10,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
+    backgroundColor: theme.colors.surfaceContainerLow,
+    padding: 12,
+    borderRadius: theme.borders.radius.md,
   },
   taskTitle: {
     fontSize: 12,
-    fontWeight: '700',
-    color: '#1E293B',
+    fontFamily: theme.typography.fonts.serif,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.text,
   },
   taskDue: {
     fontSize: 11,
-    color: '#64748B',
+    fontFamily: theme.typography.fonts.sans,
+    color: theme.colors.textMuted,
     marginTop: 2,
   },
   taskCompleteBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: '#F0FDFA',
-    borderWidth: 1,
-    borderColor: '#99F6E4',
+    backgroundColor: 'rgba(9, 76, 178, 0.08)',
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 8,
   },
   taskCompleteBtnText: {
     fontSize: 11,
-    fontWeight: '800',
-    color: '#0F766E',
+    fontFamily: theme.typography.fonts.label,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.primary,
   },
   allDoneRow: {
     flexDirection: 'row',
@@ -1010,16 +1307,17 @@ const styles = StyleSheet.create({
   },
   allDoneText: {
     fontSize: 12,
-    fontWeight: '700',
-    color: '#059669',
+    fontFamily: theme.typography.fonts.sans,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.success,
   },
   // Doctor Note Card
   doctorNoteCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
+    backgroundColor: theme.colors.surfaceContainerLowest,
+    borderRadius: theme.borders.radius.xl,
+    padding: theme.spacing.lg,
+    borderWidth: 1.5,
+    borderColor: theme.colors.borderGhost,
     ...theme.shadows.card,
   },
   doctorNoteHeader: {
@@ -1029,98 +1327,107 @@ const styles = StyleSheet.create({
   },
   doctorNoteDoctor: {
     fontSize: 14,
-    fontWeight: '800',
-    color: '#0F172A',
+    fontFamily: theme.typography.fonts.serif,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.text,
   },
   doctorNoteFacility: {
     fontSize: 11,
-    color: '#64748B',
+    fontFamily: theme.typography.fonts.sans,
+    color: theme.colors.textMuted,
     marginTop: 2,
   },
   approvedPill: {
-    backgroundColor: '#F0FDF4',
+    backgroundColor: theme.colors.successBg,
     paddingHorizontal: 8,
     paddingVertical: 3,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
+    borderRadius: 9999,
   },
   approvedPillText: {
     fontSize: 10,
-    fontWeight: '800',
-    color: '#16A34A',
+    fontFamily: theme.typography.fonts.label,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.success,
   },
   doctorNoteBody: {
     fontSize: 12,
-    color: '#334155',
+    fontFamily: theme.typography.fonts.sans,
+    color: theme.colors.textSecondary,
     lineHeight: 18,
     marginBottom: 10,
   },
   doctorNoteLink: {
     borderTopWidth: 1,
-    borderTopColor: '#F1F5F9',
+    borderTopColor: theme.colors.borderGhost,
     paddingTop: 8,
   },
   doctorNoteLinkText: {
     fontSize: 11,
-    fontWeight: '800',
-    color: '#0F766E',
+    fontFamily: theme.typography.fonts.label,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.primary,
   },
   // Appointment CTA Card
   appointmentCtaCard: {
-    backgroundColor: '#0F766E',
-    borderRadius: 16,
-    padding: 16,
+    backgroundColor: theme.colors.primary,
+    borderRadius: theme.borders.radius.xl,
+    padding: theme.spacing.lg,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+    ...theme.shadows.card,
   },
   appointmentCtaIconBox: {
     width: 44,
     height: 44,
     borderRadius: 12,
-    backgroundColor: '#115E59',
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
     alignItems: 'center',
     justifyContent: 'center',
   },
   appointmentCtaTitle: {
     fontSize: 14,
-    fontWeight: '800',
+    fontFamily: theme.typography.fonts.serif,
+    fontWeight: theme.typography.weights.bold,
     color: '#FFFFFF',
   },
   appointmentCtaSub: {
     fontSize: 12,
-    color: '#CCFBF1',
+    fontFamily: theme.typography.fonts.sans,
+    color: 'rgba(255, 255, 255, 0.85)',
     marginTop: 2,
     lineHeight: 16,
   },
   // Emergency SOS bar
   sosQuickBar: {
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#FEE2E2',
-    borderRadius: 16,
+    backgroundColor: theme.colors.surfaceContainerLowest,
+    borderWidth: 1.5,
+    borderColor: 'rgba(186, 26, 26, 0.2)',
+    borderRadius: theme.borders.radius.xl,
     padding: 14,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+    ...theme.shadows.card,
   },
   sosIconBox: {
     width: 40,
     height: 40,
     borderRadius: 10,
-    backgroundColor: '#FEF2F2',
+    backgroundColor: theme.colors.errorBg,
     alignItems: 'center',
     justifyContent: 'center',
   },
   sosQuickTitle: {
     fontSize: 13,
-    fontWeight: '800',
-    color: '#DC2626',
+    fontFamily: theme.typography.fonts.label,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.error,
   },
   sosQuickSub: {
     fontSize: 11,
-    color: '#64748B',
+    fontFamily: theme.typography.fonts.sans,
+    color: theme.colors.textMuted,
     marginTop: 1,
   },
 });

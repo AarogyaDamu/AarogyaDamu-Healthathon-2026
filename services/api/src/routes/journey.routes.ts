@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth';
 import { logAuditEvent } from '../audit/auditLogger';
 import { HealthInsightService } from '../services/healthInsightService';
+import { updateTenantContext } from '../db/tenantContext';
 
 const router = Router();
 import { prisma } from '../db/prisma';
@@ -75,6 +76,7 @@ async function resolveJourneyTargetPatient(req: Request): Promise<{ patientId: s
       (err as any).status = 403;
       throw err;
     }
+    updateTenantContext({ patientId: targetId });
     return { patientId: targetId, isDelegated: true };
   }
 
@@ -86,6 +88,7 @@ async function resolveJourneyTargetPatient(req: Request): Promise<{ patientId: s
     throw err;
   }
 
+  updateTenantContext({ patientId: targetId });
   return { patientId: targetId, isDelegated: true };
 }
 

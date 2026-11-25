@@ -101,13 +101,21 @@ describe('P0.2 Medication Vault & Management Suite', () => {
 
   afterAll(async () => {
     const userIds = [patientA.id, patientB.id, assignedDoctor.id, unassignedDoctor.id, activeCaregiver.id, readOnlyCaregiver.id, revokedCaregiver.id];
-    await prisma.medicationAdherenceEvent.deleteMany({ where: { userId: { in: userIds } } });
-    await prisma.medicationSchedule.deleteMany({ where: { userId: { in: userIds } } });
-    await prisma.auditLog.deleteMany({ where: { userId: { in: userIds } } });
+    // Preserve immutable MedicationAdherenceEvent & AuditLog history (protected by PostgreSQL triggers).
+    // Clean only mutable non-adherence-referenced records cleanly.
+    const schedulesWithAdherence = await prisma.medicationAdherenceEvent.findMany({
+      where: { userId: { in: userIds } },
+      select: { medicationId: true },
+    });
+    const protectedMedIds = new Set(schedulesWithAdherence.map((e) => e.medicationId));
+    await prisma.medicationSchedule.deleteMany({
+      where: {
+        userId: { in: userIds },
+        id: { notIn: Array.from(protectedMedIds) },
+      },
+    });
     await prisma.caregiverConsent.deleteMany({ where: { patientId: { in: userIds } } });
     await prisma.doctorPatientAssignment.deleteMany({ where: { patientId: { in: userIds } } });
-    await prisma.patientProfile.deleteMany({ where: { userId: { in: userIds } } });
-    await prisma.user.deleteMany({ where: { id: { in: userIds } } });
     await prisma.$disconnect();
   });
 

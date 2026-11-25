@@ -123,6 +123,16 @@ describe('Staging Synthetic Demo Clinical Data Seed & Authentication Verificatio
       patientProfile: {
         create: jest.fn().mockResolvedValue({}),
       },
+      practice: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'practice-uuid-1',
+          name: 'AarogyaDamu Diabetes Care & Research Center',
+        }),
+        create: jest.fn().mockImplementation(({ data }) => Promise.resolve({ id: 'practice-created-1', ...data })),
+      },
+      practiceMembership: {
+        upsert: jest.fn().mockResolvedValue({}),
+      },
       doctorPatientAssignment: {
         upsert: jest.fn().mockResolvedValue({}),
       },
@@ -192,6 +202,9 @@ describe('Staging Synthetic Demo Clinical Data Seed & Authentication Verificatio
         findUnique: jest.fn().mockResolvedValue(null),
         create: jest.fn().mockResolvedValue({ id: 'seed-plan-sunita-proposal-1' }),
       },
+      $queryRawUnsafe: jest.fn().mockResolvedValue([{ xid: '100', pid: 1 }]),
+      $executeRawUnsafe: jest.fn().mockResolvedValue(1),
+      $transaction: jest.fn().mockImplementation(async (fn: any) => fn(mock)),
     };
 
     return { mock, defaultDoctor, patient1, patient2, patient3, caregiver };
@@ -327,6 +340,7 @@ describe('Staging Synthetic Demo Clinical Data Seed & Authentication Verificatio
       };
 
       jest.spyOn(prisma.user, 'findUnique').mockResolvedValue(mockDoctor as any);
+      jest.spyOn(prisma.patientProfile, 'findUnique').mockResolvedValue(mockDoctor.profile as any);
       jest.spyOn(prisma.authSession, 'create').mockResolvedValue({
         id: 'session-uuid-1',
         userId: mockDoctor.id,
@@ -374,6 +388,7 @@ describe('Staging Synthetic Demo Clinical Data Seed & Authentication Verificatio
       };
 
       jest.spyOn(prisma.user, 'findUnique').mockResolvedValue(mockPatient as any);
+      jest.spyOn(prisma.patientProfile, 'findUnique').mockResolvedValue(mockPatient.profile as any);
       jest.spyOn(prisma.authSession, 'create').mockResolvedValue({
         id: 'session-uuid-patient',
         userId: mockPatient.id,
@@ -411,6 +426,7 @@ describe('Staging Synthetic Demo Clinical Data Seed & Authentication Verificatio
       };
 
       jest.spyOn(prisma.user, 'findUnique').mockResolvedValue(mockDoctor as any);
+      jest.spyOn(prisma.patientProfile, 'findUnique').mockResolvedValue(mockDoctor.profile as any);
 
       const res = await request(app)
         .post('/api/auth/login')

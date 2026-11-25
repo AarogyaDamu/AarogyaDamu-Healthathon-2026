@@ -70,8 +70,8 @@ export async function authorizeAgentAction(
     });
   }
 
-  // 3. Clinician Access: verify active DoctorPatientAssignment
-  if (actorRole === 'CLINICIAN') {
+  // 3. Clinician & Doctor Access: verify active DoctorPatientAssignment or CareTeam
+  if (actorRole === 'CLINICIAN' || (actorRole as string) === 'DOCTOR') {
     const assignment = await prisma.doctorPatientAssignment.findFirst({
       where: {
         doctorId: actorId,
@@ -79,13 +79,42 @@ export async function authorizeAgentAction(
         status: 'ACTIVE',
       },
     });
+    const careTeamDoc = await prisma.patientCareTeamMember.findFirst({
+      where: {
+        userId: actorId,
+        patientId: targetPatientId,
+        role: 'DOCTOR',
+        status: 'ACTIVE',
+      },
+    });
 
     return evaluateAgentOwnershipAndPermission({
       actorId,
       targetPatientId,
-      actorRole,
+      actorRole: 'CLINICIAN',
       toolName,
-      hasActiveDoctorAssignment: Boolean(assignment),
+      hasActiveDoctorAssignment: Boolean(assignment || careTeamDoc),
+      referenceTime,
+    });
+  }
+
+  // 3.1 Nurse Access: verify active PatientCareTeamMember
+  if ((actorRole as string) === 'NURSE') {
+    const careTeamNurse = await prisma.patientCareTeamMember.findFirst({
+      where: {
+        userId: actorId,
+        patientId: targetPatientId,
+        role: 'NURSE',
+        status: 'ACTIVE',
+      },
+    });
+
+    return evaluateAgentOwnershipAndPermission({
+      actorId,
+      targetPatientId,
+      actorRole: 'NURSE' as any,
+      toolName,
+      hasActiveDoctorAssignment: Boolean(careTeamNurse),
       referenceTime,
     });
   }
@@ -110,6 +139,7 @@ export async function authorizeAgentAction(
         patientId: targetPatientId,
         caregiverEmail: caregiverUser.email,
         status: 'ACTIVE',
+        OR: [{ expiresAt: null }, { expiresAt: { gt: referenceTime } }],
       },
       orderBy: { createdAt: 'desc' },
     });

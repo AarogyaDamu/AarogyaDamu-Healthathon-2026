@@ -1,0 +1,20 @@
+# AarogyaDamu API Service Docker Ignore
+.git
+node_modules
+dist
+build
+logs
+*.log
+coverage
+.vitest
+.env
+.env.*
+!.env.example
+*.tsbuildinfo
+uploads/*
+!uploads/.gitkeep
+uploads/private/*
+!uploads/private/.gitkeep
+prisma/backups
+prisma/*.db
+

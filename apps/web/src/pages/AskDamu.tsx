@@ -398,8 +398,8 @@ export default function AskDamu() {
           <div className="h-full flex flex-col items-center justify-center max-w-2xl mx-auto py-6 text-center space-y-6 animate-in fade-in duration-300">
             {/* Mascot Centerpiece */}
             <div className="relative group cursor-pointer">
-              <div className="absolute -inset-2 bg-gradient-to-r from-teal-400 via-amber-300 to-teal-300 rounded-3xl blur-md opacity-30 group-hover:opacity-60 transition duration-500 animate-pulse" />
-              <div className="relative h-20 w-20 rounded-2xl bg-gradient-to-b from-orange-50 to-amber-100/70 border border-amber-200/90 p-2 flex items-center justify-center shadow-md">
+              <div className="absolute -inset-1 bg-teal-100/70 rounded-3xl opacity-40 group-hover:opacity-80 transition duration-300" />
+              <div className="relative h-20 w-20 rounded-2xl bg-amber-50/90 border border-amber-200/90 p-2 flex items-center justify-center shadow-xs">
                 <DamuAvatar className="h-full w-full" isHero={true} />
               </div>
             </div>

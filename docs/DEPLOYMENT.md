@@ -9,12 +9,15 @@
 
 ## 1. Prerequisites
 
-- **Runtime:** Node.js `>= 20.12.0` (Recommended: Node.js 20 LTS)
+- **Runtime:** Node.js `>= 22.0.0 < 23.0.0` (Mandatory: Node.js 22 LTS, e.g. `22.14.0`)
 - **Package Manager:** npm `>= 10.8.0`
-- **Database:** PostgreSQL `>= 15.0` with `uuid-ossp` or standard UUID generation
+- **Database:** PostgreSQL `>= 16.0` with Row Level Security (RLS) support
 - **Cache (Optional / Multi-Instance):** Redis `>= 7.0` for distributed rate limiting
 - **SSL / TLS Certificate:** Valid X.509 certificate (Let's Encrypt / AWS Certificate Manager)
 - **Mobile Build Tooling:** EAS CLI (`npm install -g eas-cli`) or Android SDK for local APK generation
+
+> [!NOTE]
+> For step-by-step instructions on enabling CI/CD automated deployment after formal release sign-off, see [CI/CD Deployment Activation Runbook](file:///docs/runbooks/ci_cd_deployment_activation.md).
 
 ---
 

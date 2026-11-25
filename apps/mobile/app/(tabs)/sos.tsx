@@ -11,6 +11,7 @@ import {
   Modal,
   Alert,
   Switch,
+  Linking,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -113,6 +114,12 @@ export default function SosScreen() {
     loadData();
   };
 
+  const handleCallEmergency = (number: string) => {
+    Linking.openURL(`tel:${number}`).catch(() => {
+      Alert.alert('Unable to Dial', `Please dial ${number} directly using your phone dialer.`);
+    });
+  };
+
   // --- Handlers: SOS Activation ---
   const handleTriggerSos = async () => {
     if (!confirmEmergency) {
@@ -122,12 +129,34 @@ export default function SosScreen() {
 
     try {
       setActivatingSos(true);
+
+      let latitude: number | undefined = undefined;
+      let longitude: number | undefined = undefined;
+
+      if (sosLocationConsent) {
+        try {
+          if (typeof navigator !== 'undefined' && navigator.geolocation) {
+            const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+              navigator.geolocation.getCurrentPosition(resolve, reject, {
+                enableHighAccuracy: true,
+                timeout: 5000,
+                maximumAge: 60000,
+              });
+            });
+            latitude = position.coords.latitude;
+            longitude = position.coords.longitude;
+          }
+        } catch (geoErr) {
+          console.warn('Consented GPS location acquisition unavailable or denied:', geoErr);
+        }
+      }
+
       const sos = await emergencyApi.activateSos({
         confirmEmergency: true,
         reason: sosReason.trim() || 'Severe Emergency',
         locationConsent: sosLocationConsent,
-        latitude: sosLocationConsent ? 17.385 : undefined,
-        longitude: sosLocationConsent ? 78.4867 : undefined,
+        latitude,
+        longitude,
       });
 
       setActiveSos(sos);
@@ -395,17 +424,41 @@ export default function SosScreen() {
             {/* Quick Emergency Numbers */}
             <View style={styles.card}>
               <Text style={styles.cardTitle}>Immediate National Emergency Numbers</Text>
+              <Text style={styles.quickCallHelper}>Tap to dial immediately through your phone dialer:</Text>
               <View style={styles.quickCallRow}>
-                <View style={styles.quickCallBox}>
-                  <Phone color={theme.colors.primary} size={20} />
-                  <Text style={styles.quickCallNumber}>112</Text>
+                <TouchableOpacity
+                  style={styles.quickCallBox}
+                  onPress={() => handleCallEmergency('112')}
+                  accessibilityRole="button"
+                  accessibilityLabel="Call 112 National Emergency"
+                  activeOpacity={0.7}
+                >
+                  <Phone color={theme.colors.error} size={20} />
+                  <Text style={[styles.quickCallNumber, { color: theme.colors.error }]}>112</Text>
                   <Text style={styles.quickCallLabel}>National Emergency</Text>
-                </View>
-                <View style={styles.quickCallBox}>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.quickCallBox}
+                  onPress={() => handleCallEmergency('108')}
+                  accessibilityRole="button"
+                  accessibilityLabel="Call 108 Medical Ambulance"
+                  activeOpacity={0.7}
+                >
                   <Phone color={theme.colors.primary} size={20} />
                   <Text style={styles.quickCallNumber}>108</Text>
-                  <Text style={styles.quickCallLabel}>Medical Ambulance</Text>
-                </View>
+                  <Text style={styles.quickCallLabel}>Ambulance</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.quickCallBox}
+                  onPress={() => handleCallEmergency('102')}
+                  accessibilityRole="button"
+                  accessibilityLabel="Call 102 Disaster and Pregnancy Ambulance"
+                  activeOpacity={0.7}
+                >
+                  <Phone color={theme.colors.tertiary || '#006495'} size={20} />
+                  <Text style={[styles.quickCallNumber, { color: theme.colors.tertiary || '#006495' }]}>102</Text>
+                  <Text style={styles.quickCallLabel}>Disaster/Pregnancy</Text>
+                </TouchableOpacity>
               </View>
             </View>
           </View>
@@ -454,12 +507,24 @@ export default function SosScreen() {
                       <Text style={styles.sosRecipientBadge}>✓ Receives in-app SOS dispatches</Text>
                     )}
                   </View>
-                  <TouchableOpacity
-                    style={styles.deleteBtn}
-                    onPress={() => handleDeleteContact(contact.id)}
-                  >
-                    <Trash2 color={theme.colors.textMuted} size={18} />
-                  </TouchableOpacity>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <TouchableOpacity
+                      style={styles.callContactBtn}
+                      onPress={() => handleCallEmergency(contact.phone)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Call ${contact.name}`}
+                    >
+                      <Phone color={theme.colors.primary} size={18} />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.deleteBtn}
+                      onPress={() => handleDeleteContact(contact.id)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Delete contact ${contact.name}`}
+                    >
+                      <Trash2 color={theme.colors.textMuted} size={18} />
+                    </TouchableOpacity>
+                  </View>
                 </View>
               ))
             )}
@@ -827,188 +892,587 @@ export default function SosScreen() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: theme.colors.white },
-  centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  loadingText: { marginTop: 12, fontSize: theme.typography.sizes.bodySm, color: theme.colors.textMuted },
+  safeArea: { flex: 1, backgroundColor: theme.colors.background },
+  centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: theme.colors.background },
+  loadingText: {
+    marginTop: 12,
+    fontFamily: theme.typography.fonts.sans,
+    fontSize: 13,
+    color: theme.colors.onSurfaceVariant,
+  },
   header: {
-    paddingHorizontal: theme.spacing.lg,
+    paddingHorizontal: 16,
     paddingTop: theme.spacing.sm,
-    paddingBottom: theme.spacing.sm,
+    paddingBottom: theme.spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: theme.colors.borderLight,
-    backgroundColor: theme.colors.white,
+    borderBottomColor: theme.borders.ghost,
+    backgroundColor: theme.colors.surfaceContainerLowest,
   },
   headerTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  headerTitle: { fontSize: theme.typography.sizes.heading, fontWeight: theme.typography.weights.black, color: theme.colors.text },
-  headerSubtitle: { fontSize: theme.typography.sizes.caption, color: theme.colors.textMuted, marginTop: 2 },
+  headerTitle: {
+    fontFamily: theme.typography.fonts.serif,
+    fontSize: 22,
+    fontWeight: '700',
+    color: theme.colors.onSurface,
+  },
+  headerSubtitle: {
+    fontFamily: theme.typography.fonts.sans,
+    fontSize: 12,
+    color: theme.colors.onSurfaceVariant,
+    marginTop: 2,
+  },
   disclaimerBanner: {
-    backgroundColor: '#FEF2F2',
-    borderColor: '#FCA5A5',
+    backgroundColor: '#ffdad6',
+    borderColor: '#ffb4ab',
     borderWidth: 1,
-    marginHorizontal: theme.spacing.lg,
-    marginTop: theme.spacing.sm,
-    padding: theme.spacing.md,
-    borderRadius: theme.radius.md,
+    marginHorizontal: 16,
+    marginTop: 12,
+    padding: 14,
+    borderRadius: theme.borders.radius.lg,
   },
   disclaimerHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 },
-  disclaimerTitle: { fontSize: theme.typography.sizes.caption, fontWeight: theme.typography.weights.extrabold, color: '#DC2626' },
-  disclaimerBody: { fontSize: 11, color: '#991B1B', lineHeight: 15 },
+  disclaimerTitle: {
+    fontFamily: theme.typography.fonts.label,
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#ba1a1a',
+    letterSpacing: 0.6,
+  },
+  disclaimerBody: {
+    fontFamily: theme.typography.fonts.sans,
+    fontSize: 12,
+    color: '#410002',
+    lineHeight: 17,
+  },
   tabBar: {
     flexDirection: 'row',
-    paddingHorizontal: theme.spacing.lg,
-    marginTop: theme.spacing.sm,
+    paddingHorizontal: 16,
+    marginTop: 12,
     borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
+    borderBottomColor: theme.borders.ghost,
+    backgroundColor: theme.colors.surfaceContainerLowest,
   },
-  tabButton: { flex: 1, paddingVertical: 10, alignItems: 'center', borderBottomWidth: 2, borderBottomColor: 'transparent' },
-  tabButtonActive: { borderBottomColor: theme.colors.primary },
-  tabText: { fontSize: 13, fontWeight: theme.typography.weights.bold, color: theme.colors.textMuted },
-  tabTextActive: { color: theme.colors.primary },
-  scrollContent: { padding: theme.spacing.lg, gap: theme.spacing.lg, backgroundColor: theme.colors.bg },
-  sectionContainer: { gap: theme.spacing.md },
+  tabButton: {
+    flex: 1,
+    paddingVertical: 12,
+    alignItems: 'center',
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
+  },
+  tabButtonActive: {
+    borderBottomColor: theme.colors.primary,
+  },
+  tabText: {
+    fontFamily: theme.typography.fonts.label,
+    fontSize: 12,
+    fontWeight: '600',
+    color: theme.colors.onSurfaceVariant,
+  },
+  tabTextActive: {
+    color: theme.colors.primary,
+    fontWeight: '700',
+  },
+  scrollContent: {
+    padding: 16,
+    gap: 16,
+    backgroundColor: theme.colors.background,
+  },
+  sectionContainer: { gap: 14 },
   // SOS Trigger
   sosTriggerContainer: { alignItems: 'center', paddingVertical: 24, gap: 14 },
   sosMainButton: {
     width: 180,
     height: 180,
     borderRadius: 90,
-    backgroundColor: '#DC2626',
+    backgroundColor: '#ba1a1a',
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: '#DC2626',
+    shadowColor: '#ba1a1a',
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.35,
     shadowRadius: 10,
     elevation: 8,
   },
   sosInnerCircle: { alignItems: 'center', justifyContent: 'center', gap: 4 },
-  sosButtonText: { fontSize: 16, fontWeight: '900', color: '#FFFFFF', letterSpacing: 1 },
-  sosButtonSub: { fontSize: 11, color: '#FEE2E2', fontWeight: '600' },
-  sosHelperText: { textAlign: 'center', fontSize: 12, color: theme.colors.textMuted, maxWidth: 300, lineHeight: 16 },
+  sosButtonText: {
+    fontFamily: theme.typography.fonts.label,
+    fontSize: 16,
+    fontWeight: '900',
+    color: '#FFFFFF',
+    letterSpacing: 1,
+  },
+  sosButtonSub: {
+    fontFamily: theme.typography.fonts.sans,
+    fontSize: 11,
+    color: '#ffdad6',
+    fontWeight: '600',
+  },
+  sosHelperText: {
+    textAlign: 'center',
+    fontFamily: theme.typography.fonts.sans,
+    fontSize: 12,
+    color: theme.colors.onSurfaceVariant,
+    maxWidth: 300,
+    lineHeight: 17,
+  },
   // Active SOS Card
   activeSosCard: {
-    backgroundColor: '#FFF1F2',
-    borderWidth: 2,
-    borderColor: '#E11D48',
-    borderRadius: theme.radius.lg,
-    padding: theme.spacing.lg,
+    backgroundColor: '#ffdad6',
+    borderWidth: 1.5,
+    borderColor: '#ba1a1a',
+    borderRadius: theme.borders.radius.xl,
+    padding: 18,
     gap: 12,
+    ...theme.shadows.elevation2,
   },
   activeSosHeader: { flexDirection: 'row', alignItems: 'center' },
-  activeSosTitle: { fontSize: 16, fontWeight: '900', color: '#BE123C' },
-  activeSosSub: { fontSize: 12, color: '#9F1239' },
-  activeSosDetails: { backgroundColor: '#FFFFFF', padding: 12, borderRadius: theme.radius.md, gap: 6 },
-  detailRowText: { fontSize: 12, color: theme.colors.text },
-  detailLabel: { fontWeight: '700', color: theme.colors.textMuted },
+  activeSosTitle: {
+    fontFamily: theme.typography.fonts.label,
+    fontSize: 15,
+    fontWeight: '900',
+    color: '#93000a',
+    letterSpacing: 0.6,
+  },
+  activeSosSub: {
+    fontFamily: theme.typography.fonts.sans,
+    fontSize: 12,
+    color: '#ba1a1a',
+  },
+  activeSosDetails: {
+    backgroundColor: theme.colors.surfaceContainerLowest,
+    padding: 14,
+    borderRadius: theme.borders.radius.lg,
+    gap: 6,
+  },
+  detailRowText: {
+    fontFamily: theme.typography.fonts.sans,
+    fontSize: 12,
+    color: theme.colors.onSurface,
+    lineHeight: 18,
+  },
+  detailLabel: { fontWeight: '700', color: theme.colors.onSurfaceVariant },
   cancelSosBtn: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: theme.colors.surfaceContainerLowest,
     borderWidth: 1,
-    borderColor: '#BE123C',
-    paddingVertical: 10,
-    borderRadius: theme.radius.md,
+    borderColor: '#ba1a1a',
+    paddingVertical: 12,
+    borderRadius: theme.borders.radius.md,
     alignItems: 'center',
   },
-  cancelSosBtnText: { color: '#BE123C', fontWeight: '800', fontSize: 13 },
+  cancelSosBtnText: {
+    fontFamily: theme.typography.fonts.label,
+    color: '#ba1a1a',
+    fontWeight: '800',
+    fontSize: 13,
+  },
   // Standard Cards
-  card: { backgroundColor: theme.colors.white, borderRadius: theme.radius.lg, padding: theme.spacing.lg, borderWidth: 1, borderColor: theme.colors.border },
+  card: {
+    backgroundColor: theme.colors.surfaceContainerLowest,
+    borderRadius: theme.borders.radius.xl,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: theme.borders.ghost,
+    ...theme.shadows.elevation2,
+  },
   cardHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  cardTitle: { fontSize: theme.typography.sizes.bodyLg, fontWeight: theme.typography.weights.extrabold, color: theme.colors.text },
-  quickCallRow: { flexDirection: 'row', gap: 12, marginTop: 12 },
+  cardTitle: {
+    fontFamily: theme.typography.fonts.serif,
+    fontSize: 17,
+    fontWeight: '700',
+    color: theme.colors.onSurface,
+  },
+  quickCallHelper: {
+    fontFamily: theme.typography.fonts.sans,
+    fontSize: 12,
+    color: theme.colors.onSurfaceVariant,
+    marginTop: 4,
+    marginBottom: 8,
+  },
+  quickCallRow: { flexDirection: 'row', gap: 10, marginTop: 4 },
   quickCallBox: {
     flex: 1,
-    backgroundColor: theme.colors.primarySurface,
+    minHeight: 52,
+    backgroundColor: theme.colors.surfaceContainerLow,
     borderWidth: 1,
-    borderColor: theme.colors.primaryBorder,
-    borderRadius: theme.radius.md,
-    padding: 12,
+    borderColor: theme.borders.ghost,
+    borderRadius: theme.borders.radius.lg,
+    paddingVertical: 12,
+    paddingHorizontal: 6,
     alignItems: 'center',
+    justifyContent: 'center',
     gap: 4,
   },
-  quickCallNumber: { fontSize: 20, fontWeight: '900', color: theme.colors.primary },
-  quickCallLabel: { fontSize: 11, color: theme.colors.textMuted, fontWeight: '600' },
+  quickCallNumber: {
+    fontFamily: theme.typography.fonts.sans,
+    fontSize: 22,
+    fontWeight: '900',
+    color: theme.colors.primary,
+  },
+  quickCallLabel: {
+    fontFamily: theme.typography.fonts.sans,
+    fontSize: 11,
+    color: theme.colors.onSurfaceVariant,
+    fontWeight: '600',
+  },
   // Contact Cards
   contactCard: {
-    backgroundColor: theme.colors.white,
+    backgroundColor: theme.colors.surfaceContainerLowest,
     borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.radius.md,
-    padding: 14,
+    borderColor: theme.borders.ghost,
+    borderRadius: theme.borders.radius.xl,
+    padding: 16,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+    ...theme.shadows.elevation2,
   },
   contactNameRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  contactName: { fontSize: 14, fontWeight: '800', color: theme.colors.text },
-  contactMeta: { fontSize: 12, color: theme.colors.textMuted, marginTop: 2 },
-  sosRecipientBadge: { fontSize: 11, color: theme.colors.success, marginTop: 4, fontWeight: '600' },
-  deleteBtn: { padding: 6 },
-  badgePrimary: { backgroundColor: theme.colors.primarySurface, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
-  badgePrimaryText: { fontSize: 10, fontWeight: '800', color: theme.colors.primary },
-  emptyCard: { backgroundColor: theme.colors.white, padding: 24, borderRadius: theme.radius.lg, alignItems: 'center', borderWidth: 1, borderColor: theme.colors.borderLight },
-  emptyTitle: { fontSize: 14, fontWeight: '800', color: theme.colors.text, marginTop: 8 },
-  emptySubtitle: { fontSize: 12, color: theme.colors.textMuted, textAlign: 'center', marginTop: 4 },
-  primarySmallBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: theme.colors.primary, paddingHorizontal: 10, paddingVertical: 6, borderRadius: theme.radius.md },
-  primarySmallBtnText: { color: '#FFFFFF', fontSize: 12, fontWeight: '700' },
-  // Reminders
-  safetyInfoBox: { flexDirection: 'row', gap: 8, backgroundColor: theme.colors.primarySurface, padding: 10, borderRadius: theme.radius.md, alignItems: 'center' },
-  safetyInfoText: { fontSize: 11, color: theme.colors.primary, flex: 1, lineHeight: 15 },
-  reminderCard: {
-    backgroundColor: theme.colors.white,
+  contactName: {
+    fontFamily: theme.typography.fonts.sans,
+    fontSize: 14,
+    fontWeight: '700',
+    color: theme.colors.onSurface,
+  },
+  contactMeta: {
+    fontFamily: theme.typography.fonts.sans,
+    fontSize: 12,
+    color: theme.colors.onSurfaceVariant,
+    marginTop: 2,
+  },
+  sosRecipientBadge: {
+    fontFamily: theme.typography.fonts.label,
+    fontSize: 10,
+    color: theme.colors.secondary,
+    marginTop: 4,
+    fontWeight: '700',
+  },
+  deleteBtn: { padding: 6, minWidth: 44, minHeight: 44, justifyContent: 'center', alignItems: 'center' },
+  callContactBtn: {
+    padding: 8,
+    minWidth: 44,
+    minHeight: 44,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: theme.colors.surfaceContainerLow,
+    borderRadius: theme.borders.radius.full,
     borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.radius.md,
-    padding: 14,
+    borderColor: theme.borders.ghost,
+  },
+  badgePrimary: {
+    backgroundColor: '#E6F8EF',
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: theme.borders.radius.sm,
+  },
+  badgePrimaryText: {
+    fontFamily: theme.typography.fonts.label,
+    fontSize: 10,
+    fontWeight: '800',
+    color: theme.colors.primary,
+  },
+  emptyCard: {
+    backgroundColor: theme.colors.surfaceContainerLowest,
+    padding: 24,
+    borderRadius: theme.borders.radius.xl,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: theme.borders.ghost,
+    ...theme.shadows.elevation2,
+  },
+  emptyTitle: {
+    fontFamily: theme.typography.fonts.serif,
+    fontSize: 15,
+    fontWeight: '700',
+    color: theme.colors.onSurface,
+    marginTop: 8,
+  },
+  emptySubtitle: {
+    fontFamily: theme.typography.fonts.sans,
+    fontSize: 12,
+    color: theme.colors.onSurfaceVariant,
+    textAlign: 'center',
+    marginTop: 4,
+  },
+  primarySmallBtn: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 4,
+    backgroundColor: theme.colors.primary,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: theme.borders.radius.md,
+    ...theme.shadows.soft,
+  },
+  primarySmallBtnText: {
+    color: '#FFFFFF',
+    fontFamily: theme.typography.fonts.label,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  // Reminders
+  safetyInfoBox: {
+    flexDirection: 'row',
+    gap: 8,
+    backgroundColor: '#E6F8EF',
+    padding: 12,
+    borderRadius: theme.borders.radius.lg,
+    alignItems: 'center',
+  },
+  safetyInfoText: {
+    fontFamily: theme.typography.fonts.sans,
+    fontSize: 11,
+    color: '#004D4D',
+    flex: 1,
+    lineHeight: 16,
+  },
+  reminderCard: {
+    backgroundColor: theme.colors.surfaceContainerLowest,
+    borderWidth: 1,
+    borderColor: theme.borders.ghost,
+    borderRadius: theme.borders.radius.xl,
+    padding: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    ...theme.shadows.elevation2,
   },
   reminderHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  reminderTitle: { fontSize: 14, fontWeight: '800', color: theme.colors.text },
-  reminderBadge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
-  reminderBadgeText: { fontSize: 10, fontWeight: '800' },
-  badgeGood: { backgroundColor: '#DCFCE7' },
-  textGood: { color: '#15803D', fontSize: 10, fontWeight: '800' },
-  badgePending: { backgroundColor: '#FEF3C7' },
-  textPending: { color: '#B45309', fontSize: 10, fontWeight: '800' },
-  reminderMeta: { fontSize: 11, color: theme.colors.textMuted, marginTop: 2 },
-  reminderTime: { fontSize: 12, color: theme.colors.text, marginTop: 4, fontWeight: '600' },
-  ackBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: theme.colors.primary, paddingHorizontal: 10, paddingVertical: 6, borderRadius: theme.radius.md },
-  ackBtnText: { color: '#FFFFFF', fontSize: 11, fontWeight: '700' },
+  reminderTitle: {
+    fontFamily: theme.typography.fonts.sans,
+    fontSize: 14,
+    fontWeight: '700',
+    color: theme.colors.onSurface,
+  },
+  reminderBadge: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: theme.borders.radius.sm },
+  reminderBadgeText: {
+    fontFamily: theme.typography.fonts.label,
+    fontSize: 10,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  badgeGood: { backgroundColor: '#E6F8EF' },
+  textGood: { color: '#004D4D', fontSize: 10, fontWeight: '800' },
+  badgePending: { backgroundColor: '#fff0d8' },
+  textPending: { color: '#92400e', fontSize: 10, fontWeight: '800' },
+  reminderMeta: {
+    fontFamily: theme.typography.fonts.sans,
+    fontSize: 11,
+    color: theme.colors.onSurfaceVariant,
+    marginTop: 2,
+  },
+  reminderTime: {
+    fontFamily: theme.typography.fonts.sans,
+    fontSize: 12,
+    color: theme.colors.secondary,
+    marginTop: 4,
+    fontWeight: '600',
+  },
+  ackBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: theme.colors.primary,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: theme.borders.radius.md,
+  },
+  ackBtnText: {
+    color: '#FFFFFF',
+    fontFamily: theme.typography.fonts.label,
+    fontSize: 11,
+    fontWeight: '700',
+  },
   // Notifications
-  markAllReadText: { fontSize: 12, color: theme.colors.primary, fontWeight: '700' },
-  notifCard: { flexDirection: 'row', backgroundColor: theme.colors.white, borderWidth: 1, borderColor: theme.colors.border, borderRadius: theme.radius.md, padding: 12, alignItems: 'flex-start' },
-  notifUnread: { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' },
-  notifTitle: { fontSize: 13, fontWeight: '800', color: theme.colors.text },
-  notifBody: { fontSize: 12, color: theme.colors.textMuted, marginTop: 2 },
-  notifTime: { fontSize: 10, color: theme.colors.textPlaceholder, marginTop: 4 },
+  markAllReadText: {
+    fontFamily: theme.typography.fonts.label,
+    fontSize: 12,
+    color: theme.colors.primary,
+    fontWeight: '700',
+  },
+  notifCard: {
+    flexDirection: 'row',
+    backgroundColor: theme.colors.surfaceContainerLowest,
+    borderWidth: 1,
+    borderColor: theme.borders.ghost,
+    borderRadius: theme.borders.radius.lg,
+    padding: 14,
+    alignItems: 'flex-start',
+    ...theme.shadows.elevation2,
+  },
+  notifUnread: { backgroundColor: 'rgba(0, 77, 77, 0.08)', borderColor: 'rgba(0, 77, 77, 0.25)' },
+  notifTitle: {
+    fontFamily: theme.typography.fonts.sans,
+    fontSize: 13,
+    fontWeight: '700',
+    color: theme.colors.onSurface,
+  },
+  notifBody: {
+    fontFamily: theme.typography.fonts.sans,
+    fontSize: 12,
+    color: theme.colors.onSurfaceVariant,
+    marginTop: 2,
+  },
+  notifTime: {
+    fontFamily: theme.typography.fonts.sans,
+    fontSize: 10,
+    color: theme.colors.outline,
+    marginTop: 4,
+  },
   // Modals
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: theme.spacing.lg },
-  modalContent: { backgroundColor: theme.colors.white, borderRadius: theme.radius.lg, padding: theme.spacing.lg, gap: 12 },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(25, 28, 32, 0.65)',
+    justifyContent: 'center',
+    padding: 16,
+  },
+  modalContent: {
+    backgroundColor: theme.colors.surfaceContainerLowest,
+    borderRadius: theme.borders.radius.xl,
+    padding: 20,
+    gap: 12,
+    ...theme.shadows.elevation2,
+  },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   modalTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  modalTitle: { fontSize: 16, fontWeight: '900', color: theme.colors.text },
-  modalSubtitle: { fontSize: 12, color: theme.colors.textMuted },
-  modalWarningBox: { backgroundColor: '#FEF2F2', padding: 10, borderRadius: theme.radius.md },
-  modalWarningText: { fontSize: 11, color: '#991B1B', lineHeight: 15 },
-  inputLabel: { fontSize: 12, fontWeight: '700', color: theme.colors.text },
-  textInput: { borderWidth: 1, borderColor: theme.colors.border, borderRadius: theme.radius.md, padding: 10, fontSize: 13 },
+  modalTitle: {
+    fontFamily: theme.typography.fonts.serif,
+    fontSize: 17,
+    fontWeight: '700',
+    color: theme.colors.onSurface,
+  },
+  modalSubtitle: {
+    fontFamily: theme.typography.fonts.sans,
+    fontSize: 12,
+    color: theme.colors.onSurfaceVariant,
+    lineHeight: 17,
+  },
+  modalWarningBox: {
+    backgroundColor: '#ffdad6',
+    padding: 12,
+    borderRadius: theme.borders.radius.md,
+  },
+  modalWarningText: {
+    fontFamily: theme.typography.fonts.sans,
+    fontSize: 11,
+    color: '#ba1a1a',
+    lineHeight: 16,
+  },
+  inputLabel: {
+    fontFamily: theme.typography.fonts.label,
+    fontSize: 11,
+    fontWeight: '700',
+    color: theme.colors.onSurfaceVariant,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+  },
+  textInput: {
+    borderWidth: 1,
+    borderColor: theme.borders.subtle,
+    borderRadius: theme.borders.radius.md,
+    padding: 12,
+    fontSize: 13,
+    fontFamily: theme.typography.fonts.sans,
+    backgroundColor: theme.colors.surfaceContainerLowest,
+    color: theme.colors.onSurface,
+  },
   switchRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  switchLabel: { fontSize: 12, fontWeight: '700', color: theme.colors.text },
-  switchSub: { fontSize: 10, color: theme.colors.textMuted, maxWidth: 220 },
-  confirmationRow: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: '#F8FAFC', padding: 10, borderRadius: theme.radius.md },
-  checkbox: { width: 20, height: 20, borderRadius: 4, borderWidth: 2, borderColor: theme.colors.primary, justifyContent: 'center', alignItems: 'center' },
+  switchLabel: {
+    fontFamily: theme.typography.fonts.sans,
+    fontSize: 12,
+    fontWeight: '700',
+    color: theme.colors.onSurface,
+  },
+  switchSub: {
+    fontFamily: theme.typography.fonts.sans,
+    fontSize: 10,
+    color: theme.colors.onSurfaceVariant,
+    maxWidth: 220,
+    marginTop: 2,
+  },
+  confirmationRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: theme.colors.surfaceContainerLow,
+    padding: 12,
+    borderRadius: theme.borders.radius.md,
+  },
+  checkbox: {
+    width: 20,
+    height: 20,
+    borderRadius: 5,
+    borderWidth: 1.5,
+    borderColor: theme.colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: theme.colors.surfaceContainerLowest,
+  },
   checkboxChecked: { backgroundColor: theme.colors.primary },
-  confirmationLabel: { flex: 1, fontSize: 11, color: theme.colors.text, lineHeight: 15, fontWeight: '600' },
+  confirmationLabel: {
+    flex: 1,
+    fontFamily: theme.typography.fonts.sans,
+    fontSize: 11,
+    color: theme.colors.onSurface,
+    lineHeight: 16,
+    fontWeight: '600',
+  },
   modalBtnRow: { flexDirection: 'row', gap: 10, marginTop: 8 },
-  modalCancelBtn: { flex: 1, paddingVertical: 12, alignItems: 'center', borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.colors.border },
-  modalCancelBtnText: { color: theme.colors.textMuted, fontWeight: '700' },
-  modalDangerBtn: { flex: 1, backgroundColor: '#DC2626', paddingVertical: 12, alignItems: 'center', borderRadius: theme.radius.md },
-  modalDangerBtnText: { color: '#FFFFFF', fontWeight: '800' },
-  primaryActionBtn: { flex: 1, backgroundColor: theme.colors.primary, paddingVertical: 12, alignItems: 'center', borderRadius: theme.radius.md },
-  primaryActionBtnText: { color: '#FFFFFF', fontWeight: '800' },
+  modalCancelBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    alignItems: 'center',
+    borderRadius: theme.borders.radius.md,
+    backgroundColor: theme.colors.surfaceContainer,
+  },
+  modalCancelBtnText: {
+    fontFamily: theme.typography.fonts.label,
+    color: theme.colors.onSurfaceVariant,
+    fontWeight: '700',
+  },
+  modalDangerBtn: {
+    flex: 1,
+    backgroundColor: '#ba1a1a',
+    paddingVertical: 12,
+    alignItems: 'center',
+    borderRadius: theme.borders.radius.md,
+    ...theme.shadows.soft,
+  },
+  modalDangerBtnText: {
+    fontFamily: theme.typography.fonts.label,
+    color: '#FFFFFF',
+    fontWeight: '800',
+  },
+  primaryActionBtn: {
+    flex: 1,
+    backgroundColor: theme.colors.primary,
+    paddingVertical: 12,
+    alignItems: 'center',
+    borderRadius: theme.borders.radius.md,
+    ...theme.shadows.soft,
+  },
+  primaryActionBtnText: {
+    fontFamily: theme.typography.fonts.label,
+    color: '#FFFFFF',
+    fontWeight: '800',
+  },
   modalBtnDisabled: { opacity: 0.5 },
   categoryPickerRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
-  categoryPill: { paddingHorizontal: 8, paddingVertical: 5, borderRadius: theme.radius.sm, backgroundColor: '#F1F5F9' },
-  categoryPillActive: { backgroundColor: theme.colors.primarySurface, borderWidth: 1, borderColor: theme.colors.primaryBorder },
-  categoryPillText: { fontSize: 11, fontWeight: '700', color: theme.colors.textMuted },
-  categoryPillTextActive: { color: theme.colors.primary },
+  categoryPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: theme.borders.radius.md,
+    backgroundColor: theme.colors.surfaceContainerLow,
+    borderWidth: 1,
+    borderColor: theme.borders.ghost,
+  },
+  categoryPillActive: {
+    backgroundColor: theme.colors.primary,
+    borderColor: theme.colors.primary,
+  },
+  categoryPillText: {
+    fontFamily: theme.typography.fonts.label,
+    fontSize: 11,
+    fontWeight: '700',
+    color: theme.colors.onSurfaceVariant,
+  },
+  categoryPillTextActive: { color: '#FFFFFF' },
 });

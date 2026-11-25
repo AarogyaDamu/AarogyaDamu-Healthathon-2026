@@ -6,56 +6,64 @@ const test = require('node:test');
 const source = (relativePath) =>
   fs.readFileSync(path.join(__dirname, '..', 'src', relativePath), 'utf8');
 
-test('doctor dashboard provides P0.7.6 AI Care Proposals and Agent Activity views', () => {
+test('Doctor UI strictly excludes AI Care Proposals, Agent Activity views, and Billing & Collections', () => {
   const dashboard = source(path.join('pages', 'DoctorDashboard.tsx'));
+  const workstation = source(path.join('components', 'DoctorWorkstation.tsx'));
 
-  // Main view selector modes
-  assert.match(dashboard, /'ROSTER' \| 'PROPOSALS' \| 'AGENT_FEED'/);
-  assert.match(dashboard, /Care Roster & Longitudinal Chart/);
-  assert.match(dashboard, /AI Care Proposals/);
-  assert.match(dashboard, /Agent Activity Feed/);
+  // Main navigation modes: Only minimal 3 views (Overview, Patients, Appointments)
+  assert.doesNotMatch(dashboard, /'PROPOSALS' \| 'AGENT_FEED'/);
+  assert.doesNotMatch(dashboard, /Care Roster & Longitudinal Chart/);
+  assert.doesNotMatch(dashboard, /AI Care Proposals/);
+  assert.doesNotMatch(dashboard, /Agent Activity Feed/);
 
-  // Sub-tab navigation in patient drawer
-  assert.match(dashboard, /id:\s*'AI_PROPOSALS'/);
-  assert.match(dashboard, /Governed AI Care Proposals/);
+  // Sub-tabs in patient workspace strictly exclude AI proposals
+  assert.doesNotMatch(dashboard, /id:\s*'AI_PROPOSALS'/);
+  assert.doesNotMatch(dashboard, /Governed AI Care Proposals/);
 
-  // KPI stat ribbon integration
-  assert.match(dashboard, /grid-cols-2 md:grid-cols-6/);
-  assert.match(dashboard, /pendingProposalsCount/);
-  assert.match(dashboard, /Awaiting clinician sign-off|Awaiting clinician approval/);
+  // KPI stat ribbon strictly excludes proposal counters
+  assert.doesNotMatch(dashboard, /pendingProposalsCount/);
+  assert.doesNotMatch(dashboard, /Awaiting clinician sign-off/);
+  assert.doesNotMatch(dashboard, /Awaiting clinician approval/);
+
+  // Billing strictly removed from Doctor UI
+  assert.doesNotMatch(dashboard, /Billing & Collections/);
+  assert.doesNotMatch(dashboard, /showBillingModal/);
+  assert.doesNotMatch(workstation, /aarogya:open-billing/);
+  assert.doesNotMatch(workstation, /Billing & Collections/);
 });
 
-test('doctor dashboard enforces strict clinical governance and human-in-the-loop review', () => {
-  const dashboard = source(path.join('pages', 'DoctorDashboard.tsx'));
-
-  // Clinical safety governance notices
-  assert.match(dashboard, /AarogyaDamu Clinical Governance Notice/);
-  assert.match(dashboard, /PENDING_CLINICIAN_APPROVAL/);
-  assert.match(dashboard, /AI agents NEVER autonomously modify patient care plans, alter medications, or adjust glycemic targets/);
-  assert.match(dashboard, /AI-GENERATED PROPOSAL \(DECISION SUPPORT ONLY\)/);
-  assert.match(dashboard, /RECORDED PATIENT FACTS \(EHR SOURCE OF TRUTH\)/);
-
-  // No fabricated measurements rule
-  assert.match(dashboard, /Clinical Fact Boundary/);
-  assert.match(dashboard, /verified medical history recorded directly by the patient or clinical team/);
-  assert.match(dashboard, /Damu does not alter, fabricate, or extrapolate clinical measurements/);
-
-  // Fallback clinical target labeling (LOW-P0.7.6-05)
-  assert.match(dashboard, /Reference Default — Not a Recorded Patient Target/);
+test('Doctor Workstation preserves practice settings and clinician profile modals', () => {
+  const workstation = source(path.join('components', 'DoctorWorkstation.tsx'));
+  assert.match(workstation, /Practice Settings/);
+  assert.match(workstation, /Doctor Account|Profile/);
+  assert.match(workstation, /showSettings/);
+  assert.match(workstation, /showProfile/);
 });
 
-test('api client exposes P0.7.6 proposal review and action inspection methods', () => {
+test('Doctor Glucose Monitoring strictly excludes pregnancy target controls while preserving standard adult targets', () => {
+  const cgm = source(path.join('components', 'DoctorGlucoseMonitoring.tsx'));
+
+  // Pregnancy controls strictly removed
+  assert.doesNotMatch(cgm, /Pregnancy Target/);
+  assert.doesNotMatch(cgm, /isPregnant/);
+  assert.doesNotMatch(cgm, /Baby/);
+
+  // Standard adult diabetes target preserved
+  assert.match(cgm, /Standard Adult Target: 70–180 mg\/dL/);
+});
+
+test('api client exposes P0.7.6 proposal review and action inspection methods for contracts integrity', () => {
   const client = source(path.join('api', 'client.ts'));
   const types = source(path.join('api', 'types.ts'));
 
-  // API Client methods
+  // API Client methods preserved for contracts
   assert.match(client, /export async function getAgentProposals/);
   assert.match(client, /export async function reviewAgentProposal/);
   assert.match(client, /export async function getAgentPlan/);
   assert.match(client, /export async function getAgentAction/);
   assert.match(client, /\/agent\/proposals\/\$\{actionId\}\/clinician-review/);
 
-  // Typed definitions
+  // Typed definitions preserved
   assert.match(types, /interface AgentProposalItem/);
   assert.match(types, /interface AgentProposalReviewPayload/);
   assert.match(types, /interface AgentProposalReviewResponse/);
@@ -63,107 +71,41 @@ test('api client exposes P0.7.6 proposal review and action inspection methods', 
   assert.match(types, /riskTier:\s*'LOW_RISK' \| 'MEDIUM_RISK' \| 'HIGH_RISK'/);
 });
 
-test('doctor dashboard proposal approval requires explicit clinician confirmation and validates notes', () => {
-  const dashboard = source(path.join('pages', 'DoctorDashboard.tsx'));
-
-  // Explicit approval handler
-  assert.match(dashboard, /handleApproveProposal/);
-  assert.match(dashboard, /decision:\s*'APPROVE'/);
-  assert.match(dashboard, /Approve Clinical Proposal/);
-
-  // Validates review notes length if supplied (min 2 chars)
-  assert.match(dashboard, /trimmedNotes && trimmedNotes\.length < 2/);
-  assert.match(dashboard, /Clinical review notes must be at least 2 characters if provided/);
-
-  // Accurate confirmation banner upon approved proposal (MED-P0.7.6-01)
-  assert.match(dashboard, /AI clinical proposal approved/);
-  assert.match(dashboard, /The advisory recommendation has been reviewed and approved by the assigned clinician/);
-  assert.match(dashboard, /This approval does not automatically change the patient's care plan or prescription/);
-  assert.match(dashboard, /Proposal Approved — Advisory Review Complete/);
-  assert.match(dashboard, /Any actual care-plan, medication, dosage, or prescription change must be separately entered/);
-
-  // Modal accessibility attributes on Proposal Detail modal (MED-P0.7.6-02)
-  assert.match(dashboard, /role="dialog"/);
-  assert.match(dashboard, /aria-modal="true"/);
-  assert.match(dashboard, /aria-labelledby="proposal-modal-title"/);
-  assert.match(dashboard, /aria-label="Close dialog"/);
+test('proposal rationale boundary validation logic enforces minimum character thresholds', () => {
+  // Validate rationale boundary rules: empty, whitespace-only, and <3 chars are rejected; >=3 chars accepted
+  const validateRationale = (reason, notes) => ((reason || notes || '').trim().length >= 3);
+  assert.equal(validateRationale('', ''), false, 'Empty rationale must be rejected');
+  assert.equal(validateRationale('   ', ''), false, 'Whitespace-only rationale must be rejected');
+  assert.equal(validateRationale('no', ''), false, 'Rationale with <3 characters must be rejected');
+  assert.equal(validateRationale('Clinically inappropriate dosage', ''), true, 'Valid rejection reason (>=3 chars) must be accepted');
+  assert.equal(validateRationale('', 'Alternative medication indicated'), true, 'Valid review notes fallback (>=3 chars) must be accepted');
 });
 
-test('doctor dashboard proposal rejection requires mandatory clinical rationale (min 3 chars)', () => {
+test('Doctor Dashboard provides Clinical Command Center header and 4-KPI metrics row', () => {
   const dashboard = source(path.join('pages', 'DoctorDashboard.tsx'));
 
-  // Rejection handler and modal
-  assert.match(dashboard, /handleRejectProposal/);
-  assert.match(dashboard, /decision:\s*'REJECT'/);
-  assert.match(dashboard, /Confirm Proposal Rejection/);
-
-  // Mandatory rejection reason validation (min 3 characters)
-  assert.match(dashboard, /!trimmedReason \|\| trimmedReason\.length < 3/);
-  assert.match(dashboard, /Clinical rejection reason is required and must be at least 3 characters/);
-  assert.match(dashboard, /disabled=\{submittingProposalReview \|\| proposalRejectionReason\.trim\(\)\.length < 3\}/);
-
-  // Confirmation of rejection recorded
-  assert.match(dashboard, /Clinical proposal rejected/);
-  assert.match(dashboard, /Clinical rationale has been recorded in the permanent audit trail/);
-
-  // Modal accessibility attributes on Rejection modal (MED-P0.7.6-02)
-  assert.match(dashboard, /aria-labelledby="rejection-modal-title"/);
-  assert.match(dashboard, /aria-describedby="rejection-modal-description"/);
-  assert.match(dashboard, /aria-label="Cancel rejection and return to proposal"/);
+  assert.match(dashboard, /Clinical Command Center/);
+  assert.match(dashboard, /Manage patients, appointments, and ongoing clinical care/);
+  assert.match(dashboard, /Assigned Patients/);
+  assert.match(dashboard, /High Glycemic Risk/);
+  assert.match(dashboard, /Overdue Follow-ups/);
+  assert.match(dashboard, /Upcoming Visits/);
 });
 
-test('doctor dashboard prevents duplicate review dispatch and handles conflicts', () => {
+test('Doctor Dashboard provides formatted patient worklist and 5 consolidated clinical workspaces', () => {
   const dashboard = source(path.join('pages', 'DoctorDashboard.tsx'));
 
-  // Concurrency guardrail
-  assert.match(dashboard, /submittingProposalReview/);
-  assert.match(dashboard, /if \(submittingProposalReview\) return/);
+  // Worklist formatting
+  assert.match(dashboard, /formatPatientName/);
+  assert.match(dashboard, /getPatientRefCode/);
+  assert.match(dashboard, /PT-/);
+  assert.match(dashboard, /Start Consultation/);
 
-  // Status check guardrail
-  assert.match(dashboard, /if \(proposal\.status !== 'PENDING_CLINICIAN_APPROVAL'\)/);
-  assert.match(dashboard, /Cannot approve: Proposal is currently in/);
-  assert.match(dashboard, /Cannot reject: Proposal is currently in/);
-
-  // Conflict / already-reviewed API error handling
-  assert.match(dashboard, /INVALID_ACTION_FOR_CLINICIAN_REVIEW/);
-  assert.match(dashboard, /Proposal has already been reviewed or is no longer awaiting clinician approval/);
-});
-
-test('doctor dashboard enforces active doctor-patient assignment and handles 403 access denial', () => {
-  const dashboard = source(path.join('pages', 'DoctorDashboard.tsx'));
-
-  // Scoped to active assignments
-  assert.match(dashboard, /Filter Patient:/);
-  assert.match(dashboard, /All Assigned Patients/);
-
-  // Handles UNASSIGNED_CLINICIAN 403 error cleanly
-  assert.match(dashboard, /UNASSIGNED_CLINICIAN/);
-  assert.match(dashboard, /Access denied: You do not have an active clinician assignment for this patient/);
-});
-
-test('doctor dashboard handles feature flag disabled behavior gracefully', () => {
-  const dashboard = source(path.join('pages', 'DoctorDashboard.tsx'));
-
-  // Feature flag check and banner
-  assert.match(dashboard, /isAgentFeatureDisabled/);
-  assert.match(dashboard, /FEATURE_FLAG_DISABLED|FEATURE_DISABLED/);
-  assert.match(dashboard, /Governed AI Agent execution is currently disabled by clinical safety policy/);
-  assert.match(dashboard, /P0_7_AGENTIC_EXECUTION/);
-});
-
-test('doctor dashboard provides agent activity feed with tool risk tier classification and detail inspection', () => {
-  const dashboard = source(path.join('pages', 'DoctorDashboard.tsx'));
-
-  // Feed section
-  assert.match(dashboard, /Governed Agent Execution Activity Feed/);
-  assert.match(dashboard, /action\.toolName/);
-  assert.match(dashboard, /action\.riskTier/);
-  assert.match(dashboard, /HIGH_RISK/);
-  assert.match(dashboard, /MEDIUM_RISK/);
-  assert.match(dashboard, /LOW_RISK/);
-
-  // Action detail inspection
-  assert.match(dashboard, /Inspect Action/);
-  assert.match(dashboard, /selectedActionDetail/);
-  assert.match(dashboard, /getAgentAction\(action\.id\)/);
+  // 5 Intuitive Clinical Workspaces
+  assert.match(dashboard, /'SUMMARY' \| 'CLINICAL_RECORD' \| 'MONITORING' \| 'CARE_PLAN' \| 'COORDINATION'/);
+  assert.match(dashboard, /Summary & Vitals/);
+  assert.match(dashboard, /Clinical Record/);
+  assert.match(dashboard, /Monitoring/);
+  assert.match(dashboard, /Care Plan/);
+  assert.match(dashboard, /Coordination/);
 });

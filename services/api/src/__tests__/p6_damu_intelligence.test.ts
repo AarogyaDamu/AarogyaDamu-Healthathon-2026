@@ -2,6 +2,7 @@ import request from 'supertest';
 import { randomUUID } from 'crypto';
 import bcrypt from 'bcryptjs';
 import { app, prisma } from '../server';
+import { withTenantTransaction } from '../db/tenantContext';
 import { setFeatureFlag } from '../features/featureFlags';
 import { classifyDamuIntent } from '../ai/agent/damuNluService';
 import { searchDiabetesKnowledge } from '../ai/knowledge/diabetesKnowledgeBase';
@@ -29,6 +30,7 @@ describe('Phase 6 — Damu AI Health Intelligence & Patient Agent Test Suite', (
   let approvedNoteId: string;
   let draftNoteId: string;
   let appointmentId: string;
+  let practiceP6: any;
 
   jest.setTimeout(45000);
 
@@ -69,6 +71,21 @@ describe('Phase 6 — Damu AI Health Intelligence & Patient Agent Test Suite', (
     patientB = await createUser(`patient.priya.p6.${runId}@example.com`, 'Priya Sharma');
     caregiverA = await createUser(`caregiver.sunil.p6.${runId}@example.com`, 'Sunil Deshmukh');
     caregiverStranger = await createUser(`caregiver.stranger.p6.${runId}@example.com`, 'Stranger Caregiver');
+
+    practiceP6 = await prisma.practice.create({
+      data: {
+        name: `P6 Practice ${runId}`,
+        slug: `p6-practice-${runId}`,
+        registrationNumber: `REG-P6-${runId}`,
+        memberships: {
+          create: {
+            userId: doctorA.id,
+            role: 'OWNER',
+            isActive: true,
+          },
+        },
+      },
+    });
 
     // Caregiver consent for Patient A
     await prisma.caregiverConsent.create({
@@ -260,100 +277,136 @@ describe('Phase 6 — Damu AI Health Intelligence & Patient Agent Test Suite', (
     appointmentId = apt.id;
 
     // 7. Approved Consultation Note (sharedWithPatient = true)
-    const approvedNote = await prisma.consultationNote.create({
-      data: {
-        userId: patientA.id,
-        clinicianId: doctorA.id,
-        clinicianName: 'Dr. Ananya Sharma',
-        status: 'APPROVED',
-        sharedWithPatient: true,
-        sharedAt: now,
-        rawTranscript: 'DOCTOR: How are you feeling today Ramesh? PATIENT: Feeling okay...',
-        speakerSegments: JSON.stringify([{ speaker: 'DOCTOR', text: 'How are you feeling' }]),
-        structuredNote: JSON.stringify({
-          assessmentAndPlan: 'Continue Metformin 500mg BID. Fasting glucose well controlled.',
-        }),
-        approvedNoteText: 'Continue Metformin 500mg twice daily with meals. Glucose control is improving nicely.',
-        approvedAt: now,
-        approvedBy: doctorA.id,
+    const approvedNote = await withTenantTransaction(
+      prisma,
+      {
+        userId: doctorA.id,
+        practiceId: practiceP6.id,
+        role: 'DOCTOR',
+        patientId: patientA.id,
       },
-    });
-    approvedNoteId = approvedNote.id;
+      async (tx) => {
+        return await tx.consultationNote.create({
+          data: {
+            userId: patientA.id,
+            clinicianId: doctorA.id,
+            clinicianName: 'Dr. Ananya Sharma',
+            status: 'APPROVED',
+            sharedWithPatient: true,
+            sharedAt: now,
+            rawTranscript: 'DOCTOR: How are you feeling today Ramesh? PATIENT: Feeling okay...',
+            speakerSegments: JSON.stringify([{ speaker: 'DOCTOR', text: 'How are you feeling' }]),
+            structuredNote: JSON.stringify({
+              assessmentAndPlan: 'Continue Metformin 500mg BID. Fasting glucose well controlled.',
+            }),
+            approvedNoteText: 'Continue Metformin 500mg twice daily with meals. Glucose control is improving nicely.',
+            approvedAt: now,
+            approvedBy: doctorA.id,
+          },
+        });
+      }
+    );
+    approvedNoteId = (approvedNote as any).id;
 
     // 8. Incomplete / Unapproved Consultation Note Draft (sharedWithPatient = false)
-    const draftNote = await prisma.consultationNote.create({
-      data: {
-        userId: patientA.id,
-        clinicianId: doctorA.id,
-        clinicianName: 'Dr. Ananya Sharma',
-        status: 'RECORDING',
-        sharedWithPatient: false,
-        rawTranscript: 'INTERNAL CLINICIAN DRAFT: Patient mentioned intermittent fatigue...',
-        speakerSegments: JSON.stringify([{ speaker: 'DOCTOR', text: 'Internal draft notes' }]),
-        structuredNote: JSON.stringify({ draftObservation: 'Confidential clinical discussion' }),
+    const draftNote = await withTenantTransaction(
+      prisma,
+      {
+        userId: doctorA.id,
+        practiceId: practiceP6.id,
+        role: 'DOCTOR',
+        patientId: patientA.id,
       },
-    });
-    draftNoteId = draftNote.id;
+      async (tx) => {
+        return await tx.consultationNote.create({
+          data: {
+            userId: patientA.id,
+            clinicianId: doctorA.id,
+            clinicianName: 'Dr. Ananya Sharma',
+            status: 'RECORDING',
+            sharedWithPatient: false,
+            rawTranscript: 'INTERNAL CLINICIAN DRAFT: Patient mentioned intermittent fatigue...',
+            speakerSegments: JSON.stringify([{ speaker: 'DOCTOR', text: 'Internal draft notes' }]),
+            structuredNote: JSON.stringify({ draftObservation: 'Confidential clinical discussion' }),
+          },
+        });
+      }
+    );
+    draftNoteId = (draftNote as any).id;
   });
 
   afterAll(async () => {
-    const userIds = [
-      doctorA.id,
-      patientA.id,
-      patientB.id,
-      caregiverA.id,
-      caregiverStranger.id,
-    ];
+    try {
+      const userIds = [
+        doctorA?.id,
+        patientA?.id,
+        patientB?.id,
+        caregiverA?.id,
+        caregiverStranger?.id,
+      ].filter(Boolean);
 
-    await prisma.damuConversation.deleteMany({ where: { userId: { in: userIds } } });
-    await prisma.consultationNoteVersion.deleteMany({ where: { revisedBy: { in: userIds } } });
-    await prisma.consultationNote.deleteMany({
-      where: {
-        OR: [
-          { userId: { in: userIds } },
-          { clinicianId: { in: userIds } },
-          { approvedBy: { in: userIds } },
-        ],
-      },
-    });
-    await prisma.appointment.deleteMany({
-      where: {
-        OR: [
-          { patientId: { in: userIds } },
-          { doctorId: { in: userIds } },
-          { bookedById: { in: userIds } },
-        ],
-      },
-    });
-    await prisma.carePlan.deleteMany({
-      where: {
-        OR: [
-          { patientId: { in: userIds } },
-          { doctorId: { in: userIds } },
-          { approvedById: { in: userIds } },
-        ],
-      },
-    });
-    await prisma.doctorPatientAssignment.deleteMany({
-      where: {
-        OR: [{ doctorId: { in: userIds } }, { patientId: { in: userIds } }],
-      },
-    });
-    await prisma.reminder.deleteMany({ where: { userId: { in: userIds } } });
-    await prisma.careTask.deleteMany({
-      where: {
-        OR: [
-          { userId: { in: userIds } },
-          { assignedById: { in: userIds } },
-          { completedById: { in: userIds } },
-        ],
-      },
-    });
-    await prisma.medicationAdherenceEvent.deleteMany({ where: { userId: { in: userIds } } });
-    await prisma.medicationSchedule.deleteMany({ where: { userId: { in: userIds } } });
-    await prisma.healthObservation.deleteMany({ where: { userId: { in: userIds } } });
-    await prisma.caregiverConsent.deleteMany({ where: { patientId: { in: userIds } } });
-    await prisma.user.deleteMany({ where: { id: { in: userIds } } });
+      try { await prisma.damuConversation.deleteMany({ where: { userId: { in: userIds } } }); } catch {}
+      try { await prisma.consultationNoteVersion.deleteMany({ where: { revisedBy: { in: userIds } } }); } catch {}
+      try {
+        await prisma.consultationNote.deleteMany({
+          where: {
+            OR: [
+              { userId: { in: userIds } },
+              { clinicianId: { in: userIds } },
+              { approvedBy: { in: userIds } },
+            ],
+          },
+        });
+      } catch {}
+      try {
+        await prisma.appointment.deleteMany({
+          where: {
+            OR: [
+              { patientId: { in: userIds } },
+              { doctorId: { in: userIds } },
+              { bookedById: { in: userIds } },
+            ],
+          },
+        });
+      } catch {}
+      try {
+        await prisma.carePlan.deleteMany({
+          where: {
+            OR: [
+              { patientId: { in: userIds } },
+              { doctorId: { in: userIds } },
+              { approvedById: { in: userIds } },
+            ],
+          },
+        });
+      } catch {}
+      try {
+        await prisma.doctorPatientAssignment.deleteMany({
+          where: {
+            OR: [{ doctorId: { in: userIds } }, { patientId: { in: userIds } }],
+          },
+        });
+      } catch {}
+      try { await prisma.reminder.deleteMany({ where: { userId: { in: userIds } } }); } catch {}
+      try {
+        await prisma.careTask.deleteMany({
+          where: {
+            OR: [
+              { userId: { in: userIds } },
+              { assignedById: { in: userIds } },
+              { completedById: { in: userIds } },
+            ],
+          },
+        });
+      } catch {}
+      try { await prisma.medicationAdherenceEvent.deleteMany({ where: { userId: { in: userIds } } }); } catch {}
+      try { await prisma.medicationSchedule.deleteMany({ where: { userId: { in: userIds } } }); } catch {}
+      try { await prisma.healthObservation.deleteMany({ where: { userId: { in: userIds } } }); } catch {}
+      try { await prisma.caregiverConsent.deleteMany({ where: { patientId: { in: userIds } } }); } catch {}
+      try { await prisma.patientProfile.deleteMany({ where: { userId: { in: userIds } } }); } catch {}
+      try { await prisma.practiceMembership.deleteMany({ where: { userId: { in: userIds } } }); } catch {}
+      try { await prisma.user.deleteMany({ where: { id: { in: userIds } } }); } catch {}
+    } catch {}
   });
 
   describe('1. 12+ Intent Classification & Clinical Safety Guard', () => {

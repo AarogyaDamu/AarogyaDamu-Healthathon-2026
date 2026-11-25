@@ -5,16 +5,17 @@
     "scheme": "aarogyadamu",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/damu.png",
+    "icon": "./assets/brand/launcher-512.png",
     "userInterfaceStyle": "light",
     "splash": {
-      "image": "./assets/damu.png",
+      "image": "./assets/brand/launcher-512.png",
       "resizeMode": "contain",
-      "backgroundColor": "#0D9488"
+      "backgroundColor": "#004D4D"
     },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "in.panumirge.aarogyadamu",
+      "icon": "./assets/brand/AppIcon-1024.png",
       "infoPlist": {
         "NSMicrophoneUsageDescription": "AarogyaDamu requires microphone access to enable voice conversations with your diabetes companion Damu."
       }
@@ -23,8 +24,8 @@
       "package": "in.panumirge.aarogyadamu",
       "versionCode": 1,
       "adaptiveIcon": {
-        "foregroundImage": "./assets/damu.png",
-        "backgroundColor": "#0D9488"
+        "foregroundImage": "./assets/brand/adaptive_foreground_512.png",
+        "backgroundColor": "#004D4D"
       },
       "permissions": [
         "android.permission.INTERNET",
@@ -36,7 +37,7 @@
     "web": {
       "bundler": "metro",
       "output": "single",
-      "favicon": "./assets/damu.png"
+      "favicon": "./assets/brand/launcher-48.png"
     },
     "plugins": [
       "expo-router",

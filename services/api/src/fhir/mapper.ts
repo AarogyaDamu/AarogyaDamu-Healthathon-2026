@@ -23,8 +23,9 @@ import {
   FhirAuditEvent,
 } from './types';
 import { resolveLoincCoding, toCanonicalUcum, LOINC_CODES } from '@aarogyadamu/contracts';
+import { env } from '../config/env';
 
-const FHIR_BASE_URL = process.env.FHIR_SERVER_URL || 'https://app.example.com/api/fhir/r4';
+const FHIR_BASE_URL = process.env.FHIR_SERVER_URL || env.FHIR_SERVER_URL || 'https://app.example.com/api/fhir/r4';
 
 /**
  * Maps User & PatientProfile to FHIR Patient resource
@@ -201,6 +202,7 @@ export function mapToFhirObservation(obs: any): FhirObservation {
     type: obs.type,
     context: obs.context,
     provenance: obs.provenance,
+    unit: obs.unit,
   });
 
   const canonicalUcum = toCanonicalUcum(obs.unit || (loinc ? loinc.defaultUcumUnit : ''));

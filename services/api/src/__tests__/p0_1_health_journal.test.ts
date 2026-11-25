@@ -83,10 +83,11 @@ describe('P0.1 Unified Health Journal Suite', () => {
         permissions: JSON.stringify(['VIEW_OBSERVATIONS', 'MANAGE_OBSERVATIONS']),
       },
     });
-  });
+  }, 30000);
 
   afterAll(async () => {
-    const userIds = [patientA.id, patientB.id, assignedDoctor.id, unassignedDoctor.id, activeCaregiver.id, revokedCaregiver.id];
+    const userIds = [patientA?.id, patientB?.id, assignedDoctor?.id, unassignedDoctor?.id, activeCaregiver?.id, revokedCaregiver?.id].filter(Boolean) as string[];
+    if (userIds.length === 0) return;
     await prisma.healthObservation.deleteMany({ where: { userId: { in: userIds } } });
     await prisma.auditLog.deleteMany({ where: { userId: { in: userIds } } });
     await prisma.caregiverConsent.deleteMany({ where: { patientId: { in: userIds } } });

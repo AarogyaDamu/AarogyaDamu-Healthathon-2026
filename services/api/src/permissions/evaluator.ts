@@ -1,5 +1,10 @@
 import { Request } from 'express';
 import { prisma } from '../db/prisma';
+import {
+  getTenantContext,
+  tenantContextStorage,
+  updateTenantContext,
+} from '../db/tenantContext';
 
 export type RequiredPermission =
   | 'VIEW_OBSERVATIONS'
@@ -51,10 +56,21 @@ export async function resolvePatientContext(
     throw err;
   }
 
+  // Ensure ambient RLS user context exists even if stream/callback middleware ran upstream
+  const existingCtx = getTenantContext();
+  if (!existingCtx?.userId) {
+    tenantContextStorage.enterWith({
+      ...existingCtx,
+      userId: authenticatedUserId,
+      role: existingCtx?.role || ((req as any).user?.isClinician ? 'DOCTOR' : 'PATIENT'),
+    });
+  }
+
   const targetPatientId = req.headers['x-target-patient-id'] as string | undefined;
 
   // Direct access to the patient's own master record
   if (!targetPatientId || targetPatientId === authenticatedUserId) {
+    updateTenantContext({ patientId: authenticatedUserId });
     return { effectivePatientId: authenticatedUserId, isDelegated: false };
   }
 
@@ -79,6 +95,21 @@ export async function resolvePatientContext(
     });
 
     if (assignment && assignment.status === 'ACTIVE') {
+      updateTenantContext({ patientId: targetPatientId });
+      return { effectivePatientId: targetPatientId, isDelegated: true };
+    }
+
+    // Care team member check (Nurse, Diabetes Educator, Doctor, Care Coordinator)
+    const careTeamMember = await prisma.patientCareTeamMember.findFirst({
+      where: {
+        patientId: targetPatientId,
+        userId: authenticatedUserId,
+        status: 'ACTIVE',
+      },
+    });
+
+    if (careTeamMember) {
+      updateTenantContext({ patientId: targetPatientId, role: careTeamMember.role });
       return { effectivePatientId: targetPatientId, isDelegated: true };
     }
   }
@@ -93,6 +124,11 @@ export async function resolvePatientContext(
   });
 
   if (!consent) {
+    if (authenticatedUser.isClinician) {
+      throw new AuthorizationError(
+        `Forbidden: Access denied: Clinician is not assigned to patient ${targetPatientId}`
+      );
+    }
     throw new AuthorizationError(
       `Forbidden: Access denied: No active caregiver consent from patient ${targetPatientId}`
     );
@@ -137,11 +173,17 @@ export async function resolvePatientContext(
     throw new AuthorizationError(`Forbidden: Caregiver grant does not include permission [${permission}]`);
   }
 
-  // Record access timestamp for patient visibility
-  void prisma.caregiverConsent.update({
-    where: { id: consent.id },
-    data: { lastAccessedAt: new Date() },
-  }).catch(() => {});
+  // Record access timestamp for patient visibility (non-blocking best-effort update)
+  try {
+    const updatePromise = prisma.caregiverConsent.updateMany({
+      where: { id: consent.id, status: 'ACTIVE' },
+      data: { lastAccessedAt: new Date() },
+    });
+    if (updatePromise && typeof (updatePromise as any).catch === 'function') {
+      (updatePromise as any).catch(() => {});
+    }
+  } catch {}
 
+  updateTenantContext({ patientId: targetPatientId, role: 'CAREGIVER' });
   return { effectivePatientId: targetPatientId, isDelegated: true };
 }

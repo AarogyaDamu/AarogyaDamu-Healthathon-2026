@@ -11,6 +11,8 @@ import {
   Modal,
   ActivityIndicator,
   RefreshControl,
+  Linking,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -90,14 +92,27 @@ interface MedicalDoc {
   reportDate: string;
   notes?: string;
   processingStatus: string;
+  ocrStatus?: string;
+  doctorReviewStatus?: string;
   fileSizeBytes?: number;
   mimeType?: string;
+  hasOriginalFile?: boolean;
   extractedData?: {
     provider?: string;
+    engine?: string;
     status?: string;
     text?: string;
+    rawOcrText?: string;
     error?: string;
+    plainSummary?: string;
+    doctorAdvice?: string[];
     isSynthetic?: boolean;
+    doctorReviewStatus?: string;
+    doctorNotes?: string | null;
+    reviewedBy?: string | null;
+    reviewedByName?: string | null;
+    reviewedAt?: string | null;
+    structuredLabs?: Record<string, any>;
   } | null;
 }
 
@@ -274,6 +289,24 @@ export default function HealthVaultScreen() {
 
     return () => clearInterval(timer);
   }, [reports]);
+
+  useEffect(() => {
+    if (activeTab !== 'MEDICAL_REPORTS') return;
+    let active = true;
+    const refreshReports = () => {
+      void mobileApiFetch<{ documents: MedicalDoc[] }>('/documents')
+        .then((response) => {
+          if (active && response?.documents) setReports(response.documents);
+        })
+        .catch(() => undefined);
+    };
+    refreshReports();
+    const timer = setInterval(refreshReports, 10000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [activeTab]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -911,38 +944,76 @@ export default function HealthVaultScreen() {
                         <Text style={styles.reportDate}>
                           Uploaded: {new Date(doc.reportDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
                         </Text>
-                        <View style={[
-                          styles.reportStatusBadge,
-                          doc.processingStatus === 'EXTRACTION_FAILED' && styles.reportStatusBadgeFailed,
-                          doc.processingStatus === 'PENDING' && styles.reportStatusBadgePending,
-                        ]}>
-                          <Text style={[
-                            styles.reportStatusText,
-                            doc.processingStatus === 'EXTRACTION_FAILED' && styles.reportStatusTextFailed,
-                            doc.processingStatus === 'PENDING' && styles.reportStatusTextPending,
+                        <View style={styles.reportBadgeRow}>
+                          {/* OCR Status Badge */}
+                          <View style={[
+                            styles.reportStatusBadge,
+                            (doc.processingStatus === 'EXTRACTION_FAILED' || doc.processingStatus === 'FAILED') && styles.reportStatusBadgeFailed,
+                            doc.processingStatus === 'PENDING' && styles.reportStatusBadgePending,
                           ]}>
-                            {doc.processingStatus === 'PENDING'
-                              ? `${doc.extractedData?.provider || 'OCR'}: extracting text`
-                              : doc.processingStatus === 'NEEDS_REVIEW'
-                                ? `${doc.extractedData?.provider || 'OCR'}: text extracted`
-                                : doc.processingStatus === 'OCR_NO_TEXT'
-                                ? `${doc.extractedData?.provider || 'OCR'}: no text detected`
-                                  : doc.processingStatus === 'EXTRACTION_FAILED'
-                                ? `${doc.extractedData?.provider || 'OCR'}: extraction failed`
-                                    : 'Report saved'}
-                          </Text>
+                            <Text style={[
+                              styles.reportStatusText,
+                              (doc.processingStatus === 'EXTRACTION_FAILED' || doc.processingStatus === 'FAILED') && styles.reportStatusTextFailed,
+                              doc.processingStatus === 'PENDING' && styles.reportStatusTextPending,
+                            ]}>
+                              {doc.processingStatus === 'PENDING'
+                                ? 'OCR: extracting text…'
+                                : doc.processingStatus === 'COMPLETED' || doc.processingStatus === 'NEEDS_REVIEW' || doc.processingStatus === 'READY'
+                                ? 'OCR: text extracted'
+                                : doc.processingStatus === 'FAILED' || doc.processingStatus === 'EXTRACTION_FAILED'
+                                ? 'OCR: extraction failed'
+                                : 'Report saved'}
+                            </Text>
+                          </View>
+
+                          {/* Doctor Review Status Badge */}
+                          <View style={[
+                            styles.reportStatusBadge,
+                            (doc.doctorReviewStatus === 'REVIEWED' || doc.extractedData?.doctorReviewStatus === 'REVIEWED')
+                              ? styles.reportStatusBadgeReviewed
+                              : (doc.doctorReviewStatus === 'NEEDS_ATTENTION' || doc.extractedData?.doctorReviewStatus === 'NEEDS_ATTENTION')
+                              ? styles.reportStatusBadgePending
+                              : styles.reportStatusBadgeNeutral,
+                          ]}>
+                            <Text style={[
+                              styles.reportStatusText,
+                              (doc.doctorReviewStatus === 'REVIEWED' || doc.extractedData?.doctorReviewStatus === 'REVIEWED')
+                                ? styles.reportStatusTextReviewed
+                                : (doc.doctorReviewStatus === 'NEEDS_ATTENTION' || doc.extractedData?.doctorReviewStatus === 'NEEDS_ATTENTION')
+                                ? styles.reportStatusTextPending
+                                : styles.reportStatusTextNeutral,
+                            ]}>
+                              {(doc.doctorReviewStatus === 'REVIEWED' || doc.extractedData?.doctorReviewStatus === 'REVIEWED')
+                                ? 'Doctor: Reviewed'
+                                : (doc.doctorReviewStatus === 'NEEDS_ATTENTION' || doc.extractedData?.doctorReviewStatus === 'NEEDS_ATTENTION')
+                                ? 'Doctor: Needs Attention'
+                                : 'Doctor: Review Pending'}
+                            </Text>
+                          </View>
                         </View>
+
                         {doc.extractedData?.error ? (
                           <Text style={styles.reportExtractionError}>{doc.extractedData.error}</Text>
                         ) : null}
-                        {doc.extractedData?.text ? (
-                          <>
-                            <Text style={styles.reportExtractedText} numberOfLines={4}>{doc.extractedData.text}</Text>
-                            <TouchableOpacity style={styles.reviewReportButton} onPress={() => void openReportReview(doc)} accessibilityRole="button" accessibilityLabel={`Review OCR and original file for ${doc.title}`}>
-                              <Text style={styles.reviewReportButtonText}>Review OCR & original file</Text>
-                            </TouchableOpacity>
-                          </>
+
+                        {doc.extractedData?.plainSummary ? (
+                          <Text style={styles.reportExtractedText} numberOfLines={3}>
+                            {doc.extractedData.plainSummary}
+                          </Text>
+                        ) : doc.extractedData?.text ? (
+                          <Text style={styles.reportExtractedText} numberOfLines={3}>
+                            {doc.extractedData.text}
+                          </Text>
                         ) : null}
+
+                        <TouchableOpacity
+                          style={styles.reviewReportButton}
+                          onPress={() => void openReportReview(doc)}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Review OCR and original file for ${doc.title}`}
+                        >
+                          <Text style={styles.reviewReportButtonText}>Review OCR & Original File &rarr;</Text>
+                        </TouchableOpacity>
                       </View>
                     </View>
                   ))
@@ -996,7 +1067,10 @@ export default function HealthVaultScreen() {
 
       {/* MODAL: LOG BLOOD SUGAR / VITALS */}
       <Modal visible={showLogModal} transparent animationType="slide">
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.modalOverlay}
+        >
           <View style={styles.modalCard}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Record Health Reading</Text>
@@ -1094,7 +1168,7 @@ export default function HealthVaultScreen() {
               )}
             </TouchableOpacity>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* MODAL: LOG LIFESTYLE */}
@@ -1181,15 +1255,81 @@ export default function HealthVaultScreen() {
             </View>
             {reportReviewTab === 'ocr' ? (
               <ScrollView style={styles.reviewBody} contentContainerStyle={{ gap: 12 }}>
-                <View style={styles.reviewStatusCard}><Text style={styles.reviewStatusLabel}>Extraction status</Text><Text style={styles.reviewStatusValue}>{selectedReportForReview?.processingStatus.replace(/_/g, ' ')}</Text><Text style={styles.reportFacility}>{selectedReportForReview?.extractedData?.provider || 'OCR provider'}</Text></View>
+                <View style={styles.reviewStatusCard}>
+                  <Text style={styles.reviewStatusLabel}>OCR Extraction</Text>
+                  <Text style={styles.reviewStatusValue}>
+                    {selectedReportForReview?.processingStatus === 'COMPLETED' ? 'Completed' : selectedReportForReview?.processingStatus.replace(/_/g, ' ')}
+                  </Text>
+                  <Text style={styles.reportFacility}>
+                    Engine: {selectedReportForReview?.extractedData?.engine === 'SARVAM_DOCUMENT_AI' ? 'Sarvam Document AI V1' : 'Local Fallback Parser (Offline)'}
+                  </Text>
+                </View>
+
+                {/* Doctor Review Status Card */}
+                <View style={[
+                  styles.reviewStatusCard,
+                  { backgroundColor: (selectedReportForReview?.doctorReviewStatus === 'REVIEWED' || selectedReportForReview?.extractedData?.doctorReviewStatus === 'REVIEWED') ? '#F0FDFA' : '#F8FAFC', borderColor: (selectedReportForReview?.doctorReviewStatus === 'REVIEWED' || selectedReportForReview?.extractedData?.doctorReviewStatus === 'REVIEWED') ? '#5EEAD4' : '#CBD5E1' }
+                ]}>
+                  <Text style={[styles.reviewStatusLabel, { color: (selectedReportForReview?.doctorReviewStatus === 'REVIEWED' || selectedReportForReview?.extractedData?.doctorReviewStatus === 'REVIEWED') ? '#0F766E' : '#475569' }]}>
+                    Treating Doctor Review
+                  </Text>
+                  <Text style={styles.reviewStatusValue}>
+                    {(selectedReportForReview?.doctorReviewStatus === 'REVIEWED' || selectedReportForReview?.extractedData?.doctorReviewStatus === 'REVIEWED')
+                      ? `Reviewed by ${selectedReportForReview.extractedData?.reviewedByName || 'Doctor'}`
+                      : (selectedReportForReview?.doctorReviewStatus === 'NEEDS_ATTENTION' || selectedReportForReview?.extractedData?.doctorReviewStatus === 'NEEDS_ATTENTION')
+                      ? 'Doctor Noted: Needs Attention'
+                      : 'Pending Doctor Clinical Review'}
+                  </Text>
+                  {selectedReportForReview?.extractedData?.doctorNotes ? (
+                    <Text style={{ fontSize: 11, color: theme.colors.text, marginTop: 4, fontStyle: 'italic' }}>
+                      "{selectedReportForReview.extractedData.doctorNotes}"
+                    </Text>
+                  ) : null}
+                </View>
+
+                {selectedReportForReview?.extractedData?.plainSummary ? (
+                  <View style={{ backgroundColor: theme.colors.white, borderWidth: 1, borderColor: theme.colors.border, borderRadius: theme.radius.md, padding: 12 }}>
+                    <Text style={{ fontSize: 10, fontWeight: 'bold', color: theme.colors.textMuted, letterSpacing: 0.5, textTransform: 'uppercase' }}>
+                      Plain-Language Summary
+                    </Text>
+                    <Text style={{ fontSize: 12, color: theme.colors.text, marginTop: 4, lineHeight: 18 }}>
+                      {selectedReportForReview.extractedData.plainSummary}
+                    </Text>
+                  </View>
+                ) : null}
+
                 {selectedReportForReview?.extractedData?.error ? <Text style={styles.reportExtractionError}>{selectedReportForReview.extractedData.error}</Text> : null}
-                <Text style={styles.reviewBodyText}>{selectedReportForReview?.extractedData?.text || 'No OCR text is available yet.'}</Text>
+                <View style={{ backgroundColor: theme.colors.bg, borderRadius: theme.radius.sm, padding: 10 }}>
+                  <Text style={{ fontSize: 10, fontWeight: 'bold', color: theme.colors.textMuted, marginBottom: 4 }}>RECOGNIZED OCR TEXT</Text>
+                  <Text style={styles.reviewBodyText}>{selectedReportForReview?.extractedData?.text || selectedReportForReview?.extractedData?.rawOcrText || 'No OCR text is available yet.'}</Text>
+                </View>
                 <Text style={styles.reviewHelperText}>Compare this extracted text with the original file before relying on it. OCR is a reading aid, not a diagnosis.</Text>
               </ScrollView>
             ) : (
               selectedReportForReview && reportPreviewToken ? (
                 <View style={styles.reportSourceFrame}>
-                  {selectedReportForReview.mimeType?.startsWith('image/') ? <Image source={{ uri: `${resolveApiBaseUrl()}/documents/${encodeURIComponent(selectedReportForReview.id)}/preview`, headers: { Authorization: `Bearer ${reportPreviewToken}` } }} style={styles.reportSourceImage} resizeMode="contain" /> : Platform.OS === 'web' ? <View style={styles.reportSourceWebView}><iframe src={`${resolveApiBaseUrl()}/documents/${encodeURIComponent(selectedReportForReview.id)}/preview`} style={{ width: '100%', height: '100%', border: 'none' }} title="Medical Report Preview" /></View> : <WebView source={{ uri: `${resolveApiBaseUrl()}/documents/${encodeURIComponent(selectedReportForReview.id)}/preview`, headers: { Authorization: `Bearer ${reportPreviewToken}` } }} style={styles.reportSourceWebView} startInLoadingState />}
+                  {selectedReportForReview.mimeType?.startsWith('image/') ? (
+                    <Image source={{ uri: `${resolveApiBaseUrl()}/documents/${encodeURIComponent(selectedReportForReview.id)}/preview?token=${reportPreviewToken}`, headers: { Authorization: `Bearer ${reportPreviewToken}` } }} style={styles.reportSourceImage} resizeMode="contain" />
+                  ) : Platform.OS === 'web' ? (
+                    <View style={styles.reportSourceWebView}>
+                      <iframe src={`${resolveApiBaseUrl()}/documents/${encodeURIComponent(selectedReportForReview.id)}/preview?token=${reportPreviewToken}`} style={{ width: '100%', height: '100%', border: 'none' }} title="Medical Report Preview" />
+                    </View>
+                  ) : (
+                    <WebView source={{ uri: `${resolveApiBaseUrl()}/documents/${encodeURIComponent(selectedReportForReview.id)}/preview?token=${reportPreviewToken}`, headers: { Authorization: `Bearer ${reportPreviewToken}` } }} style={styles.reportSourceWebView} startInLoadingState />
+                  )}
+
+                  <TouchableOpacity
+                    style={styles.reportDownloadBtn}
+                    onPress={() => {
+                      const downloadUrl = `${resolveApiBaseUrl()}/documents/${encodeURIComponent(selectedReportForReview.id)}/download?token=${reportPreviewToken}`;
+                      void Linking.openURL(downloadUrl);
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Download original medical report"
+                  >
+                    <Download color="#ffffff" size={16} />
+                    <Text style={styles.reportDownloadBtnText}>Download Original Report</Text>
+                  </TouchableOpacity>
                 </View>
               ) : <ActivityIndicator color={theme.colors.primary} style={{ marginVertical: 40 }} />
             )}
@@ -1314,49 +1454,51 @@ export default function HealthVaultScreen() {
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: theme.colors.white },
   header: {
-    paddingHorizontal: theme.spacing.xl,
-    paddingTop: theme.spacing.sm,
-    paddingBottom: theme.spacing.md,
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.md,
+    paddingBottom: theme.spacing.sm,
+    backgroundColor: theme.colors.surfaceContainerLowest,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     borderBottomWidth: 1,
-    borderBottomColor: theme.colors.borderLight,
-    backgroundColor: theme.colors.white,
+    borderBottomColor: theme.colors.borderGhost,
   },
   headerLeft: { flex: 1, marginRight: theme.spacing.md },
   headerTitle: {
-    fontSize: theme.typography.sizes.heading,
-    fontWeight: theme.typography.weights.black,
+    fontSize: 26,
+    fontFamily: theme.typography.fonts.serif,
+    fontWeight: theme.typography.weights.bold,
     color: theme.colors.text,
+    letterSpacing: -0.4,
   },
   headerSub: {
     fontSize: theme.typography.sizes.bodySm,
+    fontFamily: theme.typography.fonts.sans,
     color: theme.colors.textMuted,
     marginTop: 2,
-    fontWeight: theme.typography.weights.semibold,
+    fontWeight: theme.typography.weights.medium,
   },
   verifiedBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: theme.colors.primarySurface,
+    backgroundColor: 'rgba(9, 76, 178, 0.08)',
     paddingHorizontal: 8,
     paddingVertical: 4,
-    borderRadius: theme.radius.sm,
-    borderWidth: 1,
-    borderColor: theme.colors.primaryBorder,
+    borderRadius: 9999,
   },
   verifiedBadgeText: {
     fontSize: 11,
+    fontFamily: theme.typography.fonts.label,
     fontWeight: theme.typography.weights.bold,
     color: theme.colors.primary,
   },
   // Tabs Container
   tabsContainer: {
-    backgroundColor: theme.colors.white,
+    backgroundColor: theme.colors.surfaceContainerLowest,
     borderBottomWidth: 1,
-    borderBottomColor: theme.colors.borderLight,
+    borderBottomColor: theme.colors.borderGhost,
     paddingVertical: 8,
   },
   tabsScroll: { paddingHorizontal: theme.spacing.lg, gap: 8 },
@@ -1366,12 +1508,13 @@ const styles = StyleSheet.create({
     gap: 6,
     paddingHorizontal: 12,
     paddingVertical: 8,
-    borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.cardMuted,
+    borderRadius: 9999,
+    backgroundColor: theme.colors.surfaceContainerLow,
   },
   tabPillActive: { backgroundColor: theme.colors.primary },
   tabPillText: {
     fontSize: 12,
+    fontFamily: theme.typography.fonts.label,
     fontWeight: theme.typography.weights.bold,
     color: theme.colors.textSecondary,
   },
@@ -1379,7 +1522,7 @@ const styles = StyleSheet.create({
   // Content Scroll
   contentScroll: {
     padding: theme.spacing.lg,
-    backgroundColor: theme.colors.bg,
+    backgroundColor: theme.colors.background,
   },
   loadingContainer: {
     paddingVertical: 60,
@@ -1389,6 +1532,7 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     fontSize: theme.typography.sizes.bodySm,
+    fontFamily: theme.typography.fonts.sans,
     color: theme.colors.textMuted,
   },
   tabSection: { gap: theme.spacing.lg },
@@ -1396,30 +1540,35 @@ const styles = StyleSheet.create({
   statsRow: { flexDirection: 'row', gap: theme.spacing.md },
   statBox: {
     flex: 1,
-    backgroundColor: theme.colors.white,
-    borderRadius: theme.radius.lg,
+    backgroundColor: theme.colors.surfaceContainerLowest,
+    borderRadius: theme.borders.radius.xl,
     padding: theme.spacing.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    borderWidth: 1.5,
+    borderColor: theme.colors.borderGhost,
     alignItems: 'center',
+    ...theme.shadows.card,
   },
   statBoxNum: {
-    fontSize: 24,
-    fontWeight: theme.typography.weights.black,
+    fontSize: 26,
+    fontFamily: theme.typography.fonts.serif,
+    fontWeight: theme.typography.weights.bold,
     color: theme.colors.text,
     fontVariant: ['tabular-nums'],
   },
-  statBoxUnit: { fontSize: 10, color: theme.colors.textMuted, fontWeight: theme.typography.weights.bold },
+  statBoxUnit: { fontSize: 10, fontFamily: theme.typography.fonts.sans, color: theme.colors.textMuted, fontWeight: theme.typography.weights.bold },
   statBoxLabel: {
     fontSize: 10,
+    fontFamily: theme.typography.fonts.label,
     color: theme.colors.textSecondary,
     fontWeight: theme.typography.weights.semibold,
     marginTop: 4,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
   },
   // Primary Action Button
   primaryActionBtn: {
     backgroundColor: theme.colors.primary,
-    borderRadius: theme.radius.lg,
+    borderRadius: theme.borders.radius.lg,
     paddingVertical: 14,
     flexDirection: 'row',
     alignItems: 'center',
@@ -1429,6 +1578,7 @@ const styles = StyleSheet.create({
   },
   primaryActionBtnText: {
     color: theme.colors.white,
+    fontFamily: theme.typography.fonts.label,
     fontWeight: theme.typography.weights.extrabold,
     fontSize: theme.typography.sizes.body,
   },
@@ -1437,25 +1587,27 @@ const styles = StyleSheet.create({
   filterChip: {
     paddingHorizontal: 12,
     paddingVertical: 6,
-    borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.white,
+    borderRadius: 9999,
+    backgroundColor: theme.colors.surfaceContainerLowest,
     borderWidth: 1,
-    borderColor: theme.colors.border,
+    borderColor: theme.colors.borderGhost,
   },
   filterChipActive: { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary },
-  filterChipText: { fontSize: 11, fontWeight: theme.typography.weights.bold, color: theme.colors.textSecondary },
+  filterChipText: { fontSize: 11, fontFamily: theme.typography.fonts.label, fontWeight: theme.typography.weights.bold, color: theme.colors.textSecondary },
   filterChipTextActive: { color: theme.colors.white },
   // Logbook List
   logListCard: {
-    backgroundColor: theme.colors.white,
-    borderRadius: theme.radius.xl,
+    backgroundColor: theme.colors.surfaceContainerLowest,
+    borderRadius: theme.borders.radius.xl,
     padding: theme.spacing.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    borderWidth: 1.5,
+    borderColor: theme.colors.borderGhost,
+    ...theme.shadows.card,
   },
   sectionHeaderTitle: {
     fontSize: theme.typography.sizes.bodyLg,
-    fontWeight: theme.typography.weights.extrabold,
+    fontFamily: theme.typography.fonts.serif,
+    fontWeight: theme.typography.weights.bold,
     color: theme.colors.text,
     marginBottom: 8,
   },
@@ -1465,38 +1617,38 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: theme.colors.borderLight,
+    borderBottomColor: theme.colors.borderGhost,
   },
   obsLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   obsDot: { width: 10, height: 10, borderRadius: 5 },
   dotGreen: { backgroundColor: theme.colors.success },
-  dotAmber: { backgroundColor: '#F59E0B' },
-  dotRed: { backgroundColor: '#EF4444' },
-  obsValueText: { fontSize: 18, fontWeight: theme.typography.weights.black, color: theme.colors.text },
-  obsUnitText: { fontSize: 12, fontWeight: theme.typography.weights.bold, color: theme.colors.textMuted },
-  obsContextText: { fontSize: 11, color: theme.colors.textSecondary, marginTop: 2 },
+  dotAmber: { backgroundColor: theme.colors.mascotOrange },
+  dotRed: { backgroundColor: theme.colors.error },
+  obsValueText: { fontSize: 18, fontFamily: theme.typography.fonts.serif, fontWeight: theme.typography.weights.bold, color: theme.colors.text },
+  obsUnitText: { fontSize: 12, fontFamily: theme.typography.fonts.sans, fontWeight: theme.typography.weights.bold, color: theme.colors.textMuted },
+  obsContextText: { fontSize: 11, fontFamily: theme.typography.fonts.sans, color: theme.colors.textSecondary, marginTop: 2 },
   obsRight: { alignItems: 'flex-end', gap: 4 },
   statusBadge: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 4 },
   badgeGreen: { backgroundColor: theme.colors.successBg },
-  badgeAmber: { backgroundColor: '#FEF3C7' },
-  badgeRed: { backgroundColor: '#FEE2E2' },
-  statusBadgeText: { fontSize: 10, fontWeight: theme.typography.weights.bold },
+  badgeAmber: { backgroundColor: 'rgba(201, 84, 16, 0.1)' },
+  badgeRed: { backgroundColor: theme.colors.errorBg },
+  statusBadgeText: { fontSize: 10, fontFamily: theme.typography.fonts.label, fontWeight: theme.typography.weights.bold },
   badgeGreenText: { color: theme.colors.success },
-  badgeAmberText: { color: '#B45309' },
-  badgeRedText: { color: '#B91C1C' },
-  obsDateText: { fontSize: 11, color: theme.colors.textMuted },
+  badgeAmberText: { color: theme.colors.mascotOrange },
+  badgeRedText: { color: theme.colors.error },
+  obsDateText: { fontSize: 11, fontFamily: theme.typography.fonts.sans, color: theme.colors.textMuted },
   // Med Vault Styles
   clinicalNoticeCard: {
     flexDirection: 'row',
     gap: 12,
-    backgroundColor: '#F0FDF4',
+    backgroundColor: theme.colors.successBg,
     borderWidth: 1,
-    borderColor: '#BBF7D0',
-    borderRadius: theme.radius.lg,
+    borderColor: theme.colors.successBorder,
+    borderRadius: theme.borders.radius.lg,
     padding: theme.spacing.md,
   },
-  clinicalNoticeTitle: { fontSize: 13, fontWeight: theme.typography.weights.extrabold, color: '#166534' },
-  clinicalNoticeBody: { fontSize: 11, color: '#15803D', marginTop: 2, lineHeight: 16 },
+  clinicalNoticeTitle: { fontSize: 13, fontFamily: theme.typography.fonts.serif, fontWeight: theme.typography.weights.bold, color: theme.colors.success },
+  clinicalNoticeBody: { fontSize: 11, fontFamily: theme.typography.fonts.sans, color: theme.colors.success, marginTop: 2, lineHeight: 16 },
   medicationErrorCard: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -1504,7 +1656,7 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.errorBg,
     borderWidth: 1,
     borderColor: theme.colors.errorBorder,
-    borderRadius: theme.radius.lg,
+    borderRadius: theme.borders.radius.lg,
     padding: theme.spacing.md,
   },
   medicationErrorText: { color: theme.colors.error, fontSize: 12, lineHeight: 18 },
@@ -1513,7 +1665,7 @@ const styles = StyleSheet.create({
     minHeight: 44,
     justifyContent: 'center',
     paddingHorizontal: 12,
-    borderRadius: theme.radius.md,
+    borderRadius: theme.borders.radius.md,
     backgroundColor: theme.colors.white,
     borderWidth: 1,
     borderColor: theme.colors.errorBorder,
@@ -1522,218 +1674,242 @@ const styles = StyleSheet.create({
   adherenceBanner: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: theme.colors.white,
+    backgroundColor: theme.colors.surfaceContainerLowest,
     padding: theme.spacing.lg,
-    borderRadius: theme.radius.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    borderRadius: theme.borders.radius.xl,
+    borderWidth: 1.5,
+    borderColor: theme.colors.borderGhost,
     gap: 12,
+    ...theme.shadows.card,
   },
-  adherenceBannerTitle: { fontSize: theme.typography.sizes.body, fontWeight: theme.typography.weights.black, color: theme.colors.text },
-  adherenceBannerSub: { fontSize: 11, color: theme.colors.textMuted, marginTop: 2 },
+  adherenceBannerTitle: { fontSize: theme.typography.sizes.body, fontFamily: theme.typography.fonts.serif, fontWeight: theme.typography.weights.bold, color: theme.colors.text },
+  adherenceBannerSub: { fontSize: 11, fontFamily: theme.typography.fonts.sans, color: theme.colors.textMuted, marginTop: 2 },
   adherenceBadge: {
     width: 52,
     height: 52,
     borderRadius: 26,
-    backgroundColor: theme.colors.primarySurface,
+    backgroundColor: 'rgba(9, 76, 178, 0.08)',
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: theme.colors.primaryBorder,
+    borderColor: 'rgba(9, 76, 178, 0.15)',
   },
-  adherenceBadgeText: { fontSize: 16, fontWeight: theme.typography.weights.black, color: theme.colors.primary },
+  adherenceBadgeText: { fontSize: 16, fontFamily: theme.typography.fonts.label, fontWeight: theme.typography.weights.bold, color: theme.colors.primary },
   medCard: {
-    backgroundColor: theme.colors.white,
-    borderRadius: theme.radius.xl,
+    backgroundColor: theme.colors.surfaceContainerLowest,
+    borderRadius: theme.borders.radius.xl,
     padding: theme.spacing.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    borderWidth: 1.5,
+    borderColor: theme.colors.borderGhost,
     gap: 10,
+    ...theme.shadows.card,
   },
   medCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-  medName: { fontSize: theme.typography.sizes.bodyLg, fontWeight: theme.typography.weights.black, color: theme.colors.text },
-  medDetails: { fontSize: 12, color: theme.colors.textSecondary, marginTop: 2, fontWeight: theme.typography.weights.medium },
-  medInstructions: { fontSize: 11, color: '#166534', marginTop: 4, fontWeight: theme.typography.weights.semibold },
+  medName: { fontSize: theme.typography.sizes.bodyLg, fontFamily: theme.typography.fonts.serif, fontWeight: theme.typography.weights.bold, color: theme.colors.text },
+  medDetails: { fontSize: 12, fontFamily: theme.typography.fonts.sans, color: theme.colors.textSecondary, marginTop: 2, fontWeight: theme.typography.weights.medium },
+  medInstructions: { fontSize: 11, fontFamily: theme.typography.fonts.sans, color: theme.colors.success, marginTop: 4, fontWeight: theme.typography.weights.semibold },
   verifiedPrescriptionBadge: {
-    backgroundColor: '#F0FDF4',
+    backgroundColor: theme.colors.successBg,
     paddingHorizontal: 8,
     paddingVertical: 3,
-    borderRadius: 4,
+    borderRadius: 9999,
   },
-  verifiedPrescriptionText: { fontSize: 10, fontWeight: theme.typography.weights.bold, color: '#15803D' },
+  verifiedPrescriptionText: { fontSize: 10, fontFamily: theme.typography.fonts.label, fontWeight: theme.typography.weights.bold, color: theme.colors.success },
   medPrescriberRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  prescriberText: { fontSize: 11, color: theme.colors.textMuted },
+  prescriberText: { fontSize: 11, fontFamily: theme.typography.fonts.sans, color: theme.colors.textMuted },
   medActionsRow: { flexDirection: 'row', gap: 10, marginTop: 4 },
   takeBtn: {
     flex: 1,
-    backgroundColor: '#16A34A',
-    borderRadius: theme.radius.md,
-    paddingVertical: 9,
+    backgroundColor: theme.colors.primary,
+    borderRadius: theme.borders.radius.md,
+    paddingVertical: 10,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
+    ...theme.shadows.card,
   },
-  takeBtnText: { color: theme.colors.white, fontWeight: theme.typography.weights.bold, fontSize: 12 },
+  takeBtnText: { color: theme.colors.white, fontFamily: theme.typography.fonts.label, fontWeight: theme.typography.weights.bold, fontSize: 12 },
   skipBtn: {
     flex: 1,
-    backgroundColor: theme.colors.cardMuted,
-    borderRadius: theme.radius.md,
-    paddingVertical: 9,
+    backgroundColor: theme.colors.surfaceContainerLow,
+    borderRadius: theme.borders.radius.md,
+    paddingVertical: 10,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
   },
-  skipBtnText: { color: theme.colors.textSecondary, fontWeight: theme.typography.weights.bold, fontSize: 12 },
+  skipBtnText: { color: theme.colors.textSecondary, fontFamily: theme.typography.fonts.label, fontWeight: theme.typography.weights.bold, fontSize: 12 },
   // Lifestyle Styles
   lifestyleCard: {
-    backgroundColor: theme.colors.white,
-    borderRadius: theme.radius.lg,
+    backgroundColor: theme.colors.surfaceContainerLowest,
+    borderRadius: theme.borders.radius.xl,
     padding: theme.spacing.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    borderWidth: 1.5,
+    borderColor: theme.colors.borderGhost,
+    ...theme.shadows.card,
   },
   lifestyleHeader: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   lifestyleIconBox: {
     width: 38,
     height: 38,
     borderRadius: 19,
-    backgroundColor: '#FFFBEB',
+    backgroundColor: theme.colors.mascotCream,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  lifestyleCat: { fontSize: 11, fontWeight: theme.typography.weights.bold, color: '#D97706' },
-  lifestyleValue: { fontSize: 15, fontWeight: theme.typography.weights.black, color: theme.colors.text, marginTop: 1 },
-  lifestyleNotes: { fontSize: 11, color: theme.colors.textMuted, fontStyle: 'italic', marginTop: 2 },
-  lifestyleDate: { fontSize: 11, color: theme.colors.textMuted },
+  lifestyleCat: { fontSize: 11, fontFamily: theme.typography.fonts.label, fontWeight: theme.typography.weights.bold, color: theme.colors.mascotOrange },
+  lifestyleValue: { fontSize: 15, fontFamily: theme.typography.fonts.serif, fontWeight: theme.typography.weights.bold, color: theme.colors.text, marginTop: 1 },
+  lifestyleNotes: { fontSize: 11, fontFamily: theme.typography.fonts.sans, color: theme.colors.textMuted, fontStyle: 'italic', marginTop: 2 },
+  lifestyleDate: { fontSize: 11, fontFamily: theme.typography.fonts.sans, color: theme.colors.textMuted },
   // Medical Reports Styles
   reportCard: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    backgroundColor: theme.colors.white,
-    borderRadius: theme.radius.lg,
+    backgroundColor: theme.colors.surfaceContainerLowest,
+    borderRadius: theme.borders.radius.xl,
     padding: theme.spacing.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    borderWidth: 1.5,
+    borderColor: theme.colors.borderGhost,
     gap: 12,
+    ...theme.shadows.card,
   },
   reportIconBox: {
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: theme.colors.primarySurface,
+    backgroundColor: theme.colors.surfaceContainerLow,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  reportTitle: { fontSize: theme.typography.sizes.body, fontWeight: theme.typography.weights.black, color: theme.colors.text },
-  reportFacility: { fontSize: 11, color: theme.colors.textMuted, marginTop: 2 },
-  reportDate: { fontSize: 11, color: theme.colors.textSecondary, marginTop: 2 },
+  reportTitle: { fontSize: theme.typography.sizes.body, fontFamily: theme.typography.fonts.serif, fontWeight: theme.typography.weights.bold, color: theme.colors.text },
+  reportFacility: { fontSize: 11, fontFamily: theme.typography.fonts.sans, color: theme.colors.textMuted, marginTop: 2 },
+  reportDate: { fontSize: 11, fontFamily: theme.typography.fonts.sans, color: theme.colors.textSecondary, marginTop: 2 },
+  reportBadgeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginVertical: 3 },
   reportStatusBadge: {
-    backgroundColor: '#F0FDF4',
+    backgroundColor: theme.colors.successBg,
     paddingHorizontal: 8,
     paddingVertical: 3,
-    borderRadius: 4,
+    borderRadius: 9999,
     alignSelf: 'flex-start',
   },
-  reportStatusText: { fontSize: 10, fontWeight: theme.typography.weights.bold, color: '#166534' },
-  reportStatusBadgePending: { backgroundColor: '#FEF3C7' },
-  reportStatusTextPending: { color: '#92400E' },
-  reportStatusBadgeFailed: { backgroundColor: '#FEE2E2' },
-  reportStatusTextFailed: { color: '#B91C1C' },
-  reportExtractionError: { fontSize: 11, color: '#B91C1C', lineHeight: 16 },
+  reportStatusText: { fontSize: 10, fontFamily: theme.typography.fonts.label, fontWeight: theme.typography.weights.bold, color: theme.colors.success },
+  reportStatusBadgeReviewed: { backgroundColor: 'rgba(9, 76, 178, 0.08)' },
+  reportStatusTextReviewed: { color: theme.colors.primary },
+  reportStatusBadgeNeutral: { backgroundColor: theme.colors.surfaceContainerLow },
+  reportStatusTextNeutral: { color: theme.colors.textSecondary },
+  reportStatusBadgePending: { backgroundColor: 'rgba(201, 84, 16, 0.1)' },
+  reportStatusTextPending: { color: theme.colors.mascotOrange },
+  reportStatusBadgeFailed: { backgroundColor: theme.colors.errorBg },
+  reportStatusTextFailed: { color: theme.colors.error },
+  reportExtractionError: { fontSize: 11, color: theme.colors.error, lineHeight: 16 },
+  reportDownloadBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: theme.colors.primary,
+    borderRadius: theme.borders.radius.md,
+    paddingVertical: 10,
+    marginTop: 10,
+    ...theme.shadows.card,
+  },
+  reportDownloadBtnText: { color: theme.colors.white, fontFamily: theme.typography.fonts.label, fontSize: 12, fontWeight: theme.typography.weights.bold },
   reportExtractedText: {
     fontSize: 11,
+    fontFamily: theme.typography.fonts.sans,
     color: theme.colors.textSecondary,
     lineHeight: 16,
-    backgroundColor: theme.colors.bg,
-    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.surfaceContainerLow,
+    borderRadius: theme.borders.radius.sm,
     padding: theme.spacing.sm,
   },
-  reviewReportButton: { alignSelf: 'flex-start', marginTop: 6, backgroundColor: theme.colors.primary, borderRadius: theme.radius.sm, paddingHorizontal: 10, paddingVertical: 7 },
-  reviewReportButtonText: { color: theme.colors.white, fontSize: 11, fontWeight: theme.typography.weights.bold },
-  abhaCard: { backgroundColor: '#EEF2FF', borderColor: '#C7D2FE', borderWidth: 1, borderRadius: theme.radius.lg, padding: theme.spacing.md, gap: 8 },
-  abhaEyebrow: { color: '#3730A3', fontSize: 10, fontWeight: theme.typography.weights.black, letterSpacing: 1 },
-  abhaDescription: { color: '#312E81', fontSize: 11, lineHeight: 16 },
+  reviewReportButton: { alignSelf: 'flex-start', marginTop: 6, backgroundColor: theme.colors.primary, borderRadius: theme.borders.radius.sm, paddingHorizontal: 10, paddingVertical: 7 },
+  reviewReportButtonText: { color: theme.colors.white, fontFamily: theme.typography.fonts.label, fontSize: 11, fontWeight: theme.typography.weights.bold },
+  abhaCard: { backgroundColor: theme.colors.surfaceContainerLow, borderColor: theme.colors.borderGhost, borderWidth: 1.5, borderRadius: theme.borders.radius.xl, padding: theme.spacing.md, gap: 8 },
+  abhaEyebrow: { color: theme.colors.primary, fontSize: 10, fontFamily: theme.typography.fonts.label, fontWeight: theme.typography.weights.black, letterSpacing: 1 },
+  abhaDescription: { color: theme.colors.textSecondary, fontSize: 11, lineHeight: 16 },
   abhaActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  abhaSecondaryButton: { backgroundColor: theme.colors.white, borderColor: '#A5B4FC', borderWidth: 1, borderRadius: theme.radius.sm, paddingHorizontal: 10, paddingVertical: 8 },
-  abhaSecondaryText: { color: '#3730A3', fontSize: 11, fontWeight: theme.typography.weights.bold },
-  abhaPrimaryButton: { backgroundColor: '#4338CA', borderRadius: theme.radius.sm, paddingHorizontal: 10, paddingVertical: 8 },
+  abhaSecondaryButton: { backgroundColor: theme.colors.white, borderColor: theme.colors.borderGhost, borderWidth: 1, borderRadius: theme.borders.radius.sm, paddingHorizontal: 10, paddingVertical: 8 },
+  abhaSecondaryText: { color: theme.colors.primary, fontSize: 11, fontWeight: theme.typography.weights.bold },
+  abhaPrimaryButton: { backgroundColor: theme.colors.primary, borderRadius: theme.borders.radius.sm, paddingHorizontal: 10, paddingVertical: 8 },
   abhaPrimaryText: { color: theme.colors.white, fontSize: 11, fontWeight: theme.typography.weights.bold },
-  abhaMessage: { backgroundColor: theme.colors.white, borderRadius: theme.radius.sm, color: '#312E81', fontSize: 11, padding: 8 },
+  abhaMessage: { backgroundColor: theme.colors.white, borderRadius: theme.borders.radius.sm, color: theme.colors.text, fontSize: 11, padding: 8 },
   abhaSummaryRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
-  abhaSummaryText: { color: '#3730A3', fontSize: 10, fontWeight: theme.typography.weights.bold },
-  abhaSummaryDetail: { backgroundColor: theme.colors.white, borderRadius: theme.radius.sm, gap: 4, padding: 8 },
-  abhaSummaryDetailText: { color: '#312E81', fontSize: 10, lineHeight: 15 },
-  syntheticNotice: { alignItems: 'flex-start', backgroundColor: '#FFFBEB', borderColor: '#FDE68A', borderRadius: theme.radius.sm, borderWidth: 1, flexDirection: 'row', gap: 7, padding: 9 },
-  syntheticNoticeText: { color: '#78350F', flex: 1, fontSize: 11, lineHeight: 15 },
-  reviewTabRow: { borderBottomColor: theme.colors.border, borderBottomWidth: 1, flexDirection: 'row', gap: 8, marginTop: 12 },
+  abhaSummaryText: { color: theme.colors.primary, fontSize: 10, fontWeight: theme.typography.weights.bold },
+  abhaSummaryDetail: { backgroundColor: theme.colors.white, borderRadius: theme.borders.radius.sm, gap: 4, padding: 8 },
+  abhaSummaryDetailText: { color: theme.colors.textSecondary, fontSize: 10, lineHeight: 15 },
+  syntheticNotice: { alignItems: 'flex-start', backgroundColor: theme.colors.mascotCream, borderColor: 'rgba(201, 84, 16, 0.2)', borderRadius: theme.borders.radius.sm, borderWidth: 1, flexDirection: 'row', gap: 7, padding: 9 },
+  syntheticNoticeText: { color: theme.colors.mascotOrange, flex: 1, fontSize: 11, lineHeight: 15 },
+  reviewTabRow: { borderBottomColor: theme.colors.borderGhost, borderBottomWidth: 1, flexDirection: 'row', gap: 8, marginTop: 12 },
   reviewTab: { borderBottomColor: 'transparent', borderBottomWidth: 2, paddingHorizontal: 10, paddingVertical: 9 },
   reviewTabActive: { borderBottomColor: theme.colors.primary },
   reviewTabText: { color: theme.colors.textMuted, fontSize: 12, fontWeight: theme.typography.weights.bold },
   reviewTabTextActive: { color: theme.colors.primary },
   reviewBody: { maxHeight: 360, marginTop: 12 },
-  reviewStatusCard: { backgroundColor: theme.colors.primarySurface, borderColor: '#99F6E4', borderRadius: theme.radius.md, borderWidth: 1, padding: 12 },
-  reviewStatusLabel: { color: theme.colors.primary, fontSize: 10, fontWeight: theme.typography.weights.black, letterSpacing: 1 },
-  reviewStatusValue: { color: theme.colors.text, fontSize: 15, fontWeight: theme.typography.weights.black, marginTop: 4 },
-  reviewBodyText: { backgroundColor: theme.colors.bg, borderColor: theme.colors.border, borderRadius: theme.radius.md, borderWidth: 1, color: theme.colors.text, fontSize: 12, lineHeight: 18, padding: 12 },
+  reviewStatusCard: { backgroundColor: 'rgba(9, 76, 178, 0.08)', borderColor: theme.colors.primaryBorder, borderRadius: theme.borders.radius.md, borderWidth: 1, padding: 12 },
+  reviewStatusLabel: { color: theme.colors.primary, fontSize: 10, fontFamily: theme.typography.fonts.label, fontWeight: theme.typography.weights.black, letterSpacing: 1 },
+  reviewStatusValue: { color: theme.colors.text, fontSize: 15, fontFamily: theme.typography.fonts.serif, fontWeight: theme.typography.weights.bold, marginTop: 4 },
+  reviewBodyText: { backgroundColor: theme.colors.surfaceContainerLow, borderColor: theme.colors.borderGhost, borderRadius: theme.borders.radius.md, borderWidth: 1, color: theme.colors.text, fontSize: 12, lineHeight: 18, padding: 12 },
   reviewHelperText: { color: theme.colors.textMuted, fontSize: 11, lineHeight: 16 },
-  reportSourceFrame: { backgroundColor: theme.colors.bg, borderRadius: theme.radius.md, height: 380, marginTop: 12, overflow: 'hidden' },
+  reportSourceFrame: { backgroundColor: theme.colors.surfaceContainerLow, borderRadius: theme.borders.radius.md, height: 380, marginTop: 12, overflow: 'hidden' },
   reportSourceImage: { height: '100%', width: '100%' },
   reportSourceWebView: { flex: 1 },
   // Timeline Styles
   timelineRow: { flexDirection: 'row', gap: 12 },
   timelineSpine: { alignItems: 'center', width: 16 },
   timelineMarker: { width: 12, height: 12, borderRadius: 6, backgroundColor: theme.colors.primary, marginTop: 4 },
-  timelineLine: { width: 2, flex: 1, backgroundColor: theme.colors.borderLight, marginVertical: 2 },
+  timelineLine: { width: 2, flex: 1, backgroundColor: theme.colors.borderGhost, marginVertical: 2 },
   timelineCard: {
     flex: 1,
-    backgroundColor: theme.colors.white,
-    borderRadius: theme.radius.lg,
+    backgroundColor: theme.colors.surfaceContainerLowest,
+    borderRadius: theme.borders.radius.xl,
     padding: theme.spacing.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    borderWidth: 1.5,
+    borderColor: theme.colors.borderGhost,
     marginBottom: 12,
+    ...theme.shadows.card,
   },
   timelineHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
-  timelineTypeTag: { fontSize: 10, fontWeight: theme.typography.weights.black, color: theme.colors.primary },
-  timelineTime: { fontSize: 11, color: theme.colors.textMuted },
-  timelineTitle: { fontSize: 13, fontWeight: theme.typography.weights.bold, color: theme.colors.text },
-  timelineDetails: { fontSize: 11, color: theme.colors.textSecondary, marginTop: 2 },
+  timelineTypeTag: { fontSize: 10, fontFamily: theme.typography.fonts.label, fontWeight: theme.typography.weights.bold, color: theme.colors.primary, textTransform: 'uppercase' },
+  timelineTime: { fontSize: 11, fontFamily: theme.typography.fonts.sans, color: theme.colors.textMuted },
+  timelineTitle: { fontSize: 13, fontFamily: theme.typography.fonts.serif, fontWeight: theme.typography.weights.bold, color: theme.colors.text },
+  timelineDetails: { fontSize: 11, fontFamily: theme.typography.fonts.sans, color: theme.colors.textSecondary, marginTop: 2 },
   // Empty State
   emptyContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 36, gap: 8 },
-  emptyTitle: { fontSize: theme.typography.sizes.body, fontWeight: theme.typography.weights.bold, color: theme.colors.text },
-  emptySub: { fontSize: 11, color: theme.colors.textMuted, textAlign: 'center', paddingHorizontal: 20 },
+  emptyTitle: { fontSize: theme.typography.sizes.body, fontFamily: theme.typography.fonts.serif, fontWeight: theme.typography.weights.bold, color: theme.colors.text },
+  emptySub: { fontSize: 11, fontFamily: theme.typography.fonts.sans, color: theme.colors.textMuted, textAlign: 'center', paddingHorizontal: 20 },
   // Modal Styles
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(25, 28, 32, 0.5)', justifyContent: 'flex-end' },
   modalCard: {
-    backgroundColor: theme.colors.white,
-    borderTopLeftRadius: theme.radius.xl,
-    borderTopRightRadius: theme.radius.xl,
+    backgroundColor: theme.colors.surfaceContainerLowest,
+    borderTopLeftRadius: theme.borders.radius.xl,
+    borderTopRightRadius: theme.borders.radius.xl,
     padding: theme.spacing.xl,
     gap: 14,
   },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   modalCloseButton: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
-  modalTitle: { fontSize: theme.typography.sizes.headingSm, fontWeight: theme.typography.weights.black, color: theme.colors.text },
+  modalTitle: { fontSize: theme.typography.sizes.headingSm, fontFamily: theme.typography.fonts.serif, fontWeight: theme.typography.weights.bold, color: theme.colors.text },
   vitalTypeRow: { flexDirection: 'row', gap: 6 },
   vitalTypeBtn: {
     flex: 1,
     paddingVertical: 7,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.cardMuted,
+    borderRadius: theme.borders.radius.md,
+    backgroundColor: theme.colors.surfaceContainerLow,
     alignItems: 'center',
   },
   vitalTypeBtnActive: { backgroundColor: theme.colors.primary },
-  vitalTypeBtnText: { fontSize: 11, fontWeight: theme.typography.weights.bold, color: theme.colors.textSecondary },
+  vitalTypeBtnText: { fontSize: 11, fontFamily: theme.typography.fonts.label, fontWeight: theme.typography.weights.bold, color: theme.colors.textSecondary },
   vitalTypeBtnTextActive: { color: theme.colors.white },
   inputGroup: { gap: 4 },
-  inputLabel: { fontSize: 12, fontWeight: theme.typography.weights.bold, color: theme.colors.textSecondary },
+  inputLabel: { fontSize: 12, fontFamily: theme.typography.fonts.label, fontWeight: theme.typography.weights.bold, color: theme.colors.textSecondary, textTransform: 'uppercase', letterSpacing: 0.5 },
   textInput: {
-    backgroundColor: theme.colors.bg,
+    backgroundColor: theme.colors.surfaceContainerLow,
     borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.radius.md,
+    borderColor: theme.colors.borderGhost,
+    borderRadius: theme.borders.radius.md,
     paddingHorizontal: 12,
     paddingVertical: 10,
     fontSize: theme.typography.sizes.body,
@@ -1743,22 +1919,22 @@ const styles = StyleSheet.create({
   contextOption: {
     paddingHorizontal: 10,
     paddingVertical: 6,
-    borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.cardMuted,
+    borderRadius: theme.borders.radius.sm,
+    backgroundColor: theme.colors.surfaceContainerLow,
   },
   contextOptionActive: { backgroundColor: theme.colors.primary },
-  contextOptionText: { fontSize: 11, fontWeight: theme.typography.weights.bold, color: theme.colors.textSecondary },
+  contextOptionText: { fontSize: 11, fontFamily: theme.typography.fonts.label, fontWeight: theme.typography.weights.bold, color: theme.colors.textSecondary },
   contextOptionTextActive: { color: theme.colors.white },
   uploadInfoBox: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    backgroundColor: theme.colors.primarySurface,
+    backgroundColor: 'rgba(9, 76, 178, 0.08)',
     padding: theme.spacing.md,
-    borderRadius: theme.radius.md,
+    borderRadius: theme.borders.radius.md,
   },
-  uploadInfoText: { fontSize: 11, color: theme.colors.primaryDark, flex: 1, lineHeight: 16 },
-  reportPickerPrompt: { fontSize: 12, color: theme.colors.textSecondary },
+  uploadInfoText: { fontSize: 11, fontFamily: theme.typography.fonts.sans, color: theme.colors.primary, flex: 1, lineHeight: 16 },
+  reportPickerPrompt: { fontSize: 12, fontFamily: theme.typography.fonts.sans, color: theme.colors.textSecondary },
   filePickerRow: { flexDirection: 'row', gap: 8 },
   filePickerButton: {
     flex: 1,
@@ -1767,28 +1943,29 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 4,
     borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.white,
+    borderColor: theme.colors.borderGhost,
+    borderRadius: theme.borders.radius.md,
+    backgroundColor: theme.colors.surfaceContainerLow,
     paddingHorizontal: 4,
   },
-  filePickerButtonText: { fontSize: 10, fontWeight: theme.typography.weights.bold, color: theme.colors.text },
+  filePickerButtonText: { fontSize: 10, fontFamily: theme.typography.fonts.label, fontWeight: theme.typography.weights.bold, color: theme.colors.text },
   selectedReportFile: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    backgroundColor: theme.colors.primarySurface,
-    borderRadius: theme.radius.md,
+    backgroundColor: 'rgba(9, 76, 178, 0.08)',
+    borderRadius: theme.borders.radius.md,
     paddingLeft: theme.spacing.md,
   },
-  selectedReportFileName: { flex: 1, fontSize: 12, color: theme.colors.text, fontWeight: theme.typography.weights.semibold },
+  selectedReportFileName: { flex: 1, fontSize: 12, fontFamily: theme.typography.fonts.sans, color: theme.colors.text, fontWeight: theme.typography.weights.semibold },
   modalSubmitBtn: {
     backgroundColor: theme.colors.primary,
-    borderRadius: theme.radius.md,
+    borderRadius: theme.borders.radius.md,
     paddingVertical: 14,
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: 6,
+    ...theme.shadows.card,
   },
-  modalSubmitBtnText: { color: theme.colors.white, fontWeight: theme.typography.weights.bold, fontSize: 14 },
+  modalSubmitBtnText: { color: theme.colors.white, fontFamily: theme.typography.fonts.label, fontWeight: theme.typography.weights.bold, fontSize: 14 },
 });

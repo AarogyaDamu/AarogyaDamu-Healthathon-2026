@@ -66,28 +66,40 @@ export function AgentProposalCard({
   const [useCustomReason, setUseCustomReason] = useState<boolean>(false);
   const [localError, setLocalError] = useState<string | null>(null);
 
+  const toolDisplayName = getToolDisplayName(action.toolName);
   const riskConfig = getRiskTierConfig(action.riskTier);
   const statusConfig = getActionStatusConfig(action.status);
   const formattedParams = formatActionParameters(action.toolName, action.parameters);
 
+  const isAwaitingConfirmation = action.status === 'AWAITING_CONFIRMATION';
+  const isDoctorGated = action.status === 'PENDING_CLINICIAN_APPROVAL';
+  const isCompleted = action.status === 'COMPLETED';
+  const isCancelled = action.status === 'CANCELLED';
+  const isExpired = action.status === 'EXPIRED';
+  const isFailed = action.status === 'FAILED';
+  const isRejected = action.status === 'REJECTED';
+  const isEmergencyAborted =
+    (action.status as any) === 'EMERGENCY_ABORTED' ||
+    ((action.status as any) === 'CANCELLED' && (action.parameters as any)?.reason?.includes('Emergency'));
+
   const getToolIcon = (toolName: AgentToolName | string) => {
     switch (toolName) {
       case 'tool_schedule_care_task':
-        return <Calendar size={18} color="#0D9488" />;
+        return <Calendar size={18} color="#004D4D" />;
       case 'tool_schedule_reminder':
-        return <Bell size={18} color="#0D9488" />;
+        return <Bell size={18} color="#004D4D" />;
       case 'tool_request_appointment':
-        return <Clock size={18} color="#0D9488" />;
+        return <Calendar size={18} color="#004D4D" />;
       case 'tool_log_lifestyle_record':
-        return <Activity size={18} color="#0D9488" />;
+        return <Activity size={18} color="#059669" />;
       case 'tool_query_health_summary':
-        return <Activity size={18} color="#0D9488" />;
+        return <Activity size={18} color="#004D4D" />;
       case 'tool_log_health_vital':
-        return <Heart size={18} color="#0D9488" />;
+        return <Heart size={18} color="#ba1a1a" />;
       case 'tool_draft_care_proposal':
-        return <FileText size={18} color="#1D4ED8" />;
+        return <FileText size={18} color="#0E7C7B" />;
       default:
-        return <Info size={18} color="#0D9488" />;
+        return <Info size={18} color="#004D4D" />;
     }
   };
 
@@ -109,7 +121,6 @@ export function AgentProposalCard({
       setLocalError('Please provide a reason of at least 3 characters.');
       return;
     }
-
     setLocalError(null);
     try {
       await onCancel(action.id, finalReason);
@@ -119,33 +130,24 @@ export function AgentProposalCard({
     }
   };
 
-  const formatExpiry = (isoString: string): string => {
+  const formatExpiry = (isoString?: string) => {
+    if (!isoString) return '';
     try {
-      const d = new Date(isoString);
-      if (!isNaN(d.getTime())) {
-        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      }
-    } catch {}
-    return isoString;
+      const date = new Date(isoString);
+      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } catch {
+      return '';
+    }
   };
-
-  const isAwaitingConfirmation = action.status === 'AWAITING_CONFIRMATION';
-  const isDoctorGated = action.status === 'PENDING_CLINICIAN_APPROVAL';
-  const isCompleted = action.status === 'COMPLETED';
-  const isCancelled = action.status === 'CANCELLED';
-  const isExpired = action.status === 'EXPIRED';
-  const isFailed = action.status === 'FAILED';
-  const isRejected = action.status === 'REJECTED';
-  const isEmergencyAborted = (action.status as string) === 'EMERGENCY_ABORTED';
 
   return (
     <View style={styles.card}>
-      {/* 1. Header: Tool Name, Icon & Risk Tier Badge */}
+      {/* 1. Header: Icon, Tool Display Name, Description, and Risk Tier Badge */}
       <View style={styles.headerRow}>
         <View style={styles.titleGroup}>
           <View style={styles.iconCircle}>{getToolIcon(action.toolName)}</View>
           <View style={styles.titleTextContainer}>
-            <Text style={styles.toolTitle}>{getToolDisplayName(action.toolName)}</Text>
+            <Text style={styles.toolTitle}>{toolDisplayName}</Text>
             <Text style={styles.actionSummary}>{action.summary}</Text>
           </View>
         </View>
@@ -206,7 +208,7 @@ export function AgentProposalCard({
       {/* 4. Clinical Boundary Notice for Doctor Review Gated Actions */}
       {isDoctorGated && (
         <View style={styles.doctorGatedNotice}>
-          <Info size={16} color="#1D4ED8" />
+          <Info size={16} color="#004D4D" />
           <View style={styles.doctorGatedTextContainer}>
             <Text style={styles.doctorGatedTitle}>Doctor Review Required</Text>
             <Text style={styles.doctorGatedBody}>
@@ -220,7 +222,7 @@ export function AgentProposalCard({
       {/* 5. Emergency Precedence Halt Notice */}
       {isEmergencyAborted && (
         <View style={styles.emergencyAbortedNotice}>
-          <AlertTriangle size={18} color="#B91C1C" />
+          <AlertTriangle size={18} color="#ba1a1a" />
           <View style={styles.emergencyAbortedTextContainer}>
             <Text style={styles.emergencyAbortedTitle}>Action Halted for Clinical Safety</Text>
             <Text style={styles.emergencyAbortedBody}>
@@ -234,21 +236,21 @@ export function AgentProposalCard({
       {/* 6. Success / Terminal Badges */}
       {isCompleted && (
         <View style={styles.completedNotice}>
-          <CheckCircle size={16} color="#15803D" />
+          <CheckCircle size={16} color="#059669" />
           <Text style={styles.completedText}>Action executed and verified successfully.</Text>
         </View>
       )}
 
       {isCancelled && (
         <View style={styles.terminalNotice}>
-          <XCircle size={16} color="#64748B" />
+          <XCircle size={16} color="#737784" />
           <Text style={styles.terminalText}>Action was cancelled by patient or caregiver.</Text>
         </View>
       )}
 
       {isExpired && (
         <View style={styles.terminalNotice}>
-          <Clock size={16} color="#64748B" />
+          <Clock size={16} color="#737784" />
           <Text style={styles.terminalText}>
             Proposal has expired. Ask Damu again if you still need this action.
           </Text>
@@ -257,14 +259,14 @@ export function AgentProposalCard({
 
       {isFailed && (
         <View style={styles.failedNotice}>
-          <AlertTriangle size={16} color="#B91C1C" />
+          <AlertTriangle size={16} color="#ba1a1a" />
           <Text style={styles.failedText}>Action execution failed. Please try again or contact support.</Text>
         </View>
       )}
 
       {isRejected && (
         <View style={styles.failedNotice}>
-          <XCircle size={16} color="#B91C1C" />
+          <XCircle size={16} color="#ba1a1a" />
           <Text style={styles.failedText}>Proposal was reviewed and rejected by clinician.</Text>
         </View>
       )}
@@ -272,7 +274,7 @@ export function AgentProposalCard({
       {/* 7. Inline Errors */}
       {(errorMessage || localError) && (
         <View style={styles.errorBox}>
-          <AlertTriangle size={14} color="#B91C1C" />
+          <AlertTriangle size={14} color="#ba1a1a" />
           <Text style={styles.errorBoxText}>{errorMessage || localError}</Text>
         </View>
       )}
@@ -320,7 +322,7 @@ export function AgentProposalCard({
             <TextInput
               style={styles.customReasonInput}
               placeholder="Type cancellation reason (min 3 chars)..."
-              placeholderTextColor="#94A3B8"
+              placeholderTextColor="#737784"
               value={customReason}
               onChangeText={setCustomReason}
               maxLength={200}
@@ -343,10 +345,10 @@ export function AgentProposalCard({
               disabled={isCancelling}
             >
               {isCancelling ? (
-                <ActivityIndicator size="small" color="#FFFFFF" />
+                <ActivityIndicator size="small" color="#ffffff" />
               ) : (
                 <>
-                  <X size={15} color="#FFFFFF" />
+                  <X size={15} color="#ffffff" />
                   <Text style={styles.cancelConfirmButtonText}>Confirm Cancellation</Text>
                 </>
               )}
@@ -355,33 +357,34 @@ export function AgentProposalCard({
         </View>
       )}
 
-      {/* 9. Action Buttons (Confirm & Cancel) */}
-      {!showCancelPrompt && (
+      {/* 9. Action Buttons */}
+      {!showCancelPrompt && !statusConfig.isFinal && (
         <View style={styles.actionsFooter}>
-          {/* Awaiting Confirmation: Confirm & Cancel buttons */}
           {isAwaitingConfirmation && (
             <View style={styles.buttonsRow}>
               <TouchableOpacity
-                style={[styles.cancelButton, isCancelling && styles.buttonDisabled]}
+                style={[styles.cancelButton, (isConfirming || isCancelling) && styles.buttonDisabled]}
                 onPress={() => setShowCancelPrompt(true)}
                 disabled={isConfirming || isCancelling}
-                accessibilityLabel="Cancel action"
+                accessibilityRole="button"
+                accessibilityLabel="Cancel action proposal"
               >
-                <X size={16} color="#DC2626" />
+                <X size={15} color="#ba1a1a" />
                 <Text style={styles.cancelButtonText}>Cancel</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
-                style={[styles.confirmButton, isConfirming && styles.buttonDisabled]}
+                style={[styles.confirmButton, (isConfirming || isCancelling) && styles.buttonDisabled]}
                 onPress={handleConfirmPress}
                 disabled={isConfirming || isCancelling}
-                accessibilityLabel="Confirm action"
+                accessibilityRole="button"
+                accessibilityLabel="Confirm action execution"
               >
                 {isConfirming ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
+                  <ActivityIndicator size="small" color="#ffffff" />
                 ) : (
                   <>
-                    <Check size={16} color="#FFFFFF" />
+                    <Check size={15} color="#ffffff" />
                     <Text style={styles.confirmButtonText}>Confirm Action</Text>
                   </>
                 )}
@@ -389,16 +392,16 @@ export function AgentProposalCard({
             </View>
           )}
 
-          {/* Pending Doctor Review: Withdraw option only, no patient confirmation button */}
           {isDoctorGated && (
             <View style={styles.buttonsRow}>
               <TouchableOpacity
                 style={[styles.cancelButton, isCancelling && styles.buttonDisabled]}
                 onPress={() => setShowCancelPrompt(true)}
                 disabled={isCancelling}
-                accessibilityLabel="Withdraw proposal"
+                accessibilityRole="button"
+                accessibilityLabel="Withdraw proposed modification"
               >
-                <X size={15} color="#DC2626" />
+                <X size={15} color="#ba1a1a" />
                 <Text style={styles.cancelButtonText}>Withdraw Proposal</Text>
               </TouchableOpacity>
             </View>
@@ -411,16 +414,16 @@ export function AgentProposalCard({
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: 'rgba(9, 76, 178, 0.08)',
     padding: 14,
     marginVertical: 6,
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
+    shadowColor: '#004D4D',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.03,
+    shadowRadius: 6,
     elevation: 1,
   },
   headerRow: {
@@ -438,10 +441,8 @@ const styles = StyleSheet.create({
   iconCircle: {
     width: 34,
     height: 34,
-    borderRadius: 17,
-    backgroundColor: '#F0FDFA',
-    borderWidth: 1,
-    borderColor: '#CCFBF1',
+    borderRadius: 10,
+    backgroundColor: 'rgba(9, 76, 178, 0.08)',
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: 2,
@@ -450,14 +451,16 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   toolTitle: {
+    fontFamily: 'Noto Serif',
     fontSize: 14,
     fontWeight: '700',
-    color: '#0F172A',
+    color: '#191c20',
     marginBottom: 2,
   },
   actionSummary: {
-    fontSize: 12,
-    color: '#475569',
+    fontFamily: 'Inter',
+    fontSize: 11.5,
+    color: '#434653',
     lineHeight: 16,
   },
   riskBadge: {
@@ -468,7 +471,8 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
   },
   riskBadgeText: {
-    fontSize: 10,
+    fontFamily: 'Public Sans',
+    fontSize: 9.5,
     fontWeight: '700',
     textTransform: 'uppercase',
   },
@@ -488,19 +492,19 @@ const styles = StyleSheet.create({
     gap: 5,
   },
   statusPillText: {
-    fontSize: 11,
-    fontWeight: '600',
+    fontFamily: 'Public Sans',
+    fontSize: 10.5,
+    fontWeight: '700',
   },
   expiryText: {
+    fontFamily: 'Inter',
     fontSize: 11,
-    color: '#94A3B8',
+    color: '#737784',
   },
   paramsBox: {
-    backgroundColor: '#F8FAFC',
-    borderRadius: 8,
+    backgroundColor: '#f2f3f9',
+    borderRadius: 10,
     padding: 10,
-    borderWidth: 1,
-    borderColor: '#F1F5F9',
     gap: 6,
     marginBottom: 10,
   },
@@ -510,24 +514,26 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
   },
   paramLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#64748B',
+    fontFamily: 'Public Sans',
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#737784',
     flex: 1,
   },
   paramValue: {
-    fontSize: 12,
-    color: '#0F172A',
-    fontWeight: '500',
+    fontFamily: 'Inter',
+    fontSize: 11.5,
+    color: '#191c20',
+    fontWeight: '600',
     flex: 2,
     textAlign: 'right',
   },
   doctorGatedNotice: {
     flexDirection: 'row',
-    backgroundColor: '#EFF6FF',
-    borderRadius: 8,
+    backgroundColor: '#f8f9fc',
+    borderRadius: 10,
     borderLeftWidth: 3,
-    borderLeftColor: '#2563EB',
+    borderLeftColor: '#004D4D',
     padding: 10,
     gap: 8,
     marginBottom: 10,
@@ -536,22 +542,24 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   doctorGatedTitle: {
-    fontSize: 12,
+    fontFamily: 'Public Sans',
+    fontSize: 11.5,
     fontWeight: '700',
-    color: '#1D4ED8',
+    color: '#004D4D',
     marginBottom: 2,
   },
   doctorGatedBody: {
+    fontFamily: 'Inter',
     fontSize: 11,
-    color: '#1E40AF',
+    color: '#33628b',
     lineHeight: 15,
   },
   emergencyAbortedNotice: {
     flexDirection: 'row',
-    backgroundColor: '#FEF2F2',
-    borderRadius: 8,
+    backgroundColor: '#fef2f2',
+    borderRadius: 10,
     borderLeftWidth: 3,
-    borderLeftColor: '#DC2626',
+    borderLeftColor: '#ba1a1a',
     padding: 10,
     gap: 8,
     marginBottom: 10,
@@ -560,71 +568,77 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   emergencyAbortedTitle: {
-    fontSize: 12,
+    fontFamily: 'Public Sans',
+    fontSize: 11.5,
     fontWeight: '700',
-    color: '#B91C1C',
+    color: '#ba1a1a',
     marginBottom: 2,
   },
   emergencyAbortedBody: {
+    fontFamily: 'Inter',
     fontSize: 11,
-    color: '#7F1D1D',
+    color: '#7f1d1d',
     lineHeight: 15,
   },
   completedNotice: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#DCFCE7',
-    borderRadius: 6,
+    backgroundColor: '#ecfdf5',
+    borderRadius: 8,
     padding: 8,
     gap: 6,
     marginBottom: 8,
   },
   completedText: {
-    fontSize: 12,
-    color: '#15803D',
-    fontWeight: '600',
+    fontFamily: 'Public Sans',
+    fontSize: 11.5,
+    color: '#059669',
+    fontWeight: '700',
   },
   terminalNotice: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F1F5F9',
-    borderRadius: 6,
+    backgroundColor: '#eceef3',
+    borderRadius: 8,
     padding: 8,
     gap: 6,
     marginBottom: 8,
   },
   terminalText: {
-    fontSize: 12,
-    color: '#475569',
+    fontFamily: 'Inter',
+    fontSize: 11.5,
+    color: '#737784',
   },
   failedNotice: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FEE2E2',
-    borderRadius: 6,
+    backgroundColor: '#fef2f2',
+    borderRadius: 8,
     padding: 8,
     gap: 6,
     marginBottom: 8,
   },
   failedText: {
-    fontSize: 12,
-    color: '#991B1B',
-    fontWeight: '500',
+    fontFamily: 'Inter',
+    fontSize: 11.5,
+    color: '#ba1a1a',
+    fontWeight: '600',
   },
   errorBox: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FEF2F2',
+    backgroundColor: '#fef2f2',
     borderWidth: 1,
-    borderColor: '#FECDD3',
-    borderRadius: 6,
+    borderColor: '#fecaca',
+    borderRadius: 8,
     padding: 8,
     gap: 6,
     marginBottom: 8,
   },
   errorBoxText: {
+    fontFamily: 'Inter',
     fontSize: 11,
-    color: '#B91C1C',
+    color: '#ba1a1a',
     flex: 1,
   },
   actionsFooter: {
@@ -638,53 +652,59 @@ const styles = StyleSheet.create({
   cancelButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 8,
+    paddingVertical: 7,
     paddingHorizontal: 12,
     borderRadius: 8,
-    backgroundColor: '#FEE2E2',
-    borderWidth: 1,
-    borderColor: '#FECDD3',
+    backgroundColor: '#f2f3f9',
     gap: 5,
   },
   cancelButtonText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#DC2626',
+    fontFamily: 'Public Sans',
+    fontSize: 11.5,
+    fontWeight: '700',
+    color: '#ba1a1a',
   },
   confirmButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 8,
-    paddingHorizontal: 16,
+    paddingVertical: 7,
+    paddingHorizontal: 14,
     borderRadius: 8,
-    backgroundColor: '#0D9488',
+    backgroundColor: '#004D4D',
     gap: 6,
+    shadowColor: '#004D4D',
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 1,
   },
   confirmButtonText: {
-    fontSize: 12,
+    fontFamily: 'Public Sans',
+    fontSize: 11.5,
     fontWeight: '700',
-    color: '#FFFFFF',
+    color: '#ffffff',
   },
   buttonDisabled: {
     opacity: 0.6,
   },
   cancelPromptBox: {
-    backgroundColor: '#FFF7ED',
+    backgroundColor: '#fffbeb',
     borderWidth: 1,
-    borderColor: '#FED7AA',
-    borderRadius: 8,
+    borderColor: '#fde68a',
+    borderRadius: 10,
     padding: 10,
     marginTop: 6,
   },
   cancelPromptTitle: {
-    fontSize: 13,
+    fontFamily: 'Public Sans',
+    fontSize: 12,
     fontWeight: '700',
-    color: '#9A3412',
+    color: '#92400e',
     marginBottom: 2,
   },
   cancelPromptSubtitle: {
-    fontSize: 11,
-    color: '#C2410C',
+    fontFamily: 'Inter',
+    fontSize: 10.5,
+    color: '#b45309',
     marginBottom: 8,
   },
   reasonChipsContainer: {
@@ -697,31 +717,33 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     paddingHorizontal: 8,
     borderRadius: 6,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#ffffff',
     borderWidth: 1,
-    borderColor: '#FED7AA',
+    borderColor: '#fde68a',
   },
   reasonChipSelected: {
-    backgroundColor: '#EA580C',
-    borderColor: '#EA580C',
+    backgroundColor: '#d97706',
+    borderColor: '#d97706',
   },
   reasonChipText: {
-    fontSize: 11,
-    color: '#7C2D12',
+    fontFamily: 'Inter',
+    fontSize: 10.5,
+    color: '#78350f',
   },
   reasonChipTextSelected: {
-    color: '#FFFFFF',
-    fontWeight: '600',
+    color: '#ffffff',
+    fontWeight: '700',
   },
   customReasonInput: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#ffffff',
     borderWidth: 1,
-    borderColor: '#FED7AA',
-    borderRadius: 6,
+    borderColor: '#fde68a',
+    borderRadius: 8,
     paddingHorizontal: 10,
     paddingVertical: 6,
-    fontSize: 12,
-    color: '#0F172A',
+    fontSize: 11.5,
+    fontFamily: 'Inter',
+    color: '#191c20',
     marginBottom: 8,
   },
   cancelActionsRow: {
@@ -734,12 +756,13 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     paddingHorizontal: 10,
     borderRadius: 6,
-    backgroundColor: '#F1F5F9',
+    backgroundColor: '#f2f3f9',
   },
   cancelAbortText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#64748B',
+    fontFamily: 'Public Sans',
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#737784',
   },
   cancelConfirmButton: {
     flexDirection: 'row',
@@ -747,12 +770,13 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     paddingHorizontal: 12,
     borderRadius: 6,
-    backgroundColor: '#DC2626',
+    backgroundColor: '#ba1a1a',
     gap: 4,
   },
   cancelConfirmButtonText: {
-    fontSize: 12,
+    fontFamily: 'Public Sans',
+    fontSize: 11,
     fontWeight: '700',
-    color: '#FFFFFF',
+    color: '#ffffff',
   },
 });

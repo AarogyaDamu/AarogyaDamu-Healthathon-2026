@@ -21,10 +21,10 @@ import { prisma } from '../db/prisma';
 
 const MAX_AUDIO_BYTES = 10 * 1024 * 1024; // 10MB max audio payload
 
-// Rate limiter: 60 requests per 15 minutes per user
+// Rate limiter: 60 requests per 15 minutes per user in prod; 2000 in dev
 const damuRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 60,
+  max: env.APP_ENV === 'development' ? 2000 : 60,
   standardHeaders: true,
   legacyHeaders: false,
   store: createRateLimitStore('damu_voice_limit:', 15 * 60 * 1000),
@@ -32,7 +32,7 @@ const damuRateLimiter = rateLimit({
     return (req as AuthenticatedRequest).user?.id || req.ip || 'anonymous';
   },
   message: {
-    error: 'Too many voice interaction requests. Please wait a few minutes before trying again.',
+    error: 'The health assistant is currently busy. Please pause a moment before retrying.',
   },
 });
 
@@ -114,6 +114,7 @@ router.post(
             patientId: effectivePatientId,
             caregiverEmail: authUser.email,
             status: 'ACTIVE',
+            OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
           },
         });
         if (consent) {

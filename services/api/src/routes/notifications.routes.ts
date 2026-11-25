@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { requireAuth } from '../middleware/auth';
 import { requireFeature } from '../middleware/requireFeature';
 import { resolvePatientContext, AuthorizationError } from '../permissions/evaluator';
+import { updateTenantContext } from '../db/tenantContext';
 import { NotificationPreferenceUpdateSchema, DevicePushTokenRegisterSchema } from '@aarogyadamu/contracts';
 import { logAuditEvent } from '../audit/auditLogger';
 import { NotificationService } from '../services/notificationService';
@@ -23,6 +24,8 @@ notificationsRouter.get('/', async (req: Request, res: Response): Promise<void> 
       const { effectivePatientId } = await resolvePatientContext(req, 'VIEW_NOTIFICATIONS');
       targetUserId = effectivePatientId;
     }
+
+    updateTenantContext({ patientId: targetUserId });
 
     const isReadFilter = req.query.isRead !== undefined
       ? req.query.isRead === 'true'
@@ -140,6 +143,8 @@ notificationsRouter.post('/read-all', async (req: Request, res: Response): Promi
       const { effectivePatientId } = await resolvePatientContext(req, 'VIEW_NOTIFICATIONS');
       targetUserId = effectivePatientId;
     }
+
+    updateTenantContext({ patientId: targetUserId });
 
     const result = await prisma.careNotification.updateMany({
       where: {
@@ -278,6 +283,8 @@ notificationsRouter.get('/preferences', async (req: Request, res: Response): Pro
       targetUserId = effectivePatientId;
     }
 
+    updateTenantContext({ patientId: targetUserId });
+
     let pref = await prisma.notificationPreference.findUnique({
       where: { userId: targetUserId },
     });
@@ -332,6 +339,8 @@ notificationsRouter.put('/preferences', async (req: Request, res: Response): Pro
       const { effectivePatientId } = await resolvePatientContext(req, 'VIEW_NOTIFICATIONS');
       targetUserId = effectivePatientId;
     }
+
+    updateTenantContext({ patientId: targetUserId });
 
     const parsed = NotificationPreferenceUpdateSchema.safeParse(req.body);
     if (!parsed.success) {

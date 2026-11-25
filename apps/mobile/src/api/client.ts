@@ -162,6 +162,20 @@ export async function getMobileRefreshToken(): Promise<string | null> {
  */
 export function resolveApiBaseUrl(rawUrl?: string): string {
   const apiUrl = rawUrl?.trim() || process.env.EXPO_PUBLIC_API_URL?.trim();
+
+  // Validate protocol security: External endpoints must always use HTTPS.
+  if (apiUrl) {
+    try {
+      const parsed = new URL(apiUrl);
+      const isLoopback = ['localhost', '127.0.0.1', '10.0.2.2'].includes(parsed.hostname.toLowerCase());
+      if (parsed.protocol === 'http:' && !isLoopback) {
+        throw new Error('External API endpoints must use HTTPS. Cleartext HTTP is strictly prohibited for non-loopback destinations.');
+      }
+    } catch (e: any) {
+      if (e.message?.includes('External API endpoints')) throw e;
+    }
+  }
+
   if (process.env.NODE_ENV === 'production') {
     const appEnvironment = process.env.EXPO_PUBLIC_APP_ENV;
     if (!['development', 'staging', 'production'].includes(appEnvironment || '')) {
@@ -370,7 +384,7 @@ async function mobileApiFetchInternal<T = unknown>(
 
   if (response.status === 204) {
     if (!response.ok) {
-      throw new Error(`API request failed with status ${response.status}.`);
+      throw new Error(`Unable to complete action (${response.status}).`);
     }
 
     return undefined as T;
@@ -388,36 +402,68 @@ async function mobileApiFetchInternal<T = unknown>(
   }
 
   if (!response.ok) {
-    let message = `API request failed with status ${response.status}.`;
+    const politeStatusDefaults: Record<number, string> = {
+      401: 'Your session has expired. Please sign in again.',
+      403: 'Your account does not currently have permission to perform this action. Please contact the assigned clinician.',
+      404: 'The requested health record was not found.',
+      409: 'We couldn’t complete this action because the request is outdated. You can safely retry.',
+      429: 'The health service is currently busy. Please wait a moment and try again.',
+      500: 'We couldn’t complete this action. No changes were confirmed. You can safely retry.',
+    };
+
+    let message = politeStatusDefaults[response.status] || `Unable to complete request (${response.status}).`;
 
     if (
       responseData !== null &&
       typeof responseData === 'object'
     ) {
       const body = responseData as Record<string, unknown>;
-      // Prefer descriptive message over generic error code string
-      let serverMessage = typeof body.message === 'string' && body.message.trim()
-        ? body.message
-        : (typeof body.error === 'string' && body.error.trim() ? body.error : undefined);
+      // Map specific security and workflow error codes to role-specific clinical messages
+      const errorCode = (body.errorCode || body.code) as string | undefined;
+      if (errorCode === 'UNASSIGNED_CLINICIAN' || errorCode === 'UNASSIGNED_CARE_TEAM') {
+        message = 'This patient is not assigned to your care team.';
+      } else if (errorCode === 'ACTION_REQUIRES_CLINICIAN_APPROVAL' || errorCode === 'DOCTOR_APPROVAL_REQUIRED') {
+        message = 'This action is prepared and is waiting for doctor approval.';
+      } else if (errorCode === 'UNAUTHORIZED_ACTOR_ROLE' || errorCode === 'INSUFFICIENT_CAREGIVER_PERMISSIONS') {
+        message = 'Your account does not currently have permission to perform this action. Please contact the assigned clinician.';
+      } else if (errorCode === 'SESSION_EXPIRED') {
+        message = 'Your session has expired. Please sign in again.';
+      } else {
+        // Prefer descriptive message over generic error code string
+        let serverMessage = typeof body.message === 'string' && body.message.trim()
+          ? body.message
+          : (typeof body.error === 'string' && body.error.trim() ? body.error : undefined);
 
-      if (Array.isArray(body.details) && body.details.length > 0) {
-        const detailsStr = body.details
-          .map((d: any) => `${d.path || 'field'}: ${d.message}`)
-          .join('; ');
-        serverMessage = serverMessage ? `${serverMessage} (${detailsStr})` : detailsStr;
-      }
+        if (Array.isArray(body.details) && body.details.length > 0) {
+          const detailsStr = body.details
+            .map((d: any) => `${d.path || 'field'}: ${d.message}`)
+            .join('; ');
+          serverMessage = serverMessage ? `${serverMessage} (${detailsStr})` : detailsStr;
+        }
 
-      if (
-        typeof serverMessage === 'string' &&
-        serverMessage.trim()
-      ) {
-        message = serverMessage;
+        if (
+          typeof serverMessage === 'string' &&
+          serverMessage.trim()
+        ) {
+          if (serverMessage.toLowerCase().includes('too many requests') || serverMessage.includes('429')) {
+            serverMessage = 'The health service is currently busy. Please pause a moment before retrying.';
+          } else if (serverMessage.toLowerCase().includes('not assigned to your care team')) {
+            serverMessage = 'This patient is not assigned to your care team.';
+          } else if (serverMessage.toLowerCase().includes('waiting for doctor approval') || serverMessage.toLowerCase().includes('clinician approval')) {
+            serverMessage = 'This action is prepared and is waiting for doctor approval.';
+          }
+          message = serverMessage;
+        }
       }
     } else if (
       typeof responseData === 'string' &&
       responseData.trim()
     ) {
-      message = responseData;
+      if (responseData.toLowerCase().includes('too many requests')) {
+        message = 'The health service is currently busy. Please wait a moment and try again.';
+      } else {
+        message = responseData;
+      }
     }
 
     throw new Error(message);

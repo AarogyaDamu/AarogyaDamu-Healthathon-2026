@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { env } from '../config/env';
 import { prisma } from '../db/prisma';
+import { runWithTenantContext } from '../db/tenantContext';
 
 export interface AuthTokenPayload {
   id: string;
@@ -19,12 +20,18 @@ export interface AuthenticatedRequest extends Request {
 
 export async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  let token: string | undefined;
+
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.slice('Bearer '.length);
+  } else if (typeof req.query.token === 'string' && req.query.token.length > 10) {
+    token = req.query.token;
+  }
+
+  if (!token) {
     res.status(401).json({ error: 'Authentication token missing or invalid' });
     return;
   }
-
-  const token = authHeader.slice('Bearer '.length);
   let decoded: AuthTokenPayload;
   try {
     const payload = jwt.verify(token, env.JWT_SECRET);
@@ -43,16 +50,18 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   }
 
   try {
-    const session = await prisma.authSession.findFirst({
-      where: {
-        id: decoded.sessionId,
-        userId: decoded.id,
-        revokedAt: null,
-        expiresAt: { gt: new Date() },
-      },
-      include: {
-        user: { select: { id: true, email: true, isSyntheticDemo: true, isClinician: true, isActive: true } },
-      },
+    const session = await runWithTenantContext({ userId: decoded.id }, async () => {
+      return prisma.authSession.findFirst({
+        where: {
+          id: decoded.sessionId,
+          userId: decoded.id,
+          revokedAt: null,
+          expiresAt: { gt: new Date() },
+        },
+        include: {
+          user: { select: { id: true, email: true, isSyntheticDemo: true, isClinician: true, isActive: true } },
+        },
+      });
     });
 
     if (!session) {
@@ -74,7 +83,16 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       iat: decoded.iat,
       exp: decoded.exp,
     };
-    next();
+
+    runWithTenantContext(
+      {
+        userId: session.user.id,
+        role: session.user.isClinician ? 'DOCTOR' : 'PATIENT',
+      },
+      async () => {
+        next();
+      }
+    );
   } catch (error) {
     next(error);
   }

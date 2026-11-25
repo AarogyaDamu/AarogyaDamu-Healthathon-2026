@@ -382,6 +382,7 @@ export const SourceProvenanceEnum = z.enum([
   'CAREGIVER_INPUT',
   'BLUETOOTH_DEVICE',
   'DOCTOR_CLINICAL',
+  'NURSE_CLINICAL',
   'LAB_REPORT',
   'AI_EXTRACTED',
 ]);
@@ -517,6 +518,7 @@ export const LifestyleSourceEnum = z.enum([
   'MANUAL_PATIENT',
   'CAREGIVER_INPUT',
   'DOCTOR_CLINICAL',
+  'NURSE_CLINICAL',
 ]);
 export type LifestyleSource = z.infer<typeof LifestyleSourceEnum>;
 
@@ -1271,6 +1273,8 @@ export interface AgentOwnershipPermissionResult {
     | 'CAREGIVER_CONSENT_EXPIRED'
     | 'MISSING_REQUIRED_CAREGIVER_PERMISSION'
     | 'UNASSIGNED_CLINICIAN'
+    | 'UNASSIGNED_CARE_TEAM'
+    | 'DOCTOR_APPROVAL_REQUIRED'
     | 'ADMIN_CLINICAL_ACTION_NOT_PERMITTED'
     | 'UNAUTHORIZED_ACTOR_ROLE';
   reason?: string;
@@ -1311,13 +1315,32 @@ export function evaluateAgentOwnershipAndPermission(
     };
   }
 
-  // 2. Clinician Access (SEC-P0.7-03: Must have active DoctorPatientAssignment)
-  if (actorRole === 'CLINICIAN') {
+  // 2. Clinician & Doctor Access (SEC-P0.7-03: Must have active DoctorPatientAssignment)
+  if (actorRole === 'CLINICIAN' || (actorRole as string) === 'DOCTOR') {
     if (!hasActiveDoctorAssignment) {
       return {
         authorized: false,
         errorCode: 'UNASSIGNED_CLINICIAN',
-        reason: `Clinician ${actorId} does not have an active DoctorPatientAssignment for patient ${targetPatientId}.`,
+        reason: 'This patient is not assigned to your care team (does not have an active DoctorPatientAssignment).',
+      };
+    }
+    return { authorized: true };
+  }
+
+  // 2.1 Nurse Access: Can perform care coordination, but cannot approve doctor-only proposals
+  if ((actorRole as string) === 'NURSE') {
+    if (!hasActiveDoctorAssignment) {
+      return {
+        authorized: false,
+        errorCode: 'UNASSIGNED_CARE_TEAM',
+        reason: 'This patient is not assigned to your care team.',
+      };
+    }
+    if (toolName === 'tool_draft_care_proposal') {
+      return {
+        authorized: false,
+        errorCode: 'DOCTOR_APPROVAL_REQUIRED',
+        reason: 'This action is prepared and is waiting for doctor approval.',
       };
     }
     return { authorized: true };
@@ -1595,3 +1618,10 @@ export * from './appointments';
 export * from './journeyInsights';
 export * from './terminology';
 export * from './loinc';
+export * from './commercial';
+export * from './cgm';
+export * from './sarvamOcr';
+export * from './careTeam';
+export * from './clinicalReview';
+export * from './brand';
+

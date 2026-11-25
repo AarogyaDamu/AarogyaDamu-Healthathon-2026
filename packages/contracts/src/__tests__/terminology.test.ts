@@ -4,6 +4,7 @@
  * clinical accuracy preservation for clinicians, context labels, and actionable errors.
  */
 
+import { describe, it, expect } from 'vitest';
 import {
   DIABETES_TERMINOLOGY,
   CONTEXT_LABELS,

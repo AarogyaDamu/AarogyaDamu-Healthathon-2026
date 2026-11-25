@@ -1,8 +1,21 @@
 @echo off
+cd /d "%~dp0"
 echo ========================================================
 echo  Starting AarogyaDamu - Diabetes Care Journey Companion
 echo ========================================================
 echo.
+echo 0. Ensuring Local PostgreSQL is running (Port 55432)...
+wsl -d Ubuntu -u root service postgresql start >nul 2>&1
+start /b wsl -d Ubuntu sh -c "while true; do sleep 60; done" >nul 2>&1
+
+:wait_pg
+wsl -d Ubuntu pg_isready -h 127.0.0.1 -p 55432 >nul 2>&1
+if errorlevel 1 (
+  timeout /t 1 /nobreak >nul
+  goto wait_pg
+)
+echo [OK] PostgreSQL is active and accepting connections on port 55432!
+
 echo 1. Launching Backend API (Port 4000)...
 start "AarogyaDamu API (Port 4000)" cmd /k "npm run dev:api"
 

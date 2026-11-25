@@ -1,4 +1,5 @@
 import { prisma } from '../db/prisma';
+import { logAuditEvent } from './auditLogger';
 
 const SENSITIVE_KEY_PATTERN = /^(password|token|secret|authorization|bearer|cookie|ssn|aadhaar|credit_?card|api_?key)$/i;
 
@@ -97,20 +98,18 @@ export async function logClinicalAccessEvent(entry: ClinicalAccessEventInput): P
   try {
     const sanitizedMetadata = entry.metadata ? sanitizePhi(entry.metadata) : {};
 
-    await prisma.auditLog.create({
-      data: {
-        userId: entry.userId,
-        actorId: entry.actorId,
-        action: entry.action,
-        entityType: entry.entityType,
-        entityId: entry.entityId,
-        ipAddress: entry.ipAddress,
-        userAgent: entry.userAgent,
-        metadata: JSON.stringify({
-          ...sanitizedMetadata,
-          category: 'CLINICAL_ACCESS',
-          timestamp: new Date().toISOString(),
-        }),
+    await logAuditEvent({
+      userId: entry.userId,
+      actorId: entry.actorId,
+      action: entry.action,
+      entityType: entry.entityType,
+      entityId: entry.entityId,
+      ipAddress: entry.ipAddress,
+      userAgent: entry.userAgent,
+      metadata: {
+        ...sanitizedMetadata,
+        category: 'CLINICAL_ACCESS',
+        timestamp: new Date().toISOString(),
       },
     });
   } catch (err) {
@@ -128,24 +127,22 @@ export async function logClinicalMutationEvent(entry: ClinicalMutationEventInput
     const sanitizedBefore = entry.before !== undefined ? sanitizePhi(entry.before) : undefined;
     const sanitizedAfter = entry.after !== undefined ? sanitizePhi(entry.after) : undefined;
 
-    await prisma.auditLog.create({
-      data: {
-        userId: entry.userId,
-        actorId: entry.actorId,
-        action: entry.action,
-        entityType: entry.entityType,
-        entityId: entry.entityId,
-        ipAddress: entry.ipAddress,
-        userAgent: entry.userAgent,
-        metadata: JSON.stringify({
-          ...sanitizedMetadata,
-          category: 'CLINICAL_MUTATION',
-          changes: {
-            before: sanitizedBefore,
-            after: sanitizedAfter,
-          },
-          timestamp: new Date().toISOString(),
-        }),
+    await logAuditEvent({
+      userId: entry.userId,
+      actorId: entry.actorId,
+      action: entry.action,
+      entityType: entry.entityType,
+      entityId: entry.entityId,
+      ipAddress: entry.ipAddress,
+      userAgent: entry.userAgent,
+      metadata: {
+        ...sanitizedMetadata,
+        category: 'CLINICAL_MUTATION',
+        changes: {
+          before: sanitizedBefore,
+          after: sanitizedAfter,
+        },
+        timestamp: new Date().toISOString(),
       },
     });
   } catch (err) {

@@ -1,6 +1,7 @@
 import request from 'supertest';
 import { randomUUID } from 'crypto';
 import { app, prisma } from '../server';
+import { withTenantTransaction } from '../db/tenantContext';
 
 describe('Diabetes Journey Navigator Architecture & Lifecycle Suite', () => {
   let patient: any;
@@ -31,12 +32,30 @@ describe('Diabetes Journey Navigator Architecture & Lifecycle Suite', () => {
     return user;
   }
 
+  let practice: any;
+
   beforeAll(async () => {
     patient = await register('Journey Patient');
     assignedDoctor = await register('Dr. Kavita Deshpande', true);
     unassignedDoctor = await register('Dr. Unassigned Rao', true);
     caregiver = await register('Journey Caregiver');
     stranger = await register('Stranger Patient');
+
+    const suffix = Date.now();
+    practice = await prisma.practice.create({
+      data: {
+        name: `Journey Practice ${suffix}`,
+        slug: `journey-practice-${suffix}`,
+        registrationNumber: `REG-JOURNEY-${suffix}`,
+        memberships: {
+          create: {
+            userId: assignedDoctor.id,
+            role: 'OWNER',
+            isActive: true,
+          },
+        },
+      },
+    });
 
     // Create an ACTIVE doctor-patient assignment for assignedDoctor
     await prisma.doctorPatientAssignment.create({
@@ -106,20 +125,31 @@ describe('Diabetes Journey Navigator Architecture & Lifecycle Suite', () => {
   // -------------------------------------------------------------
   test('CONSULTATION & CARE PLAN: Approved consultation and care plan revisions update journey milestones', async () => {
     // 1. Add approved consultation note
-    const note = await prisma.consultationNote.create({
-      data: {
-        userId: patient.id,
-        clinicianId: assignedDoctor.id,
-        clinicianName: 'Dr. Kavita Deshpande',
-        status: 'APPROVED',
-        rawTranscript: 'Consultation dialogue',
-        speakerSegments: '[]',
-        structuredNote: '{}',
-        approvedNoteText: 'Patient exhibits steady fasting glucose.',
-        approvedAt: new Date(),
-        approvedBy: assignedDoctor.id,
+    const note = await withTenantTransaction(
+      prisma,
+      {
+        userId: assignedDoctor.id,
+        practiceId: practice.id,
+        role: 'DOCTOR',
+        patientId: patient.id,
       },
-    });
+      async (tx) => {
+        return await tx.consultationNote.create({
+          data: {
+            userId: patient.id,
+            clinicianId: assignedDoctor.id,
+            clinicianName: 'Dr. Kavita Deshpande',
+            status: 'APPROVED',
+            rawTranscript: 'Consultation dialogue',
+            speakerSegments: '[]',
+            structuredNote: '{}',
+            approvedNoteText: 'Patient exhibits steady fasting glucose.',
+            approvedAt: new Date(),
+            approvedBy: assignedDoctor.id,
+          },
+        });
+      }
+    );
     expect(note.id).toBeDefined();
 
     // 2. Doctor creates care plan draft and approves it (v1)

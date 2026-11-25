@@ -68,6 +68,27 @@ model User {
   damuConversations      DamuConversation[]        @relation("UserDamuConversations")
   devicePushTokens       DevicePushToken[]
   journeyMilestones      JourneyMilestone[]
+  practiceMemberships    PracticeMembership[]
+  patientEncounterBillings PatientEncounterBilling[] @relation("PatientEncounterBillings")
+  doctorEncounterBillings PatientEncounterBilling[] @relation("DoctorEncounterBillings")
+
+  // CGM & Wearables
+  cgmDeviceConnections     CgmDeviceConnection[]
+  cgmGlucoseReadings       CgmGlucoseReading[]
+
+  // Sarvam Document Intelligence OCR
+  ocrJobsAsPatient         OcrProcessingJob[]        @relation("PatientOcrJobs")
+  ocrJobsReviewed          OcrProcessingJob[]        @relation("OcrReviewer")
+
+  // Multidisciplinary Care Team
+  careTeamMemberships      PatientCareTeamMember[]   @relation("PatientTeamMembers")
+  clinicianTeamRoles       PatientCareTeamMember[]   @relation("ClinicianCareTeams")
+  careTeamsAssignedBy      PatientCareTeamMember[]   @relation("CareTeamAssignedBy")
+
+  // Clinical Review & Approval
+  clinicalReviewsAsPatient ClinicalReviewEncounter[] @relation("PatientClinicalReviews")
+  clinicalReviewsInitial   ClinicalReviewEncounter[] @relation("InitialClinicianReviews")
+  clinicalReviewsApproved  ClinicalReviewEncounter[] @relation("DoctorApprovedReviews")
 
   @@index([isActive])
 }
@@ -243,6 +264,7 @@ model HealthDocument {
   updatedAt        DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ocrJobs OcrProcessingJob[]
 
   @@index([userId, reportDate])
   @@index([userId, category])
@@ -287,6 +309,10 @@ model ConsultationNote {
   sharedAt           DateTime?
   consentDecision    String?   @default("GRANTED")
   isManual           Boolean   @default(false)
+  clinicalDiagnosisJson   String?
+  examinationFindingsJson String?
+  labOrdersJson           String?
+  lifestyleAdvice         String?
   version            Int       @default(1)
   idempotencyKey     String?   @unique
   createdAt          DateTime  @default(now())
@@ -297,6 +323,7 @@ model ConsultationNote {
   consultationPrep  ConsultationPrep? @relation(fields: [consultationPrepId], references: [id], onDelete: SetNull)
   appointment       Appointment?      @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
   versions          ConsultationNoteVersion[]
+  prescriptions     ConsultationPrescriptionItem[]
 
   @@index([userId, status, createdAt])
   @@index([clinicianId, status])
@@ -502,6 +529,7 @@ model Appointment {
   doctor   User @relation("AppointmentDoctor", fields: [doctorId], references: [id], onDelete: Restrict)
   bookedBy User @relation("AppointmentBookedBy", fields: [bookedById], references: [id], onDelete: Restrict)
   clinicalNotes ConsultationNote[]
+  encounterBilling PatientEncounterBilling?
 
   @@index([patientId, scheduledAt, status])
   @@index([doctorId, scheduledAt, status])
@@ -993,5 +1021,274 @@ model JourneyMilestone {
   @@unique([userId, milestoneKey])
   @@index([userId, achievedAt])
 }
+
+// ==========================================
+// 27. COMMERCIAL SAAS & PRACTICE MANAGEMENT
+// ==========================================
+
+model Practice {
+  id                 String   @id @default(uuid())
+  name               String
+  slug               String   @unique
+  registrationNumber String
+  council            String?
+  specialty          String   @default("Diabetology & General Medicine")
+  qualifications     String?
+  address            String?
+  city               String?
+  state              String?
+  postalCode         String?
+  phone              String?
+  consultationFeeInr Int      @default(500)
+  workingDays        String   @default("MON,TUE,WED,THU,FRI,SAT")
+  workingHoursJson   String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  memberships           PracticeMembership[]
+  encounterBillings     PatientEncounterBilling[]
+  consultationTemplates ConsultationTemplate[]
+  careTeamMemberships   PatientCareTeamMember[]
+  clinicalReviews       ClinicalReviewEncounter[]
+
+  @@index([slug])
+  @@index([registrationNumber])
+}
+
+model PracticeMembership {
+  id         String   @id @default(uuid())
+  practiceId String
+  userId     String
+  role       String   @default("DOCTOR") // "OWNER", "DOCTOR", "RECEPTIONIST"
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  practice Practice @relation(fields: [practiceId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([practiceId, userId])
+  @@index([userId, isActive])
+  @@index([practiceId, role])
+}
+
+model PatientEncounterBilling {
+  id                   String   @id @default(uuid())
+  practiceId           String
+  patientId            String
+  appointmentId        String?  @unique
+  doctorId             String
+  consultationFeeInr   Int
+  discountInr          Int      @default(0)
+  totalAmountInr       Int
+  paymentStatus        String   @default("PAID") // "PAID", "PENDING", "CANCELLED"
+  paymentMethod        String   @default("UPI") // "CASH", "UPI", "CARD", "NET_BANKING"
+  receiptNumber        String   @unique
+  transactionReference String?
+  notes                String?
+  createdAt            DateTime @default(now())
+
+  practice    Practice     @relation(fields: [practiceId], references: [id], onDelete: Cascade)
+  patient     User         @relation("PatientEncounterBillings", fields: [patientId], references: [id], onDelete: Cascade)
+  doctor      User         @relation("DoctorEncounterBillings", fields: [doctorId], references: [id], onDelete: Cascade)
+  appointment Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+
+  @@index([practiceId, createdAt])
+  @@index([patientId, createdAt])
+  @@index([doctorId, createdAt])
+}
+
+model ConsultationTemplate {
+  id                      String   @id @default(uuid())
+  practiceId              String
+  doctorId                String?
+  name                    String
+  specialty               String   @default("Diabetology")
+  chiefComplaint          String?
+  defaultDiagnosesJson    String?
+  defaultPrescriptionsJson String?
+  defaultLabOrdersJson    String?
+  defaultLifestyleAdvice  String?
+  createdAt               DateTime @default(now())
+
+  practice Practice @relation(fields: [practiceId], references: [id], onDelete: Cascade)
+
+  @@index([practiceId])
+}
+
+model ConsultationPrescriptionItem {
+  id                 String   @id @default(uuid())
+  consultationNoteId String
+  medicationName     String
+  dosage             String
+  frequency          String
+  timing             String
+  durationDays       Int      @default(30)
+  instructions       String?
+  createdAt          DateTime @default(now())
+
+  consultationNote ConsultationNote @relation(fields: [consultationNoteId], references: [id], onDelete: Cascade)
+
+  @@index([consultationNoteId])
+}
+
+// ==========================================
+// 27. CGM & WEARABLE ECOSYSTEM
+// ==========================================
+
+model CgmDeviceConnection {
+  id                      String    @id @default(uuid())
+  patientId               String
+  provider                String    // ABBOTT_LIBRE, DEXCOM, MEDTRONIC, OMNIPOD, MANUAL_CSV, AGP_PDF
+  connectionStatus        String    @default("AVAILABLE") // AVAILABLE, REQUIRES_AUTH, CONNECTED, CONNECTION_EXPIRED, SYNC_ERROR, REVOKED
+  deviceName              String
+  deviceModel             String?
+  serialNumber            String?
+  lastSyncAt              DateTime?
+  authExpiresAt           DateTime?
+  metadataJson            String?
+  sharingConsentRevokedAt DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  patient  User                @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  readings CgmGlucoseReading[]
+
+  @@index([patientId, provider])
+  @@index([patientId, connectionStatus])
+}
+
+model CgmGlucoseReading {
+  id                 String   @id @default(uuid())
+  patientId          String
+  deviceConnectionId String?
+  glucoseValueMgDl   Float
+  glucoseValueMmolL  Float
+  unit               String   @default("mg/dL")
+  trendArrow         String?  @default("FLAT") // DOUBLE_UP, SINGLE_UP, FORTY_FIVE_UP, FLAT, FORTY_FIVE_DOWN, SINGLE_DOWN, DOUBLE_DOWN, NOT_COMPUTABLE
+  readingType        String   @default("INTERSTITIAL_CGM") // INTERSTITIAL_CGM, CALIBRATION_BLOOD_GLUCOSE
+  loincCode          String   @default("99504-3") // LOINC 99504-3: Glucose in Interstitial fluid
+  observedAt         DateTime
+  sourceTimezone     String   @default("Asia/Kolkata")
+  isOutlier          Boolean  @default(false)
+  dataQualityStatus  String   @default("VALID") // VALID, SUSPICIOUS, SENSOR_WARMUP, CALIBRATION_REQUIRED, MISSING
+  idempotencyKey     String?  @unique
+  createdAt          DateTime @default(now())
+
+  patient          User                 @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  deviceConnection CgmDeviceConnection? @relation(fields: [deviceConnectionId], references: [id], onDelete: SetNull)
+
+  @@index([patientId, observedAt])
+  @@index([patientId, dataQualityStatus])
+}
+
+// ==========================================
+// 28. SARVAM DOCUMENT INTELLIGENCE OCR
+// ==========================================
+
+model OcrProcessingJob {
+  id                   String    @id @default(uuid())
+  documentId           String
+  patientId            String
+  provider             String    @default("SARVAM_DOC_AI")
+  operation            String    @default("PARSE") // PARSE, EXTRACT, CLASSIFY
+  status               String    @default("PENDING") // PENDING, PROCESSING, COMPLETED, FAILED
+  jobId                String?
+  documentType         String?   // LAB_REPORT, PRESCRIPTION, DISCHARGE_SUMMARY, CGM_AGP_REPORT, MEDICAL_CERTIFICATE
+  pageCount            Int       @default(1)
+  creditCostEstimated  Int       @default(1)
+  creditCostActual     Int?
+  rawOcrText           String?
+  extractedSchemaJson  String?
+  confidenceScoresJson String?
+  processingDurationMs Int?
+  errorMessage         String?
+  reviewedById         String?
+  reviewedAt           DateTime?
+  approvalStatus       String    @default("PENDING_REVIEW") // PENDING_REVIEW, APPROVED, REJECTED, MODIFIED
+  reviewerNotes        String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  document   HealthDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  patient    User           @relation("PatientOcrJobs", fields: [patientId], references: [id], onDelete: Cascade)
+  reviewedBy User?          @relation("OcrReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  @@index([patientId, createdAt])
+  @@index([documentId])
+  @@index([status, approvalStatus])
+}
+
+model OcrUsageLog {
+  id                        String   @id @default(uuid())
+  jobId                     String?
+  provider                  String   @default("SARVAM_DOC_AI")
+  operation                 String
+  pageCount                 Int
+  creditsDeducted           Int
+  remainingCreditsEstimated Int
+  documentType              String?
+  recordedAt                DateTime @default(now())
+
+  @@index([recordedAt])
+  @@index([provider])
+}
+
+// ==========================================
+// 29. MULTIDISCIPLINARY CARE TEAM
+// ==========================================
+
+model PatientCareTeamMember {
+  id           String   @id @default(uuid())
+  patientId    String
+  userId       String
+  role         String   // DOCTOR, NURSE, DIABETES_EDUCATOR, CARE_COORDINATOR
+  practiceId   String?
+  assignedById String?
+  status       String   @default("ACTIVE") // ACTIVE, INACTIVE, INVITED
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  patient    User      @relation("PatientTeamMembers", fields: [patientId], references: [id], onDelete: Cascade)
+  clinician  User      @relation("ClinicianCareTeams", fields: [userId], references: [id], onDelete: Cascade)
+  assignedBy User?     @relation("CareTeamAssignedBy", fields: [assignedById], references: [id], onDelete: SetNull)
+  practice   Practice? @relation(fields: [practiceId], references: [id], onDelete: SetNull)
+
+  @@unique([patientId, userId])
+  @@index([patientId, status])
+  @@index([userId, status])
+}
+
+// ==========================================
+// 30. CLINICAL REVIEW & APPROVAL WORKSPACE
+// ==========================================
+
+model ClinicalReviewEncounter {
+  id                  String    @id @default(uuid())
+  patientId           String
+  practiceId          String
+  status              String    @default("DRAFT") // DRAFT, CLINICIAN_REVIEW, CLINICIAN_REVIEWED, DOCTOR_REVIEW, APPROVED, RETURNED_FOR_CORRECTION
+  initialReviewerId   String?
+  initialReviewedAt   DateTime?
+  doctorReviewerId    String?
+  doctorReviewedAt    DateTime?
+  doctorSignature     String?
+  correctionNotes     String?
+  clinicalSummaryNote String?
+  checklistJson       String    // 17-item structured clinical review state
+  dataSnapshotHash    String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  patient         User     @relation("PatientClinicalReviews", fields: [patientId], references: [id], onDelete: Cascade)
+  practice        Practice @relation(fields: [practiceId], references: [id], onDelete: Cascade)
+  initialReviewer User?    @relation("InitialClinicianReviews", fields: [initialReviewerId], references: [id], onDelete: SetNull)
+  doctorReviewer  User?    @relation("DoctorApprovedReviews", fields: [doctorReviewerId], references: [id], onDelete: SetNull)
+
+  @@index([patientId, createdAt])
+  @@index([practiceId, status])
+}
+
+
 
 

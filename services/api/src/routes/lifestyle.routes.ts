@@ -8,6 +8,7 @@ import {
   LifestyleQuerySchema,
 } from '@aarogyadamu/contracts';
 import { safeClinicalLog } from '../audit/clinicalAuditLogger';
+import { logAuditEvent } from '../audit/auditLogger';
 
 import { prisma } from '../db/prisma';
 export const lifestyleRouter = Router();
@@ -173,7 +174,15 @@ lifestyleRouter.post(
       // Determine provenance
       let source = 'MANUAL_PATIENT';
       if (authenticatedUser?.isClinician) {
-        source = 'DOCTOR_CLINICAL';
+        const teamMember = await prisma.patientCareTeamMember.findFirst({
+          where: { patientId: effectivePatientId, userId: authenticatedUser.id, status: 'ACTIVE' },
+          select: { role: true },
+        });
+        if (teamMember?.role === 'NURSE' || teamMember?.role === 'DIABETES_EDUCATOR') {
+          source = 'NURSE_CLINICAL';
+        } else {
+          source = 'DOCTOR_CLINICAL';
+        }
       } else if (authenticatedUser?.id !== effectivePatientId) {
         source = 'CAREGIVER_INPUT';
       }
@@ -195,18 +204,16 @@ lifestyleRouter.post(
       });
 
       // Audit log
-      await prisma.auditLog.create({
-        data: {
-          userId: effectivePatientId,
-          actorId: authenticatedUser.id,
-          action: 'CREATE',
-          entityType: 'LifestyleRecord',
-          entityId: record.id,
-          metadata: JSON.stringify({
-            category: record.category,
-            source: record.source,
-            createdById: authenticatedUser.id,
-          }),
+      await logAuditEvent({
+        userId: effectivePatientId,
+        actorId: authenticatedUser.id,
+        action: 'CREATE',
+        entityType: 'LifestyleRecord',
+        entityId: record.id,
+        metadata: {
+          category: record.category,
+          source: record.source,
+          createdById: authenticatedUser.id,
         },
       });
 
@@ -270,28 +277,26 @@ lifestyleRouter.patch(
       });
 
       // Audit correction diff
-      await prisma.auditLog.create({
-        data: {
-          userId: effectivePatientId,
-          actorId: authenticatedUser.id,
-          action: 'AMEND',
-          entityType: 'LifestyleRecord',
-          entityId: updated.id,
-          metadata: JSON.stringify({
-            recordId: updated.id,
-            reason: data.reasonForCorrection,
-            before: {
-              numericValue: existing.numericValue,
-              qualitativeValue: existing.qualitativeValue,
-              notes: existing.notes,
-            },
-            after: {
-              numericValue: updated.numericValue,
-              qualitativeValue: updated.qualitativeValue,
-              notes: updated.notes,
-            },
-            updatedById: authenticatedUser.id,
-          }),
+      await logAuditEvent({
+        userId: effectivePatientId,
+        actorId: authenticatedUser.id,
+        action: 'AMEND',
+        entityType: 'LifestyleRecord',
+        entityId: updated.id,
+        metadata: {
+          recordId: updated.id,
+          reason: data.reasonForCorrection,
+          before: {
+            numericValue: existing.numericValue,
+            qualitativeValue: existing.qualitativeValue,
+            notes: existing.notes,
+          },
+          after: {
+            numericValue: updated.numericValue,
+            qualitativeValue: updated.qualitativeValue,
+            notes: updated.notes,
+          },
+          updatedById: authenticatedUser.id,
         },
       });
 
@@ -321,18 +326,16 @@ lifestyleRouter.delete(
         return res.status(404).json({ error: 'Lifestyle record not found' });
       }
 
-      await prisma.auditLog.create({
-        data: {
-          userId: effectivePatientId,
-          actorId: authenticatedUser.id,
-          action: 'DELETE',
-          entityType: 'LifestyleRecord',
-          entityId: existing.id,
-          metadata: JSON.stringify({
-            recordId: existing.id,
-            category: existing.category,
-            deletedById: authenticatedUser.id,
-          }),
+      await logAuditEvent({
+        userId: effectivePatientId,
+        actorId: authenticatedUser.id,
+        action: 'DELETE',
+        entityType: 'LifestyleRecord',
+        entityId: existing.id,
+        metadata: {
+          recordId: existing.id,
+          category: existing.category,
+          deletedById: authenticatedUser.id,
         },
       });
 

@@ -1,0 +1,22 @@
+{
+  "brand": "AarogyaDamu",
+  "logo_concept_internal": "Care Nexus",
+  "font": {
+    "wordmark": "Inter Display SemiBold (600); outlined logo SVGs for cross-platform use",
+    "ui": "Inter, system-ui, sans-serif"
+  },
+  "colors": {
+    "deepTeal": "#004D4D",
+    "teal": "#0E7C7B",
+    "mint": "#A7E6C3",
+    "lightMint": "#E6F8EF",
+    "white": "#FFFFFF"
+  },
+  "gradient_reference": {
+    "petals": "independent directional blending; see SVG gradient definitions; not a single uniform gradient",
+    "damu_wordmark": "#4FCBA2 to #79DDB2"
+  },
+  "tagline_optional": "Smarter Care. Connected.",
+  "public_wordmark": "AarogyaDamu",
+  "logo_status": "Approved creative direction; final vector reconstructed from image; require vector sign-off and trademark clearance"
+}

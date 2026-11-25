@@ -243,7 +243,8 @@ router.post('/', requireAuth, async (req: Request, res: Response): Promise<void>
       return;
     }
 
-    const numVal = Number(numericValue);
+    const rawVal = numericValue !== undefined && numericValue !== null ? numericValue : (req.body as any).value;
+    const numVal = Number(rawVal);
     if (isNaN(numVal) || numVal <= 0) {
       res.status(400).json({ error: 'Reading must be a positive number.' });
       return;
@@ -271,7 +272,15 @@ router.post('/', requireAuth, async (req: Request, res: Response): Promise<void>
     let resolvedSource = sourceProvenance;
     if (!resolvedSource) {
       if (isClinician) {
-        resolvedSource = 'DOCTOR_CLINICAL';
+        const teamMember = await prisma.patientCareTeamMember.findFirst({
+          where: { patientId: effectivePatientId, userId: actorId, status: 'ACTIVE' },
+          select: { role: true },
+        });
+        if (teamMember?.role === 'NURSE' || teamMember?.role === 'DIABETES_EDUCATOR') {
+          resolvedSource = 'NURSE_CLINICAL';
+        } else {
+          resolvedSource = 'DOCTOR_CLINICAL';
+        }
       } else if (isDelegated) {
         resolvedSource = 'CAREGIVER_INPUT';
       } else {
@@ -349,7 +358,11 @@ router.post('/', requireAuth, async (req: Request, res: Response): Promise<void>
     });
 
     res.status(201).json({
-      observation: obs,
+      observation: {
+        ...obs,
+        value: obs.numericValue,
+        type: req.body.type || obs.type,
+      },
       safetyEvaluation,
     });
   } catch (err: any) {
@@ -428,7 +441,7 @@ router.patch('/:id', requireAuth, async (req: Request, res: Response): Promise<v
     });
 
     const actorId = (req as any).user?.id || effectivePatientId;
-    void logClinicalMutationEvent({
+    await logClinicalMutationEvent({
       userId: effectivePatientId,
       actorId,
       action: 'OBSERVATION_AMENDED',

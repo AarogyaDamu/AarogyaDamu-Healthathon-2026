@@ -70,6 +70,46 @@ export interface CreateMedicationInput {
   endDate?: string;
 }
 
+export interface IssuedPrescriptionMedication {
+  id: string;
+  medicationName: string;
+  dosage: string;
+  frequency: string;
+  timing: string;
+  durationDays: number;
+  instructions: string;
+}
+
+export interface IssuedPrescription {
+  id: string;
+  prescriptionReference: string;
+  consultationNoteId: string;
+  patientId: string;
+  appointmentId?: string | null;
+  visitType: string;
+  status: 'ISSUED';
+  issuedAt: string;
+  doctor: {
+    id: string;
+    name: string;
+    specialty: string;
+    qualification?: string;
+    registrationNumber?: string;
+    clinicName: string;
+  };
+  clinicName: string;
+  chiefComplaint: string;
+  diagnoses: Array<{ code?: string; display: string; category?: string }>;
+  examination?: any;
+  medications: IssuedPrescriptionMedication[];
+  labOrders: string[];
+  lifestyleAdvice?: string | null;
+  followUpNote?: string | null;
+  approvedBy?: string;
+  approvedAt?: string | null;
+  structuredNote?: string;
+}
+
 export const medicationApi = {
   async getMedications(options?: {
     patientId?: string;
@@ -168,5 +208,23 @@ export const medicationApi = {
     } catch {
       return [];
     }
+  },
+
+  async getPrescriptions(options?: { patientId?: string }): Promise<IssuedPrescription[]> {
+    const params = new URLSearchParams();
+    if (options?.patientId) params.append('patientId', options.patientId);
+
+    const qs = params.toString() ? `?${params.toString()}` : '';
+    const response = await mobileApiFetch<{ success: boolean; prescriptions: IssuedPrescription[] }>(
+      `/consultations/prescriptions${qs}`,
+    );
+    return response.prescriptions || [];
+  },
+
+  async getPrescriptionById(id: string): Promise<IssuedPrescription | null> {
+    const response = await mobileApiFetch<{ success: boolean; prescription: IssuedPrescription }>(
+      `/consultations/prescriptions/${encodeURIComponent(id)}`,
+    );
+    return response.prescription || null;
   },
 };

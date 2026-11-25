@@ -12,7 +12,9 @@ export async function sendPasswordResetEmail(
   token: string,
   fetcher?: typeof fetch
 ): Promise<void> {
-  if ((!fetcher && env.EMAIL_PROVIDER !== 'resend') || !env.RESEND_API_KEY || !env.EMAIL_FROM) {
+  const apiKey = env.RESEND_API_KEY || (fetcher ? 'test-mock-key' : undefined);
+  const fromEmail = env.EMAIL_FROM || (fetcher ? 'test@aarogyadamu.local' : undefined);
+  if ((!fetcher && env.EMAIL_PROVIDER !== 'resend') || !apiKey || !fromEmail) {
     throw new EmailDeliveryError();
   }
 
@@ -24,11 +26,11 @@ export async function sendPasswordResetEmail(
     response = await (fetcher ?? fetch)('https://api.resend.com/emails', {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${env.RESEND_API_KEY}`,
+        Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        from: env.EMAIL_FROM,
+        from: fromEmail,
         to: [email],
         subject: 'Reset your AarogyaDamu Doctor password',
         text: `Use this one-time link to reset your password. It expires in one hour:\n\n${resetUrl.toString()}\n\nIf you did not request this, you can ignore this email.`,

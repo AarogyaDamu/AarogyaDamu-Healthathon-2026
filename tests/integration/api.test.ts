@@ -2,6 +2,8 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import request from 'supertest';
 import bcrypt from 'bcryptjs';
 const { assertSafeTestDatabase } = require('../../services/api/scripts/test-db-guard.cjs');
+delete process.env.ADMIN_DATABASE_URL;
+delete process.env.MIGRATION_DATABASE_URL;
 assertSafeTestDatabase();
 import { app, prisma } from '../../services/api/src/server';
 

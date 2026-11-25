@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { ImageAnnotatorClient } from '@google-cloud/vision';
 import { Storage } from '@google-cloud/storage';
 import { env } from '../config/env';
+import { getGoogleCloudClientOptions } from './storageService';
 
 export type OcrErrorCode = 'CONFIGURATION' | 'CREDENTIALS' | 'ACCESS' | 'PROVIDER' | 'CLEANUP';
 
@@ -174,16 +175,19 @@ export async function extractMedicalReportText(
   // Test environments must fail closed when Google credentials are absent;
   // otherwise the Google client may start asynchronous metadata discovery and
   // surface an unhandled warning after the request has already returned.
-  if (env.NODE_ENV === 'test' && !process.env.GOOGLE_APPLICATION_CREDENTIALS && !env.GOOGLE_CLOUD_PROJECT_ID) {
+  if (
+    env.NODE_ENV === 'test' &&
+    !process.env.GOOGLE_APPLICATION_CREDENTIALS &&
+    !env.GOOGLE_APPLICATION_CREDENTIALS_JSON &&
+    !env.GOOGLE_CLOUD_PROJECT_ID
+  ) {
     throw new MedicalReportOcrError(
       'CREDENTIALS',
       'Google Cloud credentials are unavailable. Configure GOOGLE_APPLICATION_CREDENTIALS or Application Default Credentials.',
     );
   }
 
-  const projectOptions = env.GOOGLE_CLOUD_PROJECT_ID
-    ? { projectId: env.GOOGLE_CLOUD_PROJECT_ID }
-    : {};
+  const projectOptions = getGoogleCloudClientOptions();
 
   try {
     const vision = new ImageAnnotatorClient(projectOptions);

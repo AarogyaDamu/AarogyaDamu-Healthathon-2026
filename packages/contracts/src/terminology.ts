@@ -216,6 +216,9 @@ export function explainMedicalTerm(termKey: string, audience: UserAudience = 'PA
   if (audience === 'CLINICIAN') {
     return `${term.clinicalName} (${term.code})`;
   }
+  if (audience === 'CAREGIVER') {
+    return `${term.caregiverFriendlyName} — ${term.simpleExplanation}`;
+  }
   return `${term.patientFriendlyName} — ${term.simpleExplanation}`;
 }
 

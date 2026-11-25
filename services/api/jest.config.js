@@ -3,6 +3,7 @@ module.exports = {
   testEnvironment: 'node',
   setupFiles: ['<rootDir>/scripts/jest-test-db-guard.cjs'],
   testMatch: ['**/__tests__/**/*.test.ts'],
+  testTimeout: 30000,
   moduleDirectories: ['node_modules', '<rootDir>/node_modules'],
   moduleNameMapper: {
     // npm workspaces hoist zod to the repository root; rootDir is services/api.

@@ -12,7 +12,7 @@ import { theme } from '../../src/theme';
 interface AppButtonProps {
   title: string;
   onPress: () => void;
-  variant?: 'primary' | 'secondary' | 'outline' | 'ghost' | 'accent';
+  variant?: 'primary' | 'secondary' | 'outline' | 'ghost' | 'accent' | 'tertiary';
   size?: 'sm' | 'md' | 'lg';
   loading?: boolean;
   disabled?: boolean;
@@ -41,12 +41,13 @@ export function AppButton({
   const isOutline = variant === 'outline';
   const isGhost = variant === 'ghost';
   const isAccent = variant === 'accent';
+  const isTertiary = variant === 'tertiary';
 
   return (
     <TouchableOpacity
       onPress={onPress}
       disabled={disabled || loading}
-      activeOpacity={0.75}
+      activeOpacity={0.82}
       accessible={true}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel || title}
@@ -61,6 +62,7 @@ export function AppButton({
         isOutline && styles.outline,
         isGhost && styles.ghost,
         isAccent && styles.accent,
+        isTertiary && styles.tertiary,
         (disabled || loading) && styles.disabled,
         style,
       ]}
@@ -82,6 +84,7 @@ export function AppButton({
               isOutline && styles.textOutline,
               isGhost && styles.textGhost,
               isAccent && styles.textAccent,
+              isTertiary && styles.textTertiary,
               textStyle,
             ]}
           >
@@ -104,29 +107,37 @@ const styles = StyleSheet.create({
     paddingHorizontal: theme.spacing.lg,
   },
   sm: {
-    minHeight: 44,
+    minHeight: 40,
     paddingVertical: theme.spacing.xs,
     paddingHorizontal: theme.spacing.md,
+    borderRadius: theme.radius.sm,
   },
   md: {
     minHeight: theme.touchTarget.minHeight,
     paddingVertical: theme.spacing.md,
     paddingHorizontal: theme.spacing.lg,
+    borderRadius: theme.radius.md,
   },
   lg: {
     minHeight: 52,
     paddingVertical: theme.spacing.md,
     paddingHorizontal: theme.spacing.xl,
+    borderRadius: theme.radius.lg,
   },
   primary: {
     backgroundColor: theme.colors.primary,
+    shadowColor: theme.colors.primary,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.22,
+    shadowRadius: 12,
+    elevation: 3,
   },
   secondary: {
-    backgroundColor: theme.colors.cardMuted,
+    backgroundColor: theme.colors.cardHigh,
   },
   outline: {
     backgroundColor: theme.colors.white,
-    borderWidth: 1.5,
+    borderWidth: 1,
     borderColor: theme.colors.border,
   },
   ghost: {
@@ -134,12 +145,23 @@ const styles = StyleSheet.create({
   },
   accent: {
     backgroundColor: theme.colors.accent,
+    shadowColor: theme.colors.accent,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 10,
+    elevation: 3,
+  },
+  tertiary: {
+    backgroundColor: theme.colors.tertiaryContainer,
   },
   disabled: {
-    opacity: 0.5,
+    opacity: 0.45,
+    shadowOpacity: 0,
+    elevation: 0,
   },
   text: {
-    fontWeight: theme.typography.weights.bold,
+    fontWeight: theme.typography.weights.semibold,
+    letterSpacing: 0.2,
   },
   text_sm: {
     fontSize: theme.typography.sizes.bodySm,
@@ -154,15 +176,21 @@ const styles = StyleSheet.create({
     color: theme.colors.white,
   },
   textSecondary: {
-    color: theme.colors.text,
+    color: theme.colors.primary,
+    fontWeight: theme.typography.weights.bold,
   },
   textOutline: {
-    color: theme.colors.textSecondary,
+    color: theme.colors.primary,
+    fontWeight: theme.typography.weights.semibold,
   },
   textGhost: {
     color: theme.colors.primary,
   },
   textAccent: {
     color: theme.colors.white,
+  },
+  textTertiary: {
+    color: theme.colors.onTertiaryContainer,
+    fontWeight: theme.typography.weights.bold,
   },
 });

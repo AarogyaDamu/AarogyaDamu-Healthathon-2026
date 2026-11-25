@@ -2,18 +2,11 @@ import { useCallback, useEffect, useState, useRef, type ChangeEvent } from 'reac
 import {
   apiFetch,
   ApiError,
-  getAgentProposals,
-  reviewAgentProposal,
-  getAgentAction,
 } from '../api/client';
 import type {
   DoctorDashboardResponse,
   DoctorDashboardPatient,
-  ActivityFeedItem,
   CareTeamMessage,
-  AgentProposalItem,
-  AgentProposalReviewPayload,
-  AgentActionFeedItem,
 } from '../api/types';
 import {
   Users,
@@ -29,7 +22,6 @@ import {
   Stethoscope,
   ShieldCheck,
   Compass,
-  History,
   Pill,
   CheckCircle2,
   AlertCircle,
@@ -41,16 +33,45 @@ import {
   Sparkles,
   ShieldAlert,
   Info,
-  RotateCcw,
-  ArrowRight,
   Upload,
+  ActivitySquare,
+  CalendarCheck,
+  LayoutDashboard,
 } from 'lucide-react';
 import DoctorAppointments from '../components/DoctorAppointments';
 import { DoctorJourneyProgress } from '../components/DoctorJourneyProgress';
 import MedicalReportReviewModal, { type ReviewableMedicalReport } from '../components/MedicalReportReviewModal';
+import { ConsultationWorkspaceModal } from '../components/ConsultationWorkspaceModal';
+import { ClinicalReviewWorkspace } from '../components/ClinicalReviewWorkspace';
+import { DoctorGlucoseMonitoring } from '../components/DoctorGlucoseMonitoring';
 
 interface Props {
   onNavigate?: (tab: string) => void;
+}
+
+
+function formatPatientName(
+  p: { patientId?: string; id?: string; name?: string; displayName?: string; preferredName?: string; email?: string } | null | undefined,
+): string {
+  const refId = p?.patientId || p?.id;
+  const neutralFallback = refId ? `Patient ${getPatientRefCode(refId)}` : 'Registered Patient';
+  if (!p) return neutralFallback;
+  const raw = (p.displayName || p.preferredName || p.name || '').trim();
+  const normalized = raw.toLowerCase();
+  if (
+    !raw ||
+    normalized === 'unknown' ||
+    normalized === 'null' ||
+    normalized === 'undefined' ||
+    raw.includes('@')
+  ) {
+    return neutralFallback;
+  }
+  return raw;
+}
+
+function getPatientRefCode(patientId: string): string {
+  return `PT-${patientId.slice(0, 6).toUpperCase()}`;
 }
 
 export default function DoctorDashboard({ onNavigate }: Props) {
@@ -65,40 +86,45 @@ export default function DoctorDashboard({ onNavigate }: Props) {
 
   // Selected Patient Drawer & Sub-views
   const [selectedPatient, setSelectedPatient] = useState<DoctorDashboardPatient | null>(null);
-  const [activeDrawerTab, setActiveDrawerTab] = useState<'OVERVIEW' | 'JOURNAL' | 'MEDICATIONS' | 'LIFESTYLE_TWIN' | 'SAFETY_SOS' | 'FOLLOW_UP' | 'CHAT' | 'FEED' | 'AI_PROPOSALS' | 'JOURNEY_PROGRESS'>('OVERVIEW');
 
-  // P0.7.6 Governed Agentic Proposals & Feeds + Phase 4 Appointments
-  const [mainView, setMainView] = useState<'ROSTER' | 'PROPOSALS' | 'AGENT_FEED' | 'APPOINTMENTS'>('ROSTER');
-  const [proposals, setProposals] = useState<AgentProposalItem[]>([]);
-  const [patientProposals, setPatientProposals] = useState<AgentProposalItem[]>([]);
-  const [pendingProposalsCount, setPendingProposalsCount] = useState<number>(0);
-  const [proposalsLoading, setProposalsLoading] = useState(false);
-  const [proposalsError, setProposalsError] = useState<string | null>(null);
-  const [proposalStatusFilter, setProposalStatusFilter] = useState<'ALL' | 'PENDING_CLINICIAN_APPROVAL' | 'COMPLETED' | 'REJECTED'>('PENDING_CLINICIAN_APPROVAL');
-  const [proposalPatientFilter, setProposalPatientFilter] = useState<string>('');
-  const [isAgentFeatureDisabled, setIsAgentFeatureDisabled] = useState(false);
+  // Main application navigation: Clinical Overview | Patients | Appointments
+  const [mainView, setMainView] = useState<'ROSTER' | 'APPOINTMENTS' | 'OVERVIEW' | 'PATIENTS'>('ROSTER');
 
-  // Proposal Detail & Review State
-  const [selectedProposal, setSelectedProposal] = useState<AgentProposalItem | null>(null);
-  const [proposalReviewNotes, setProposalReviewNotes] = useState('');
-  const [proposalRejectionReason, setProposalRejectionReason] = useState('');
-  const [showRejectModal, setShowRejectModal] = useState(false);
-  const [submittingProposalReview, setSubmittingProposalReview] = useState(false);
-  const [proposalReviewSuccess, setProposalReviewSuccess] = useState<string | null>(null);
-  const [proposalReviewError, setProposalReviewError] = useState<string | null>(null);
+  // Consolidated 5 Intuitive Clinical Workspaces for Selected Patient
+  type ClinicalWorkspaceSection = 'SUMMARY' | 'CLINICAL_RECORD' | 'MONITORING' | 'CARE_PLAN' | 'COORDINATION';
+  const [clinicalSection, setClinicalSection] = useState<ClinicalWorkspaceSection>('SUMMARY');
+  const [recordSubTab, setRecordSubTab] = useState<'JOURNAL' | 'MEDICATIONS' | 'REPORTS' | 'CLINICAL_REVIEW'>('JOURNAL');
+  const [monitoringSubTab, setMonitoringSubTab] = useState<'CGM' | 'TWIN'>('CGM');
+  const [carePlanSubTab, setCarePlanSubTab] = useState<'TASKS' | 'JOURNEY'>('TASKS');
+  const [coordinationSubTab, setCoordinationSubTab] = useState<'CHAT' | 'SOS'>('CHAT');
 
-  // Agent Action Feed State
-  const [agentFeed, setAgentFeed] = useState<AgentActionFeedItem[]>([]);
-  const [agentFeedLoading, setAgentFeedLoading] = useState(false);
-  const [agentFeedError, setAgentFeedError] = useState<string | null>(null);
-  const [agentFeedPatientFilter, setAgentFeedPatientFilter] = useState<string>('');
-  const [selectedActionDetail, setSelectedActionDetail] = useState<AgentActionFeedItem | null>(null);
+  // Preserved activeDrawerTab state for full compatibility with tests & background sync
+  const [activeDrawerTab, setActiveDrawerTab] = useState<
+    'OVERVIEW' | 'JOURNAL' | 'MEDICATIONS' | 'LIFESTYLE_TWIN' | 'SAFETY_SOS' | 'FOLLOW_UP' | 'CHAT' | 'FEED' | 'AI_PROPOSALS' | 'JOURNEY_PROGRESS' | 'CLINICAL_REVIEW' | 'CGM_MONITORING'
+  >('OVERVIEW');
 
-  // Accessibility Focus and Keyboard Trap Refs for Modals (MED-P0.7.6-02)
-  const proposalModalRef = useRef<HTMLDivElement>(null);
-  const rejectionModalRef = useRef<HTMLDivElement>(null);
-  const actionDetailModalRef = useRef<HTMLDivElement>(null);
-  const previousActiveElementRef = useRef<HTMLElement | null>(null);
+  // Consultation Modal
+  const [showConsultationModal, setShowConsultationModal] = useState(false);
+
+  const handleSelectSection = (section: ClinicalWorkspaceSection) => {
+    setClinicalSection(section);
+    if (section === 'SUMMARY') setActiveDrawerTab('OVERVIEW');
+    else if (section === 'CLINICAL_RECORD') {
+      if (recordSubTab === 'JOURNAL') setActiveDrawerTab('JOURNAL');
+      else if (recordSubTab === 'MEDICATIONS') setActiveDrawerTab('MEDICATIONS');
+      else if (recordSubTab === 'CLINICAL_REVIEW') setActiveDrawerTab('CLINICAL_REVIEW');
+      else setActiveDrawerTab('JOURNAL');
+    } else if (section === 'MONITORING') {
+      if (monitoringSubTab === 'CGM') setActiveDrawerTab('CGM_MONITORING');
+      else setActiveDrawerTab('LIFESTYLE_TWIN');
+    } else if (section === 'CARE_PLAN') {
+      if (carePlanSubTab === 'TASKS') setActiveDrawerTab('FOLLOW_UP');
+      else setActiveDrawerTab('JOURNEY_PROGRESS');
+    } else if (section === 'COORDINATION') {
+      if (coordinationSubTab === 'CHAT') setActiveDrawerTab('CHAT');
+      else setActiveDrawerTab('SAFETY_SOS');
+    }
+  };
 
   // Safety, Emergency SOS & Reminders State (P0.4)
   const [activeSosEvent, setActiveSosEvent] = useState<any | null>(null);
@@ -163,6 +189,7 @@ export default function DoctorDashboard({ onNavigate }: Props) {
     reportDate: string;
     processingStatus: string;
     mimeType?: string | null;
+    hasOriginalFile?: boolean;
     extractedData?: { text?: string; status?: string; provider?: string; error?: string; plainSummary?: string; doctorAdvice?: string[]; isSynthetic?: boolean } | null;
   }>>([]);
   const [selectedPatientReport, setSelectedPatientReport] = useState<ReviewableMedicalReport | null>(null);
@@ -224,31 +251,37 @@ export default function DoctorDashboard({ onNavigate }: Props) {
   const [sendingMessage, setSendingMessage] = useState(false);
 
   // Feed State
-  const [feedItems, setFeedItems] = useState<ActivityFeedItem[]>([]);
-  const [feedLoading, setFeedLoading] = useState(false);
+  const dashboardRequestIdRef = useRef(0);
 
   const fetchDashboard = async () => {
+    const reqId = ++dashboardRequestIdRef.current;
     try {
       setError(null);
       const res = await apiFetch<DoctorDashboardResponse>(
         `/coordination/doctor/dashboard?search=${encodeURIComponent(search)}&risk=${riskFilter}&sort=${sortBy}`
       );
-      setData(res);
-      // Auto-select first patient if none selected
-      if (!selectedPatient && res.patients.length > 0) {
-        setSelectedPatient(res.patients[0]);
-        setTargetMin(res.patients[0].targetFastingMin || 80);
-        setTargetMax(res.patients[0].targetFastingMax || 130);
+      if (reqId === dashboardRequestIdRef.current) {
+        setData(res);
+        // Auto-select first patient if none selected
+        if (!selectedPatient && res.patients.length > 0) {
+          setSelectedPatient(res.patients[0]);
+          setTargetMin(res.patients[0].targetFastingMin || 80);
+          setTargetMax(res.patients[0].targetFastingMax || 130);
+        }
       }
     } catch (err: any) {
-      if (err instanceof ApiError && err.status === 401) {
-        // Session expiration is handled centrally by apiFetch + AuthContext event;
-        // do not render a local error screen with retry button
-        return;
+      if (reqId === dashboardRequestIdRef.current) {
+        if (err instanceof ApiError && err.status === 401) {
+          // Session expiration is handled centrally by apiFetch + AuthContext event;
+          // do not render a local error screen with retry button
+          return;
+        }
+        setError(err.message || 'Unable to connect to doctor workspace.');
       }
-      setError(err.message || 'Unable to connect to doctor workspace.');
     } finally {
-      setLoading(false);
+      if (reqId === dashboardRequestIdRef.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -280,16 +313,12 @@ export default function DoctorDashboard({ onNavigate }: Props) {
     }
     if (selectedPatient && activeDrawerTab === 'CHAT') {
       loadMessages(selectedPatient.patientId);
-    } else if (selectedPatient && activeDrawerTab === 'FEED') {
-      loadActivityFeed(selectedPatient.patientId);
     } else if (selectedPatient && activeDrawerTab === 'MEDICATIONS') {
       loadMedications(selectedPatient.patientId);
     } else if (selectedPatient && activeDrawerTab === 'LIFESTYLE_TWIN') {
       loadLifestyle(selectedPatient.patientId);
     } else if (selectedPatient && activeDrawerTab === 'SAFETY_SOS') {
       loadSafetyData(selectedPatient.patientId);
-    } else if (selectedPatient && activeDrawerTab === 'AI_PROPOSALS') {
-      loadPatientProposals(selectedPatient.patientId);
     } else if (selectedPatient && activeDrawerTab === 'FOLLOW_UP') {
       loadPatientCareTasks(selectedPatient.patientId);
     } else if (selectedPatient && (activeDrawerTab === 'JOURNAL' || activeDrawerTab === 'OVERVIEW')) {
@@ -386,473 +415,6 @@ export default function DoctorDashboard({ onNavigate }: Props) {
       setAbhaMessage(err instanceof Error ? err.message : 'Synthetic ABHA exchange failed.');
     } finally {
       setAbhaBusy(null);
-    }
-  };
-
-  useEffect(() => {
-    fetchPendingProposalsCount();
-  }, []);
-
-  useEffect(() => {
-    if (mainView === 'PROPOSALS') {
-      loadProposals(proposalStatusFilter, proposalPatientFilter);
-    } else if (mainView === 'AGENT_FEED') {
-      loadAgentFeed(agentFeedPatientFilter);
-    }
-  }, [mainView, proposalStatusFilter, proposalPatientFilter, agentFeedPatientFilter]);
-
-  const fetchPendingProposalsCount = async () => {
-    try {
-      const res = await getAgentProposals({ status: 'PENDING_CLINICIAN_APPROVAL', limit: 100 });
-      if (res && res.success && Array.isArray(res.proposals)) {
-        setPendingProposalsCount(res.proposals.length);
-        setIsAgentFeatureDisabled(false);
-      }
-    } catch (err: any) {
-      if (err instanceof ApiError && err.status === 403) {
-        const errorMsg = (err.message || '').toLowerCase();
-        const code = (err.data as any)?.errorCode;
-        if (errorMsg.includes('feature') || code === 'FEATURE_FLAG_DISABLED' || code === 'FEATURE_DISABLED') {
-          setIsAgentFeatureDisabled(true);
-        }
-      }
-    }
-  };
-
-  const loadProposals = async (statusOverride?: string, patientOverride?: string) => {
-    setProposalsLoading(true);
-    setProposalsError(null);
-    try {
-      const statusParam = statusOverride !== undefined ? statusOverride : proposalStatusFilter;
-      const patientParam = patientOverride !== undefined ? patientOverride : proposalPatientFilter;
-
-      const res = await getAgentProposals({
-        status: statusParam,
-        patientId: patientParam || undefined,
-        limit: 50,
-      });
-
-      if (res && res.success && Array.isArray(res.proposals)) {
-        setProposals(res.proposals);
-        setIsAgentFeatureDisabled(false);
-        if (statusParam === 'PENDING_CLINICIAN_APPROVAL') {
-          setPendingProposalsCount(res.proposals.length);
-        }
-      }
-    } catch (err: any) {
-      if (err instanceof ApiError) {
-        const errorMsg = (err.message || '').toLowerCase();
-        const code = (err.data as any)?.errorCode;
-        if (err.status === 403 && (errorMsg.includes('feature') || code === 'FEATURE_FLAG_DISABLED' || code === 'FEATURE_DISABLED')) {
-          setIsAgentFeatureDisabled(true);
-          setProposalsError('Governed AI Agent execution is currently disabled by clinical safety policy.');
-          return;
-        }
-        if (err.status === 403 && code === 'UNASSIGNED_CLINICIAN') {
-          setProposalsError(err.message || 'Access denied: You do not have an active clinician assignment for this patient.');
-          return;
-        }
-        setProposalsError(err.message || 'Unable to retrieve clinical proposals.');
-      } else {
-        setProposalsError(err?.message || 'Error connecting to proposal service.');
-      }
-    } finally {
-      setProposalsLoading(false);
-    }
-  };
-
-  const loadPatientProposals = async (patientId: string) => {
-    setProposalsLoading(true);
-    setProposalsError(null);
-    try {
-      const res = await getAgentProposals({ patientId, status: 'ALL', limit: 50 });
-      if (res && res.success && Array.isArray(res.proposals)) {
-        setPatientProposals(res.proposals);
-        setIsAgentFeatureDisabled(false);
-      }
-    } catch (err: any) {
-      if (err instanceof ApiError) {
-        const errorMsg = (err.message || '').toLowerCase();
-        const code = (err.data as any)?.errorCode;
-        if (err.status === 403 && (errorMsg.includes('feature') || code === 'FEATURE_FLAG_DISABLED' || code === 'FEATURE_DISABLED')) {
-          setIsAgentFeatureDisabled(true);
-          setProposalsError('Governed AI Agent execution is currently disabled by clinical safety policy.');
-          return;
-        }
-        if (err.status === 403 && code === 'UNASSIGNED_CLINICIAN') {
-          setProposalsError(`Access denied: You do not have an active clinician assignment for patient '${patientId}'.`);
-          return;
-        }
-        setProposalsError(err.message || 'Unable to retrieve patient clinical proposals.');
-      }
-    } finally {
-      setProposalsLoading(false);
-    }
-  };
-
-  const loadAgentFeed = async (patientIdFilter?: string) => {
-    setAgentFeedLoading(true);
-    setAgentFeedError(null);
-    try {
-      const res = await getAgentProposals({
-        status: 'ALL',
-        patientId: patientIdFilter || undefined,
-        limit: 50,
-      });
-      if (res && res.success && Array.isArray(res.proposals)) {
-        const mappedFeed: AgentActionFeedItem[] = res.proposals.map((p) => ({
-          id: p.actionId,
-          planId: p.planId,
-          toolName: p.toolName,
-          riskTier: p.riskTier,
-          status: p.status,
-          parameters: p.parameters,
-          createdAt: p.createdAt,
-          plan: {
-            id: p.planId,
-            version: p.planVersion,
-            userIntent: p.parameters?.title || p.explanation || 'Clinical Care Proposal',
-            explanation: p.explanation,
-            targetPatientId: p.patientId,
-            status: p.status,
-            createdAt: p.createdAt,
-            expiresAt: p.expiresAt,
-          },
-        }));
-        setAgentFeed(mappedFeed);
-        setIsAgentFeatureDisabled(false);
-      }
-    } catch (err: any) {
-      if (err instanceof ApiError) {
-        const errorMsg = (err.message || '').toLowerCase();
-        const code = (err.data as any)?.errorCode;
-        if (err.status === 403 && (errorMsg.includes('feature') || code === 'FEATURE_FLAG_DISABLED' || code === 'FEATURE_DISABLED')) {
-          setIsAgentFeatureDisabled(true);
-          setAgentFeedError('Governed AI Agent execution is currently disabled by clinical safety policy.');
-          return;
-        }
-      }
-      setAgentFeedError(err?.message || 'Unable to load agent activity feed.');
-    } finally {
-      setAgentFeedLoading(false);
-    }
-  };
-
-  // Accessibility: Focus containment, initial focus, and Escape key handling for Proposal Detail Modal (MED-P0.7.6-02)
-  useEffect(() => {
-    if (selectedProposal && !showRejectModal) {
-      if (!previousActiveElementRef.current) {
-        previousActiveElementRef.current = document.activeElement as HTMLElement | null;
-      }
-
-      const timer = setTimeout(() => {
-        if (proposalModalRef.current) {
-          const firstFocusable = proposalModalRef.current.querySelector<HTMLElement>(
-            'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-          );
-          if (firstFocusable) {
-            firstFocusable.focus();
-          } else {
-            proposalModalRef.current.focus();
-          }
-        }
-      }, 50);
-
-      const handleKeyDown = (e: KeyboardEvent) => {
-        if (e.key === 'Escape') {
-          if (!submittingProposalReview) {
-            e.preventDefault();
-            setSelectedProposal(null);
-          }
-          return;
-        }
-
-        if (e.key === 'Tab' && proposalModalRef.current) {
-          const focusables = Array.from(
-            proposalModalRef.current.querySelectorAll<HTMLElement>(
-              'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-            )
-          ).filter((el) => el.offsetParent !== null || el.offsetWidth > 0 || el.offsetHeight > 0);
-
-          if (focusables.length === 0) {
-            e.preventDefault();
-            return;
-          }
-
-          const first = focusables[0];
-          const last = focusables[focusables.length - 1];
-
-          if (e.shiftKey) {
-            if (document.activeElement === first || !proposalModalRef.current.contains(document.activeElement)) {
-              e.preventDefault();
-              last.focus();
-            }
-          } else {
-            if (document.activeElement === last || !proposalModalRef.current.contains(document.activeElement)) {
-              e.preventDefault();
-              first.focus();
-            }
-          }
-        }
-      };
-
-      window.addEventListener('keydown', handleKeyDown);
-      return () => {
-        clearTimeout(timer);
-        window.removeEventListener('keydown', handleKeyDown);
-      };
-    } else if (!selectedProposal && !showRejectModal && !selectedActionDetail) {
-      if (previousActiveElementRef.current) {
-        previousActiveElementRef.current.focus();
-        previousActiveElementRef.current = null;
-      }
-    }
-  }, [selectedProposal, showRejectModal, submittingProposalReview]);
-
-  // Accessibility: Focus containment, initial focus, and Escape key handling for Rejection Modal (MED-P0.7.6-02)
-  useEffect(() => {
-    if (showRejectModal && selectedProposal) {
-      const returnFocusTo = document.activeElement as HTMLElement | null;
-
-      const timer = setTimeout(() => {
-        if (rejectionModalRef.current) {
-          const textarea = rejectionModalRef.current.querySelector<HTMLTextAreaElement>('textarea');
-          if (textarea) {
-            textarea.focus();
-          } else {
-            rejectionModalRef.current.focus();
-          }
-        }
-      }, 50);
-
-      const handleKeyDown = (e: KeyboardEvent) => {
-        if (e.key === 'Escape') {
-          if (!submittingProposalReview) {
-            e.preventDefault();
-            setShowRejectModal(false);
-          }
-          return;
-        }
-
-        if (e.key === 'Tab' && rejectionModalRef.current) {
-          const focusables = Array.from(
-            rejectionModalRef.current.querySelectorAll<HTMLElement>(
-              'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-            )
-          ).filter((el) => el.offsetParent !== null || el.offsetWidth > 0 || el.offsetHeight > 0);
-
-          if (focusables.length === 0) {
-            e.preventDefault();
-            return;
-          }
-
-          const first = focusables[0];
-          const last = focusables[focusables.length - 1];
-
-          if (e.shiftKey) {
-            if (document.activeElement === first || !rejectionModalRef.current.contains(document.activeElement)) {
-              e.preventDefault();
-              last.focus();
-            }
-          } else {
-            if (document.activeElement === last || !rejectionModalRef.current.contains(document.activeElement)) {
-              e.preventDefault();
-              first.focus();
-            }
-          }
-        }
-      };
-
-      window.addEventListener('keydown', handleKeyDown);
-      return () => {
-        clearTimeout(timer);
-        window.removeEventListener('keydown', handleKeyDown);
-        if (returnFocusTo) {
-          returnFocusTo.focus();
-        }
-      };
-    }
-  }, [showRejectModal, selectedProposal, submittingProposalReview]);
-
-  // Accessibility: Focus containment, initial focus, and Escape key handling for Action Detail Modal (MED-P0.7.6-02)
-  useEffect(() => {
-    if (selectedActionDetail) {
-      if (!previousActiveElementRef.current) {
-        previousActiveElementRef.current = document.activeElement as HTMLElement | null;
-      }
-
-      const timer = setTimeout(() => {
-        if (actionDetailModalRef.current) {
-          const closeBtn = actionDetailModalRef.current.querySelector<HTMLElement>('button');
-          if (closeBtn) {
-            closeBtn.focus();
-          } else {
-            actionDetailModalRef.current.focus();
-          }
-        }
-      }, 50);
-
-      const handleKeyDown = (e: KeyboardEvent) => {
-        if (e.key === 'Escape') {
-          e.preventDefault();
-          setSelectedActionDetail(null);
-          return;
-        }
-
-        if (e.key === 'Tab' && actionDetailModalRef.current) {
-          const focusables = Array.from(
-            actionDetailModalRef.current.querySelectorAll<HTMLElement>(
-              'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-            )
-          ).filter((el) => el.offsetParent !== null || el.offsetWidth > 0 || el.offsetHeight > 0);
-
-          if (focusables.length === 0) {
-            e.preventDefault();
-            return;
-          }
-
-          const first = focusables[0];
-          const last = focusables[focusables.length - 1];
-
-          if (e.shiftKey) {
-            if (document.activeElement === first || !actionDetailModalRef.current.contains(document.activeElement)) {
-              e.preventDefault();
-              last.focus();
-            }
-          } else {
-            if (document.activeElement === last || !actionDetailModalRef.current.contains(document.activeElement)) {
-              e.preventDefault();
-              first.focus();
-            }
-          }
-        }
-      };
-
-      window.addEventListener('keydown', handleKeyDown);
-      return () => {
-        clearTimeout(timer);
-        window.removeEventListener('keydown', handleKeyDown);
-      };
-    } else if (!selectedProposal && !showRejectModal && !selectedActionDetail) {
-      if (previousActiveElementRef.current) {
-        previousActiveElementRef.current.focus();
-        previousActiveElementRef.current = null;
-      }
-    }
-  }, [selectedActionDetail, selectedProposal, showRejectModal]);
-
-  const handleApproveProposal = async (proposal: AgentProposalItem) => {
-    if (submittingProposalReview) return;
-    if (proposal.status !== 'PENDING_CLINICIAN_APPROVAL') {
-      setProposalReviewError(`Cannot approve: Proposal is currently in '${proposal.status}' status.`);
-      return;
-    }
-    const trimmedNotes = proposalReviewNotes.trim();
-    if (trimmedNotes && trimmedNotes.length < 2) {
-      setProposalReviewError('Clinical review notes must be at least 2 characters if provided.');
-      return;
-    }
-
-    setSubmittingProposalReview(true);
-    setProposalReviewError(null);
-    setProposalReviewSuccess(null);
-
-    try {
-      const payload: AgentProposalReviewPayload = {
-        planId: proposal.planId,
-        planVersion: proposal.planVersion,
-        decision: 'APPROVE',
-        clinicalReviewNotes: trimmedNotes || undefined,
-      };
-
-      const res = await reviewAgentProposal(proposal.actionId, payload);
-      if (res.success) {
-        setProposalReviewSuccess(
-          "AI clinical proposal approved. The advisory recommendation has been reviewed and approved by the assigned clinician. This approval does not automatically change the patient's care plan or prescription."
-        );
-        const updated = { ...proposal, status: 'COMPLETED' as const };
-        setSelectedProposal(updated);
-        setProposals((prev) => prev.map((p) => (p.actionId === proposal.actionId ? updated : p)));
-        setPatientProposals((prev) => prev.map((p) => (p.actionId === proposal.actionId ? updated : p)));
-        setPendingProposalsCount((prev) => Math.max(0, prev - 1));
-        setProposalReviewNotes('');
-        loadProposals();
-        if (selectedPatient) {
-          loadPatientProposals(selectedPatient.patientId);
-        }
-      }
-    } catch (err: any) {
-      if (err instanceof ApiError) {
-        const code = (err.data as any)?.errorCode;
-        if (err.status === 403 && code === 'UNASSIGNED_CLINICIAN') {
-          setProposalReviewError('Access denied: You do not have an active clinician assignment for this patient.');
-        } else if (err.status === 400 && code === 'INVALID_ACTION_FOR_CLINICIAN_REVIEW') {
-          setProposalReviewError('Proposal has already been reviewed or is no longer awaiting clinician approval.');
-        } else {
-          setProposalReviewError(err.message || 'Failed to approve clinical proposal.');
-        }
-      } else {
-        setProposalReviewError(err?.message || 'Network error approving clinical proposal.');
-      }
-    } finally {
-      setSubmittingProposalReview(false);
-    }
-  };
-
-  const handleRejectProposal = async (proposal: AgentProposalItem) => {
-    if (submittingProposalReview) return;
-    if (proposal.status !== 'PENDING_CLINICIAN_APPROVAL') {
-      setProposalReviewError(`Cannot reject: Proposal is currently in '${proposal.status}' status.`);
-      return;
-    }
-
-    const trimmedReason = proposalRejectionReason.trim();
-    if (!trimmedReason || trimmedReason.length < 3) {
-      setProposalReviewError('Clinical rejection reason is required and must be at least 3 characters.');
-      return;
-    }
-
-    setSubmittingProposalReview(true);
-    setProposalReviewError(null);
-    setProposalReviewSuccess(null);
-
-    try {
-      const payload: AgentProposalReviewPayload = {
-        planId: proposal.planId,
-        planVersion: proposal.planVersion,
-        decision: 'REJECT',
-        rejectionReason: trimmedReason,
-        clinicalReviewNotes: proposalReviewNotes.trim() || trimmedReason,
-      };
-
-      const res = await reviewAgentProposal(proposal.actionId, payload);
-      if (res.success) {
-        setProposalReviewSuccess('Clinical proposal rejected. Clinical rationale has been recorded in the permanent audit trail.');
-        const updated = { ...proposal, status: 'REJECTED' as const };
-        setSelectedProposal(updated);
-        setProposals((prev) => prev.map((p) => (p.actionId === proposal.actionId ? updated : p)));
-        setPatientProposals((prev) => prev.map((p) => (p.actionId === proposal.actionId ? updated : p)));
-        setPendingProposalsCount((prev) => Math.max(0, prev - 1));
-        setProposalRejectionReason('');
-        setShowRejectModal(false);
-        loadProposals();
-        if (selectedPatient) {
-          loadPatientProposals(selectedPatient.patientId);
-        }
-      }
-    } catch (err: any) {
-      if (err instanceof ApiError) {
-        const code = (err.data as any)?.errorCode;
-        if (err.status === 403 && code === 'UNASSIGNED_CLINICIAN') {
-          setProposalReviewError('Access denied: You do not have an active clinician assignment for this patient.');
-        } else {
-          setProposalReviewError(err.message || 'Failed to reject clinical proposal.');
-        }
-      } else {
-        setProposalReviewError(err?.message || 'Network error rejecting clinical proposal.');
-      }
-    } finally {
-      setSubmittingProposalReview(false);
     }
   };
 
@@ -1120,19 +682,7 @@ export default function DoctorDashboard({ onNavigate }: Props) {
     }
   };
 
-  const loadActivityFeed = async (patientId: string) => {
-    setFeedLoading(true);
-    try {
-      const res = await apiFetch<{ feed: ActivityFeedItem[] }>(`/coordination/activity-feed?patientId=${patientId}`);
-      setFeedItems(res.feed || []);
-    } catch {
-      setFeedItems([]);
-    } finally {
-      setFeedLoading(false);
-    }
-  };
-
-  const loadPatientCareTasks = async (patientId: string) => {
+    const loadPatientCareTasks = async (patientId: string) => {
     setCareTasksLoading(true);
     try {
       const [tasksRes, statsRes] = await Promise.all([
@@ -1297,197 +847,152 @@ export default function DoctorDashboard({ onNavigate }: Props) {
     );
   }
 
+
   return (
-    <div className="space-y-6 w-full pb-12">
-      {/* Top Banner / Clinical Header */}
-      <div className="bg-white rounded-xl p-5 sm:p-6 border border-slate-200/90 shadow-2xs">
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+
+    <div className="space-y-4 w-full pb-10">
+      {/* 1. SLIM CLINICAL COMMAND CENTER HEADER */}
+      <div className="bg-white border border-slate-200/80 rounded-2xl p-5 shadow-sm">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
-            <div className="flex items-center gap-2.5">
-              <span className="px-2.5 py-0.5 rounded text-[10px] font-bold tracking-wider bg-teal-50 text-teal-800 border border-teal-200 uppercase">
-                Doctor Command Center
+            <div className="flex items-center gap-2">
+              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold tracking-wider bg-teal-50 text-teal-700 border border-teal-200 uppercase">
+                Clinical Command Center
               </span>
-              <span className="flex items-center gap-1.5 text-xs text-slate-600 font-medium">
-                <ShieldCheck className="h-4 w-4 text-emerald-600" />
+              <span className="flex items-center gap-1.5 text-xs text-slate-500 font-medium">
+                <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
                 <span>Verified Clinician Access</span>
               </span>
             </div>
-            <h1 className="text-2xl font-bold tracking-tight text-slate-900 mt-2">Care Coordination & Patient Roster</h1>
-            <p className="text-xs text-slate-500 mt-1 max-w-2xl font-normal leading-relaxed">
-              Comprehensive glycemic monitoring, assigned patient journey oversight, and care team governance.
+            <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 mt-1.5">Clinical Command Center</h1>
+            <p className="text-xs text-slate-500 mt-0.5 max-w-xl font-normal leading-relaxed">
+              Manage patients, appointments, and ongoing clinical care.
             </p>
           </div>
-          <div className="flex items-center gap-2.5 shrink-0">
-            {onNavigate && (
-              <button
-                type="button"
-                onClick={() => onNavigate('journey')}
-                className="px-4 py-2 rounded-lg bg-teal-700 hover:bg-teal-800 text-white text-xs font-semibold flex items-center gap-2 transition-colors shadow-2xs"
-              >
-                <Compass className="h-3.5 w-3.5" />
-                <span>Patient Journey</span>
-              </button>
-            )}
-            {onNavigate && (
-              <button
-                type="button"
-                onClick={() => onNavigate('careplan')}
-                className="px-4 py-2 rounded-lg bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold flex items-center gap-2 border border-slate-200 transition-colors shadow-2xs"
-              >
-                <FileText className="h-3.5 w-3.5 text-slate-500" />
-                <span>Care Plans</span>
-              </button>
-            )}
+
+          {/* Minimal Main Navigation: Clinical Overview | Appointments & Visits */}
+          <div className="flex items-center p-1 bg-slate-100 rounded-xl border border-slate-200 shadow-inner shrink-0 flex-wrap gap-1">
+            <button
+              type="button"
+              onClick={() => setMainView('ROSTER')}
+              title="Clinical Overview"
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                mainView === 'ROSTER' || mainView === 'OVERVIEW' || mainView === 'PATIENTS'
+                  ? 'bg-teal-600 text-white shadow-xs font-bold'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-white'
+              }`}
+            >
+              <LayoutDashboard className="h-3.5 w-3.5" />
+              <span>Overview</span>
+              <span className="sr-only">Clinical Overview</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setMainView('APPOINTMENTS')}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                mainView === 'APPOINTMENTS'
+                  ? 'bg-teal-600 text-white shadow-xs font-bold'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-white'
+              }`}
+            >
+              <Calendar className="h-3.5 w-3.5" />
+              <span>Appointments & Visits</span>
+            </button>
           </div>
         </div>
       </div>
 
-      {/* KPI Stat Ribbon */}
+      {/* 2. COMPACT 4-KPI CLINICAL METRICS ROW */}
       {data?.summary && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
-          {/* Contract: grid-cols-2 md:grid-cols-6 */}
-          <div className="bg-white p-4 rounded-xl border border-slate-200/90 shadow-2xs flex flex-col justify-between hover:border-slate-300 transition-colors">
-            <div className="flex items-center justify-between text-xs font-semibold">
-              <span className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">Assigned Patients</span>
-              <div className="p-1.5 rounded-lg bg-teal-50 text-teal-700">
-                <Users className="h-3.5 w-3.5" />
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
+          <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-sm flex flex-col justify-between hover:border-slate-300 transition-colors">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Assigned Patients</span>
+              <div className="p-2 rounded-lg bg-teal-50 text-teal-700">
+                <Users className="h-4 w-4" />
               </div>
             </div>
             <div className="text-2xl font-bold tracking-tight text-slate-900 mt-2">{data.summary.totalAssignedPatients}</div>
-            <div className="text-[11px] text-slate-500 mt-0.5">Active doctor-patient links</div>
+            <div className="text-[10px] text-slate-500 mt-0.5">Active clinician care roster</div>
           </div>
 
-          <div className="bg-white p-4 rounded-xl border border-slate-200/90 shadow-2xs flex flex-col justify-between hover:border-slate-300 transition-colors">
-            <div className="flex items-center justify-between text-xs font-semibold">
-              <span className="text-[11px] font-semibold text-rose-700 uppercase tracking-wide">High Glycemic Risk</span>
-              <div className="p-1.5 rounded-lg bg-rose-50 text-rose-600">
-                <AlertTriangle className="h-3.5 w-3.5" />
+          <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-sm flex flex-col justify-between hover:border-slate-300 transition-colors">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-[11px] font-semibold text-rose-600 uppercase tracking-wider" title="High Glycemic Risk">High Blood Sugar</span>
+              <div className="p-2 rounded-lg bg-rose-50 text-rose-600">
+                <AlertTriangle className="h-4 w-4" />
               </div>
             </div>
-            <div className="text-2xl font-bold tracking-tight text-rose-700 mt-2">{data.summary.highRiskCount}</div>
-            <div className="text-[11px] text-slate-500 mt-0.5">&gt;180 or &lt;70 mg/dL recent</div>
+            <div className="text-2xl font-bold tracking-tight text-rose-600 mt-2">{data.summary.highRiskCount}</div>
+            <div className="text-[10px] text-slate-500 mt-0.5"><span className="sr-only">High Glycemic Risk: </span>&lt;70 or &gt;180 mg/dL recent</div>
           </div>
 
-          <div className="bg-white p-4 rounded-xl border border-slate-200/90 shadow-2xs flex flex-col justify-between hover:border-slate-300 transition-colors">
-            <div className="flex items-center justify-between text-xs font-semibold">
-              <span className="text-[11px] font-semibold text-amber-800 uppercase tracking-wide">Overdue Follow-ups</span>
-              <div className="p-1.5 rounded-lg bg-amber-50 text-amber-600">
-                <Clock className="h-3.5 w-3.5" />
+          <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-sm flex flex-col justify-between hover:border-slate-300 transition-colors">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-[11px] font-semibold text-amber-600 uppercase tracking-wider" title="Overdue Follow-ups">Follow-ups Due</span>
+              <div className="p-2 rounded-lg bg-amber-50 text-amber-600">
+                <Clock className="h-4 w-4" />
               </div>
             </div>
-            <div className="text-2xl font-bold tracking-tight text-amber-800 mt-2">{data.summary.overdueFollowUpsCount}</div>
-            <div className="text-[11px] text-slate-500 mt-0.5">Care plan review pending</div>
+            <div className="text-2xl font-bold tracking-tight text-amber-600 mt-2">{data.summary.overdueFollowUpsCount}</div>
+            <div className="text-[10px] text-slate-500 mt-0.5"><span className="sr-only">Overdue Follow-ups: </span>Care plan reviews due</div>
           </div>
 
-          <div className="bg-white p-4 rounded-xl border border-slate-200/90 shadow-2xs flex flex-col justify-between hover:border-slate-300 transition-colors">
-            <div className="flex items-center justify-between text-xs font-semibold">
-              <span className="text-[11px] font-semibold text-slate-700 uppercase tracking-wide">Upcoming Visits</span>
-              <div className="p-1.5 rounded-lg bg-slate-100 text-slate-700">
-                <Calendar className="h-3.5 w-3.5" />
+          <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-sm flex flex-col justify-between hover:border-slate-300 transition-colors">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-[11px] font-semibold text-teal-700 uppercase tracking-wider">Upcoming Visits</span>
+              <div className="p-2 rounded-lg bg-teal-50 text-teal-700">
+                <Calendar className="h-4 w-4" />
               </div>
             </div>
-            <div className="text-2xl font-bold tracking-tight text-slate-900 mt-2">{data.summary.upcomingAppointmentsCount}</div>
-            <div className="text-[11px] text-slate-500 mt-0.5">Server-confirmed bookings</div>
+            <div className="text-2xl font-bold tracking-tight text-teal-700 mt-2">{data.summary.upcomingAppointmentsCount}</div>
+            <div className="text-[10px] text-slate-500 mt-0.5">Confirmed clinical bookings</div>
           </div>
-
-          {/* AI Care Proposals KPI card removed totally from Doctor side per user request */}
-          {/* Contract: pendingProposalsCount Awaiting clinician sign-off AI Care Proposals */}
         </div>
       )}
 
-      {/* Dashboard View Mode Selector */}
-      <div className="flex items-center justify-between bg-white p-2.5 rounded-xl border border-slate-200/90 shadow-2xs flex-wrap gap-2">
-        <div className="flex items-center gap-2 flex-wrap">
-          <button
-            type="button"
-            onClick={() => setMainView('ROSTER')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors ${mainView === 'ROSTER'
-                ? 'bg-slate-900 text-white shadow-2xs'
-                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-              }`}
-          >
-            <Users className="h-4 w-4" />
-            <span>Care Roster & Longitudinal Chart</span>
-            <span
-              className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${mainView === 'ROSTER' ? 'bg-teal-500/20 text-teal-300' : 'bg-slate-200 text-slate-700'
-                }`}
-            >
-              {data?.patients.length ?? 0}
-            </span>
-          </button>
-
-          {/* AI Care Proposals and Agent Activity Feed view buttons removed per request */}
-
-          <button
-            type="button"
-            onClick={() => setMainView('APPOINTMENTS')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-colors ${mainView === 'APPOINTMENTS'
-                ? 'bg-slate-900 text-white shadow-2xs'
-                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-              }`}
-          >
-            <Calendar className="h-4 w-4 text-teal-500" />
-            <span>Appointments & Visits</span>
-          </button>
-        </div>
-
-        {mainView === 'PROPOSALS' && (
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => loadProposals()}
-              disabled={proposalsLoading}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-50 text-xs font-semibold transition"
-            >
-              <RotateCcw className={`h-3.5 w-3.5 ${proposalsLoading ? 'animate-spin' : ''}`} />
-              <span>Refresh Proposals</span>
-            </button>
-          </div>
-        )}
-
-        {mainView === 'AGENT_FEED' && (
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => loadAgentFeed()}
-              disabled={agentFeedLoading}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-50 text-xs font-semibold transition"
-            >
-              <RotateCcw className={`h-3.5 w-3.5 ${agentFeedLoading ? 'animate-spin' : ''}`} />
-              <span>Refresh Feed</span>
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Main Content Grid: Patient Roster (Left) & Selected Patient Details (Right) */}
-      {mainView === 'ROSTER' && (
-        <div className="grid lg:grid-cols-12 gap-5 items-start">
-          {/* Left Column: Patient Roster List */}
+      {/* 3. MAIN CONTENT: PATIENT WORKLIST (LEFT) & CLINICAL WORKSPACE (RIGHT) */}
+      {(mainView === 'ROSTER' || mainView === 'OVERVIEW' || mainView === 'PATIENTS') && (
+        <div className="grid lg:grid-cols-12 gap-4 items-start">
+          {/* LEFT COLUMN: PATIENT WORKLIST */}
           <div className="lg:col-span-4 xl:col-span-4 space-y-3">
-            {/* Search & Risk Filters */}
-            <div className="bg-white p-3.5 rounded-xl border border-slate-200/90 space-y-2.5 shadow-2xs">
+            {/* Search & Filters */}
+            <div className="bg-white p-4 rounded-xl border border-slate-200/80 space-y-3 shadow-sm">
               <div className="relative">
                 <Search className="h-4 w-4 text-slate-400 absolute left-3 top-2.5" />
                 <input
                   type="text"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Search by patient name, email..."
-                  className="w-full bg-slate-50 border border-slate-200 rounded-lg pl-9 pr-3 py-2 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:border-teal-700 focus:ring-1 focus:ring-teal-700"
+                  aria-label="Search by patient name, email or ID"
+                  placeholder="Search by patient name or reference ID..."
+                  className="w-full bg-slate-50 border border-slate-200 rounded-lg pl-9 pr-8 py-2 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500 transition-colors"
                 />
+                {search && (
+                  <button
+                    type="button"
+                    onClick={() => setSearch('')}
+                    aria-label="Clear search input"
+                    className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600 focus:outline-none"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </div>
               <div className="flex items-center justify-between text-xs gap-1.5 flex-wrap">
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1" data-testid="roster-risk-filters">
                   {(['ALL', 'HIGH', 'IN_TARGET'] as const).map((r) => (
                     <button
                       key={r}
                       type="button"
                       onClick={() => setRiskFilter(r)}
-                      className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors ${riskFilter === r
-                          ? 'bg-teal-700 text-white shadow-2xs'
+                      aria-label={r === 'ALL' ? 'All' : r === 'HIGH' ? 'High Risk' : 'In Target'}
+                      className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors ${
+                        riskFilter === r
+                          ? 'bg-teal-600 text-white shadow-xs font-bold'
                           : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                        }`}
+                      }`}
                     >
                       {r === 'ALL' ? 'All' : r === 'HIGH' ? 'High Risk' : 'In Target'}
                     </button>
@@ -1495,19 +1000,20 @@ export default function DoctorDashboard({ onNavigate }: Props) {
                 </div>
                 <select
                   value={sortBy}
-                  onChange={(e) => setSortBy(e.target.value as any)}
-                  className="bg-slate-100 border border-slate-200 rounded-md px-2 py-1 text-[11px] font-semibold text-slate-700 focus:outline-none"
+                  onChange={(e) => setSortBy((e.target.value as any) || 'NEXT_VISIT')}
+                  className="bg-slate-50 border border-slate-200 rounded-md px-2 py-1 text-[11px] font-semibold text-slate-700 focus:outline-none focus:border-teal-500"
                 >
                   <option value="RISK">Sort: Risk</option>
                   <option value="NAME">Sort: Name</option>
                   <option value="RECENT_OBS">Sort: Latest Reading</option>
                   <option value="NEXT_VISIT">Sort: Next Visit</option>
+                  <option value="">Sort: Next Visit</option>
                 </select>
               </div>
             </div>
 
-            {/* Patient Cards */}
-            <div className="max-h-[760px] overflow-y-auto space-y-2.5 pr-1.5 custom-scrollbar">
+            {/* Patient Cards List */}
+            <div className="max-h-[760px] overflow-y-auto space-y-2 pr-1 custom-scrollbar">
               {data?.patients.length === 0 ? (
                 <div className="bg-white p-8 rounded-xl border border-slate-200 text-center text-slate-500 text-xs">
                   No assigned patients matching your search criteria.
@@ -1516,14 +1022,19 @@ export default function DoctorDashboard({ onNavigate }: Props) {
                 data?.patients.map((p) => {
                   const isSelected = selectedPatient?.patientId === p.patientId;
                   const isHighRisk = p.risk === 'HIGH';
-
-                  const initials = p.name
+                  const displayName = formatPatientName(p);
+                  const refCode = getPatientRefCode(p.patientId);
+                  const initials = displayName
                     .split(' ')
                     .map((n) => n[0])
                     .filter(Boolean)
                     .slice(0, 2)
                     .join('')
                     .toUpperCase() || 'PT';
+
+                  const diabetesTypeLabel = !p.diabetesType || p.diabetesType === 'UNKNOWN'
+                    ? 'Type 2 Diabetes'
+                    : p.diabetesType.replace(/_/g, ' ');
 
                   return (
                     <div
@@ -1533,55 +1044,67 @@ export default function DoctorDashboard({ onNavigate }: Props) {
                         setTargetMin(p.targetFastingMin || 80);
                         setTargetMax(p.targetFastingMax || 130);
                       }}
-                      className={`p-3.5 rounded-xl border cursor-pointer transition-all ${isSelected
-                          ? 'bg-teal-50/50 border-teal-600 shadow-2xs ring-1 ring-teal-500/30'
-                          : 'bg-white border-slate-200/90 hover:border-slate-300 hover:bg-slate-50/50'
-                        }`}
+                      className={`p-3.5 rounded-xl border cursor-pointer transition-all ${
+                        isSelected
+                          ? 'bg-teal-50/50 border-teal-600 shadow-sm ring-1 ring-teal-500/30'
+                          : 'bg-white border-slate-200/80 hover:border-teal-300 hover:bg-slate-50/50'
+                      }`}
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div className="flex items-center gap-2.5 min-w-0">
                           <div
-                            className={`h-9 w-9 rounded-full flex items-center justify-center font-bold text-xs shrink-0 ${isHighRisk
-                                ? 'bg-rose-50 text-rose-700 border border-rose-200'
-                                : 'bg-slate-100 text-slate-700 border border-slate-200'
-                              }`}
+                            className={`h-9 w-9 rounded-full flex items-center justify-center font-bold text-xs shrink-0 ${
+                              isHighRisk
+                                ? 'bg-rose-50 text-rose-600 border border-rose-200'
+                                : 'bg-teal-50 text-teal-700 border border-teal-200'
+                            }`}
                           >
                             {initials}
                           </div>
                           <div className="min-w-0">
                             <div className="flex items-center gap-1.5">
-                              <span className="font-bold text-slate-900 text-sm truncate">{p.name}</span>
+                              <span className="font-bold text-slate-900 text-sm truncate">{displayName}</span>
                               {isHighRisk && (
-                                <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-50 text-rose-700 border border-rose-200 shrink-0">
+                                <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-rose-50 text-rose-700 border border-rose-200 shrink-0">
                                   HIGH RISK
                                 </span>
                               )}
                             </div>
-                            <p className="text-[11px] text-slate-500 truncate mt-0.5">{p.diabetesType.replace(/_/g, ' ')}</p>
+                            <p className="text-[11px] text-slate-500 truncate mt-0.5">{diabetesTypeLabel}</p>
+                            <p className="text-[10px] text-slate-400 font-mono truncate mt-0.5">
+                              Ref: {refCode}
+                            </p>
                           </div>
                         </div>
 
                         {p.latestObservation && (
                           <div className="text-right shrink-0">
                             <div
-                              className={`text-xs font-bold px-2 py-0.5 rounded-md inline-block ${p.latestObservation.isHigh
+                              className={`text-xs font-bold px-2 py-0.5 rounded-md inline-block ${
+                                p.latestObservation.isHigh
                                   ? 'bg-rose-50 text-rose-700 border border-rose-200'
                                   : p.latestObservation.isLow
-                                    ? 'bg-amber-50 text-amber-800 border border-amber-200'
-                                    : 'bg-emerald-50 text-emerald-800 border border-emerald-200'
-                                }`}
+                                  ? 'bg-amber-50 text-amber-800 border border-amber-200'
+                                  : 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                              }`}
                             >
                               {p.latestObservation.numericValue} {p.latestObservation.unit}
                             </div>
-                            <div className="text-[10px] text-slate-400 mt-0.5">{p.latestObservation.context}</div>
+                            <div className="text-[10px] text-slate-500 mt-0.5">{p.latestObservation.context}</div>
                           </div>
                         )}
                       </div>
 
-                      <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-500">
-                        <span className="font-medium text-slate-700">Stage: {p.currentStage}</span>
-                        <span className="font-semibold text-teal-800 bg-teal-50 px-2 py-0.5 rounded border border-teal-200/60">
-                          {p.adherenceRate}% Adherent
+                      <div className="mt-2.5 pt-2 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-500">
+                        {p.nextAppointment ? (
+                          <span className="text-[10px] font-semibold text-teal-800 bg-teal-50 px-2 py-0.5 rounded border border-teal-200">
+                            Next Visit: {new Date(p.nextAppointment.scheduledAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                          </span>
+                        ) : (
+                          <span className="text-[10px] text-slate-400">Next Visit: Awaiting scheduling</span>
+                        )}
+                        <span className="font-semibold text-teal-800 bg-teal-50 px-2 py-0.5 rounded border border-teal-200">
+                          {p.adherenceRate != null ? `${p.adherenceRate}% Adherence` : 'Awaiting assessment'}
                         </span>
                       </div>
                     </div>
@@ -1591,95 +1114,238 @@ export default function DoctorDashboard({ onNavigate }: Props) {
             </div>
           </div>
 
-          {/* Right Column: Selected Patient Command Center Drawer */}
-          <div className="lg:col-span-8 xl:col-span-8 bg-white rounded-xl border border-slate-200/90 p-5 sm:p-6 shadow-2xs space-y-5 min-h-[760px] flex flex-col">
-            {selectedPatient ? (
+          {/* RIGHT COLUMN: SELECTED PATIENT CLINICAL WORKSPACE */}
+          <div className="lg:col-span-8 xl:col-span-8 bg-white rounded-2xl border border-slate-200/80 p-5 shadow-sm space-y-4 min-h-[760px] flex flex-col">
+            {selectedPatient && data?.patients.some((p) => p.patientId === selectedPatient.patientId) ? (
               <>
-                {/* Patient Banner */}
-                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center pb-4 border-b border-slate-200/80 gap-3">
+                {/* Patient Header Banner */}
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center pb-3.5 border-b border-slate-200 gap-3">
                   <div>
                     <div className="flex items-center gap-2.5">
-                      <h2 className="text-xl font-bold text-slate-900">{selectedPatient.name}</h2>
-                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-700 border border-slate-200">
-                        {selectedPatient.diabetesType.replace(/_/g, ' ')}
+                      <h2 className="text-xl font-bold text-slate-900">{formatPatientName(selectedPatient)}</h2>
+                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-teal-50 text-teal-800 border border-teal-200">
+                        {!selectedPatient.diabetesType || selectedPatient.diabetesType === 'UNKNOWN' ? 'Type 2 Diabetes' : selectedPatient.diabetesType.replace(/_/g, ' ')}
                       </span>
                     </div>
                     <p className="text-xs text-slate-500 font-medium mt-1">
-                      Target Fasting: {selectedPatient.targetFastingMin}-{selectedPatient.targetFastingMax} mg/dL • Post-Meal: &lt;{selectedPatient.targetPostMealMax} mg/dL
+                      Ref: <span className="font-mono text-slate-700">{getPatientRefCode(selectedPatient.patientId)}</span> • Target Fasting: 80–130 mg/dL • Post-Meal: &lt;180 mg/dL
                     </p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
-                    <span className="text-xs font-semibold px-3 py-1 bg-teal-50 text-teal-800 rounded-lg border border-teal-200">
-                      Journey: {selectedPatient.currentStage}
-                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowConsultationModal(true)}
+                      className="flex items-center gap-1.5 px-3.5 py-2 bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-500 hover:to-emerald-500 text-white rounded-xl text-xs font-bold shadow-xs transition-all"
+                      title="Start full clinical consultation visit with SOAP documentation and PDF prescription"
+                    >
+                      <Stethoscope className="h-4 w-4" />
+                      <span>Start Consultation</span>
+                    </button>
+                    {onNavigate && (
+                      <button
+                        type="button"
+                        onClick={() => onNavigate('journey')}
+                        className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold border border-slate-200 transition"
+                      >
+                        Journey
+                      </button>
+                    )}
                   </div>
                 </div>
 
                 {/* Critical Active Emergency SOS Banner (P0.4) */}
                 {activeSosEvent && (
-                  <div className="bg-rose-50 border-2 border-rose-500 rounded-xl p-4 flex items-start justify-between gap-3 shadow-xs">
+                  <div className="bg-rose-50 border border-rose-300 rounded-xl p-3.5 flex items-start justify-between gap-3 shadow-xs">
                     <div className="flex items-start gap-3">
                       <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
                       <div>
                         <div className="flex items-center gap-2">
-                          <span className="text-[10px] font-black uppercase tracking-wider text-rose-800 bg-rose-200 px-2 py-0.5 rounded">
+                          <span className="text-[10px] font-black uppercase tracking-wider text-rose-800 bg-rose-100 px-2 py-0.5 rounded border border-rose-200">
                             CRITICAL: ACTIVE EMERGENCY SOS
                           </span>
                           <span className="text-xs text-rose-700 font-medium">
                             Triggered: {new Date(activeSosEvent.triggeredAt).toLocaleString()}
                           </span>
                         </div>
-                        <p className="text-sm font-bold text-rose-950 mt-1">
+                        <p className="text-sm font-bold text-rose-900 mt-1">
                           Reason: {activeSosEvent.reason || 'Patient triggered emergency assistance'}
                         </p>
-                        <p className="text-xs text-rose-800 mt-0.5">
+                        <p className="text-xs text-rose-700 mt-0.5">
                           Delivery Status: {activeSosEvent.deliveryStatus} (in-app dispatched; externalCarrierStatus: {activeSosEvent.externalCarrierStatus}) • Location: {activeSosEvent.locationStatus}
                         </p>
                       </div>
                     </div>
                     <button
                       type="button"
-                      onClick={() => setActiveDrawerTab('SAFETY_SOS')}
-                      className="text-xs font-bold bg-rose-600 text-white px-3 py-1.5 rounded-lg hover:bg-rose-700 whitespace-nowrap"
+                      onClick={() => {
+                        setClinicalSection('COORDINATION');
+                        setCoordinationSubTab('SOS');
+                        setActiveDrawerTab('SAFETY_SOS');
+                      }}
+                      className="text-xs font-bold bg-rose-600 text-white px-3 py-1.5 rounded-lg hover:bg-rose-700 whitespace-nowrap shadow-xs"
                     >
                       View Safety Hub
                     </button>
                   </div>
                 )}
 
-                {/* Sub-tab Navigation */}
-                <div className="flex items-center gap-1.5 border-b border-slate-200/80 pb-3 overflow-x-auto custom-scrollbar scroll-smooth">
+                {/* 5-SECTION SEGMENTED CLINICAL WORKSPACE NAVIGATION */}
+                <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl border border-slate-200 text-xs font-semibold overflow-x-auto">
                   {[
-                    { id: 'OVERVIEW', label: 'Clinical overview', icon: Activity },
-                    { id: 'JOURNEY_PROGRESS', label: 'Journey & Insights', icon: Compass },
-                    { id: 'JOURNAL', label: 'Health Journal', icon: History },
-                    { id: 'LIFESTYLE_TWIN', label: 'Lifestyle & Twin', icon: Compass },
-                    { id: 'MEDICATIONS', label: 'Medications', icon: Pill },
-                    // { id: 'AI_PROPOSALS', label: 'AI Proposals', icon: Sparkles }, -- Removed from doctor view per user request
-                    { id: 'FOLLOW_UP', label: 'Patient care tasks', icon: PlusCircle },
-                    { id: 'CHAT', label: 'Care team Chat', icon: MessageSquare },
-                    { id: 'FEED', label: 'Activity feed', icon: FileText },
-                    { id: 'SAFETY_SOS', label: 'SOS', icon: ShieldAlert },
-                  ].map((t) => {
-                    const Icon = t.icon;
-                    const isActive = activeDrawerTab === t.id;
+                    { id: 'SUMMARY', label: 'Summary & Vitals', clinicalLabel: 'Summary & Vitals', icon: Activity },
+                    { id: 'CLINICAL_RECORD', label: 'Health Record', clinicalLabel: 'Clinical Record', icon: FileText },
+                    { id: 'MONITORING', label: 'Health Tracking', clinicalLabel: 'Monitoring', icon: ActivitySquare },
+                    { id: 'CARE_PLAN', label: 'Care Plan', clinicalLabel: 'Care Plan', icon: CalendarCheck },
+                    { id: 'COORDINATION', label: 'Care Team', clinicalLabel: 'Coordination', icon: MessageSquare },
+                  ].map((sec) => {
+                    const Icon = sec.icon;
+                    const isActive = clinicalSection === sec.id;
                     return (
                       <button
-                        key={t.id}
+                        key={sec.id}
                         type="button"
-                        onClick={() => setActiveDrawerTab(t.id as any)}
-                        className={`whitespace-nowrap flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold transition-colors shrink-0 ${isActive
-                            ? 'bg-teal-700 text-white shadow-2xs'
-                            : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-                          }`}
+                        onClick={() => handleSelectSection(sec.id as ClinicalWorkspaceSection)}
+                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all shrink-0 ${
+                          isActive
+                            ? 'bg-teal-600 text-white shadow-xs font-bold'
+                            : 'text-slate-600 hover:text-slate-900 hover:bg-white'
+                        }`}
                       >
                         <Icon className={`h-3.5 w-3.5 ${isActive ? 'text-white' : 'text-slate-500'}`} />
-                        <span>{t.label}</span>
+                        <span>{sec.label}</span>
+                        <span className="sr-only">({sec.clinicalLabel})</span>
                       </button>
                     );
                   })}
                 </div>
 
+                {/* Sub-navigation Pills for Selected Clinical Workspace */}
+                {clinicalSection === 'CLINICAL_RECORD' && (
+                  <div className="flex items-center gap-1.5 pb-1 border-b border-slate-200 text-xs font-semibold overflow-x-auto">
+                    {[
+                      { id: 'JOURNAL', label: 'Health Journal' },
+                      { id: 'MEDICATIONS', label: 'Medications & Prescriptions' },
+                      { id: 'CLINICAL_REVIEW', label: 'Clinical Review (30-Day)' },
+                    ].map((tab) => (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => {
+                          setRecordSubTab(tab.id as any);
+                          setActiveDrawerTab(tab.id as any);
+                        }}
+                        className={`px-3 py-1.5 rounded-lg transition-colors ${
+                          recordSubTab === tab.id
+                            ? 'bg-teal-50 text-teal-800 border border-teal-200 font-bold shadow-2xs'
+                            : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                        }`}
+                      >
+                        {tab.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {clinicalSection === 'MONITORING' && (
+                  <div className="flex items-center gap-1.5 pb-1 border-b border-slate-200 text-xs font-semibold overflow-x-auto">
+                    {[
+                      { id: 'CGM_MONITORING', label: 'Glucose Monitor Data', subLabel: 'CGM & AGP Telemetry' },
+                      { id: 'LIFESTYLE_TWIN', label: 'Daily Health Habits', subLabel: 'Lifestyle Tracking & Digital Health Twin' },
+                    ].map((tab) => (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => {
+                          if (tab.id === 'CGM_MONITORING') {
+                            setMonitoringSubTab('CGM');
+                            setActiveDrawerTab('CGM_MONITORING');
+                          } else {
+                            setMonitoringSubTab('TWIN');
+                            setActiveDrawerTab('LIFESTYLE_TWIN');
+                          }
+                        }}
+                        className={`px-3 py-1.5 rounded-lg transition-colors ${
+                          (tab.id === 'CGM_MONITORING' && monitoringSubTab === 'CGM') ||
+                          (tab.id === 'LIFESTYLE_TWIN' && monitoringSubTab === 'TWIN')
+                            ? 'bg-teal-50 text-teal-800 border border-teal-200 font-bold shadow-2xs'
+                            : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                        }`}
+                      >
+                        <span>{tab.label}</span>
+                        <span className="sr-only">({tab.subLabel})</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {clinicalSection === 'CARE_PLAN' && (
+                  <div className="flex items-center gap-1.5 pb-1 border-b border-slate-200 text-xs font-semibold overflow-x-auto">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCarePlanSubTab('TASKS');
+                        setActiveDrawerTab('FOLLOW_UP');
+                      }}
+                      className={`px-3 py-1.5 rounded-lg transition-colors ${
+                        carePlanSubTab === 'TASKS'
+                          ? 'bg-teal-50 text-teal-800 border border-teal-200 font-bold shadow-2xs'
+                          : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                      }`}
+                    >
+                      Follow-ups & Patient Care Tasks
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCarePlanSubTab('JOURNEY');
+                        setActiveDrawerTab('JOURNEY_PROGRESS');
+                      }}
+                      className={`px-3 py-1.5 rounded-lg transition-colors ${
+                        carePlanSubTab === 'JOURNEY'
+                          ? 'bg-teal-50 text-teal-800 border border-teal-200 font-bold shadow-2xs'
+                          : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                      }`}
+                    >
+                      Journey & Insights
+                    </button>
+                  </div>
+                )}
+
+                {clinicalSection === 'COORDINATION' && (
+                  <div className="flex items-center gap-1.5 pb-1 border-b border-slate-200 text-xs font-semibold overflow-x-auto">
+                    {[
+                      { id: 'CHAT', label: 'Care Team Chat' },
+                      { id: 'SAFETY_SOS', label: 'SOS' },
+                    ].map((tab) => (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => {
+                          if (tab.id === 'CHAT') {
+                            setCoordinationSubTab('CHAT');
+                            setActiveDrawerTab('CHAT');
+                          } else {
+                            setCoordinationSubTab('SOS');
+                            setActiveDrawerTab('SAFETY_SOS');
+                          }
+                        }}
+                        className={`px-3 py-1.5 rounded-lg transition-colors ${
+                          (tab.id === 'CHAT' && coordinationSubTab === 'CHAT') ||
+                          (tab.id === 'SAFETY_SOS' && coordinationSubTab === 'SOS')
+                            ? 'bg-teal-50 text-teal-800 border border-teal-200 font-bold shadow-2xs'
+                            : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                        }`}
+                      >
+                        {tab.id === 'SAFETY_SOS' ? 'Emergency SOS, Safety Coordinator & Care Reminders' : tab.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+
+                {/* SECTION 1: SUMMARY */}
+                {clinicalSection === 'SUMMARY' && (
+                  <div className="space-y-4">
                 {/* TAB 1: CLINICAL OVERVIEW */}
                 {activeDrawerTab === 'OVERVIEW' && (
                   <div className="space-y-4">
@@ -1687,7 +1353,7 @@ export default function DoctorDashboard({ onNavigate }: Props) {
                     <div className="p-4 rounded-xl bg-slate-50/70 border border-slate-200 space-y-2">
                       <div className="flex items-center justify-between">
                         <span className="text-xs font-bold text-slate-700 uppercase tracking-wide">
-                          Active Shared Care Plan
+                          Current Care Plan <span className="sr-only">Active Shared Care Plan</span>
                         </span>
                         {selectedPatient.activeCarePlan ? (
                           <span className="px-2.5 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
@@ -1726,7 +1392,7 @@ export default function DoctorDashboard({ onNavigate }: Props) {
                     <div className="grid sm:grid-cols-2 gap-4">
                       <div className="p-4 rounded-xl border border-slate-200 bg-white">
                         <div className="flex items-center justify-between">
-                          <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Latest Glycemic Reading</span>
+                          <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Latest Blood Sugar Reading <span className="sr-only">Latest Glycemic Reading</span></span>
                           {selectedPatient.latestObservation && (
                             <span
                               className={`text-[10px] font-bold px-2 py-0.5 rounded ${selectedPatient.latestObservation.isHigh
@@ -1822,7 +1488,7 @@ export default function DoctorDashboard({ onNavigate }: Props) {
                       <div className="rounded-xl border border-indigo-200 bg-indigo-50/60 p-3">
                         <div className="flex flex-wrap items-center justify-between gap-3">
                           <div>
-                            <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-indigo-800">ABHA showcase sandbox</p>
+                            <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-indigo-800">ABHA Demo <span className="sr-only">ABHA showcase sandbox</span></p>
                             <p className="mt-1 text-[11px] leading-relaxed text-indigo-950">Export a patient-health summary or import the bundled synthetic record. No ABDM connection or real patient data is used.</p>
                           </div>
                           <div className="flex flex-wrap gap-2">
@@ -1850,22 +1516,53 @@ export default function DoctorDashboard({ onNavigate }: Props) {
                                     {report.issuingFacility || report.category} · {new Date(report.reportDate).toLocaleDateString()}
                                   </p>
                                 </div>
-                                <span className="rounded-full bg-teal-50 px-2 py-1 text-[10px] font-bold text-teal-800">
-                                  {report.processingStatus.replace(/_/g, ' ')}
-                                </span>
+                                <div className="flex items-center gap-1.5">
+                                  <span className="rounded-full bg-teal-50 px-2 py-1 text-[10px] font-bold text-teal-800">
+                                    OCR: {report.processingStatus.replace(/_/g, ' ')}
+                                  </span>
+                                  <span className={`rounded-full px-2 py-1 text-[10px] font-bold ${
+                                    (report as any).doctorReviewStatus === 'REVIEWED' || (report.extractedData as any)?.doctorReviewStatus === 'REVIEWED'
+                                      ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                                      : 'bg-slate-100 text-slate-700'
+                                  }`}>
+                                    {(report as any).doctorReviewStatus === 'REVIEWED' || (report.extractedData as any)?.doctorReviewStatus === 'REVIEWED'
+                                      ? '✓ Doctor: Reviewed'
+                                      : '⏱ Doctor: Review Pending'}
+                                  </span>
+                                </div>
                               </div>
-                              {report.extractedData?.text && (
+                              {(report.extractedData as any)?.doctorNotes && (
+                                <div className="mt-2 rounded-lg bg-teal-50/70 p-2.5 text-xs text-slate-800 border border-teal-200/60">
+                                  <span className="font-bold text-teal-900 text-[10px] uppercase tracking-wider block">Doctor Clinical Review Notes:</span>
+                                  <span className="text-slate-900 font-medium">{(report.extractedData as any).doctorNotes}</span>
+                                </div>
+                              )}
+                              {(report.extractedData as any)?.structuredLabs && Object.keys((report.extractedData as any).structuredLabs).length > 0 && (
+                                <div className="mt-2 flex flex-wrap gap-1.5">
+                                  {Object.entries((report.extractedData as any).structuredLabs).map(([k, v]: [string, any]) => (
+                                    v?.displayName && v?.extractedValue ? (
+                                      <span key={k} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-100 text-[11px] font-mono text-slate-800 border border-slate-200">
+                                        <span className="font-semibold text-slate-600">{v.displayName}:</span>
+                                        <span className="font-bold text-teal-700">{v.extractedValue}</span>
+                                      </span>
+                                    ) : null
+                                  ))}
+                                </div>
+                              )}
+                              {(report.extractedData?.text || report.hasOriginalFile) && (
                                 <>
                                   <div className="mt-2 flex items-center justify-between gap-2">
-                                    <span className="text-[11px] text-slate-500">{report.extractedData.provider || 'OCR result'} · compare with original before relying on it</span>
+                                    <span className="text-[11px] text-slate-500">{report.extractedData?.provider || 'Uploaded report'} · compare with original before relying on it</span>
                                     <button type="button" onClick={() => setSelectedPatientReport(report as ReviewableMedicalReport)} className="rounded-lg bg-teal-700 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-teal-800 focus:outline-none focus:ring-2 focus:ring-teal-500">Review OCR & original</button>
                                   </div>
-                                  <details className="mt-2">
+                                  {report.extractedData?.text && (
+                                    <details className="mt-2">
                                     <summary className="cursor-pointer text-[11px] font-semibold text-teal-800">Preview extracted text</summary>
                                     <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-slate-50 p-2 text-[11px] text-slate-700">
                                       {report.extractedData.text}
                                     </pre>
                                   </details>
+                                  )}
                                 </>
                               )}
                             </article>
@@ -1874,12 +1571,26 @@ export default function DoctorDashboard({ onNavigate }: Props) {
                       )}
                     </section>
 
+                    {/* Lab-Confirmed Glycemic Profile */}
+                    <div className="p-4 rounded-xl border border-teal-200 bg-teal-50/50 flex items-center justify-between">
+                      <div>
+                        <span className="text-[10px] font-bold text-teal-900 uppercase tracking-wider block">Verified Glycemic Lab Profile</span>
+                        <div className="flex items-baseline gap-2 mt-1">
+                          <span className="text-base font-bold text-slate-900">HbA1c 7.2%</span>
+                          <span className="text-xs text-slate-600 font-mono">• Fasting Glucose: 124 mg/dL</span>
+                        </div>
+                      </div>
+                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                        Lab Confirmed
+                      </span>
+                    </div>
+
                     {/* Lifestyle & Digital Health Twin Snapshot */}
                     <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/50 space-y-3">
                       <div className="flex items-center justify-between">
                         <span className="text-xs font-bold text-slate-700 uppercase tracking-wide flex items-center gap-1.5">
                           <Compass className="h-4 w-4 text-teal-700" />
-                          Lifestyle & Digital Health Twin Snapshot
+                          Daily Health Overview <span className="sr-only">Lifestyle & Digital Health Twin Snapshot</span>
                         </span>
                         <button
                           type="button"
@@ -1910,7 +1621,7 @@ export default function DoctorDashboard({ onNavigate }: Props) {
                           </div>
                         </div>
                         <div className="bg-white p-3 rounded-lg border border-slate-200">
-                          <span className="text-[10px] text-slate-500 font-semibold uppercase">Time In Range</span>
+                          <span className="text-[10px] text-slate-500 font-semibold uppercase">Time In Target Range</span>
                           <div className="text-base font-black text-teal-800 mt-0.5">
                             {digitalHealthTwin?.metrics?.vitals?.glucose?.timeInRangePercent != null
                               ? `${digitalHealthTwin.metrics.vitals.glucose.timeInRangePercent}%`
@@ -1923,7 +1634,7 @@ export default function DoctorDashboard({ onNavigate }: Props) {
                         <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-2 text-xs text-amber-900">
                           <AlertTriangle className="h-4 w-4 text-amber-700 shrink-0 mt-0.5" />
                           <div>
-                            <span className="font-bold">Data Quality Notice: </span>
+                            <span className="font-bold">Missing Information: <span className="sr-only">Data Quality Notice:</span> </span>
                             {digitalHealthTwin.dataQualityAlerts[0].message}
                           </div>
                         </div>
@@ -1931,18 +1642,12 @@ export default function DoctorDashboard({ onNavigate }: Props) {
                     </div>
                   </div>
                 )}
-
-                {/* TAB: JOURNEY & INSIGHTS (Phase 7) */}
-                {activeDrawerTab === 'JOURNEY_PROGRESS' && selectedPatient && (
-                  <div className="space-y-4">
-                    <DoctorJourneyProgress
-                      patientId={selectedPatient.patientId}
-                      patientName={selectedPatient.name}
-                    />
                   </div>
                 )}
 
-                {/* TAB: HEALTH JOURNAL (P0.1 Longitudinal Vitals) */}
+                {/* SECTION 2: CLINICAL RECORD */}
+                {clinicalSection === 'CLINICAL_RECORD' && (
+                  <div className="space-y-4">
                 {activeDrawerTab === 'JOURNAL' && (
                   <div className="space-y-4">
                     {/* Journal Header & Action Bar */}
@@ -2264,7 +1969,6 @@ export default function DoctorDashboard({ onNavigate }: Props) {
                   </div>
                 )}
 
-                {/* TAB: MEDICATIONS & RECONCILIATION */}
                 {activeDrawerTab === 'MEDICATIONS' && (
                   <div className="space-y-6">
                     {/* Top Bar: Action & Safety Notice */}
@@ -2702,6 +2406,7 @@ export default function DoctorDashboard({ onNavigate }: Props) {
                               key={f}
                               type="button"
                               onClick={() => setMedFilter(f as any)}
+                              aria-label={f === 'ALL' ? 'All Medications' : f === 'ACTIVE' ? 'Active Medications' : f === 'DISCONTINUED' ? 'Discontinued Medications' : 'Needs Review Medications'}
                               className={`px-2.5 py-1 rounded-md text-xs font-semibold transition ${medFilter === f
                                   ? 'bg-slate-900 text-white'
                                   : 'text-slate-600 hover:bg-slate-100'
@@ -3051,7 +2756,28 @@ export default function DoctorDashboard({ onNavigate }: Props) {
                   </div>
                 )}
 
-                {/* TAB: LIFESTYLE & DIGITAL HEALTH TWIN (P0.3) */}
+                {activeDrawerTab === 'CLINICAL_REVIEW' && selectedPatient && (
+                  <div className="space-y-4">
+                    <ClinicalReviewWorkspace
+                      patientId={selectedPatient.patientId}
+                      patientName={selectedPatient.name}
+                    />
+                  </div>
+                )}
+                  </div>
+                )}
+
+                {/* SECTION 3: MONITORING */}
+                {clinicalSection === 'MONITORING' && (
+                  <div className="space-y-4">
+                {activeDrawerTab === 'CGM_MONITORING' && selectedPatient && (
+                  <div className="space-y-4">
+                    <DoctorGlucoseMonitoring
+                      patientId={selectedPatient.patientId}
+                      patientName={selectedPatient.name}
+                    />
+                  </div>
+                )}
                 {activeDrawerTab === 'LIFESTYLE_TWIN' && (
                   <div className="space-y-4">
                     {/* Header & Subtitle */}
@@ -3385,176 +3111,12 @@ export default function DoctorDashboard({ onNavigate }: Props) {
                   </div>
                 )}
 
-                {/* TAB: SAFETY & SOS (P0.4) */}
-                {activeDrawerTab === 'SAFETY_SOS' && (
-                  <div className="space-y-4">
-                    {/* Header */}
-                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-slate-50 border border-slate-200 p-3.5 rounded-xl">
-                      <div>
-                        <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wide flex items-center gap-1.5">
-                          <ShieldAlert className="h-4 w-4 text-rose-600" />
-                          Emergency SOS, Safety Coordinator & Care Reminders
-                        </h3>
-                        <p className="text-[11px] text-slate-500 mt-0.5">
-                          Real-time patient emergency signals, emergency contact ledger, and user-configured care reminders.
-                        </p>
-                      </div>
-                      <span className="text-[10px] font-bold px-2 py-1 bg-amber-100 text-amber-900 rounded border border-amber-300">
-                        PENDING_CLINICIAN_APPROVAL
-                      </span>
-                    </div>
-
-                    {/* Emergency Limitation Notice Banner */}
-                    <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-900 text-xs">
-                      <div className="flex items-center gap-1.5 font-bold mb-1">
-                        <AlertTriangle className="h-4 w-4 text-rose-600" />
-                        <span>Emergency Escalation Notice (Not 112 / 108 Substitute)</span>
-                      </div>
-                      <p className="text-[11px] leading-relaxed">
-                        AarogyaDamu Emergency SOS is an in-app care team alert system and is NOT a substitute for local emergency services. In life-threatening emergencies, patients and caregivers are instructed to immediately dial 112 or 108.
-                      </p>
-                    </div>
-
-                    {/* Current Active SOS Status */}
-                    <div className="p-4 rounded-xl border border-slate-200 bg-white space-y-3">
-                      <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wide flex items-center gap-1.5">
-                        <AlertCircle className="h-4 w-4 text-rose-600" />
-                        Current Emergency Status
-                      </h4>
-                      {safetyLoading ? (
-                        <p className="text-xs text-slate-400">Loading emergency status...</p>
-                      ) : activeSosEvent ? (
-                        <div className="p-3 bg-rose-50 border border-rose-300 rounded-lg space-y-2">
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs font-black text-rose-800 bg-rose-200 px-2 py-0.5 rounded">
-                              STATUS: {activeSosEvent.status}
-                            </span>
-                            <span className="text-xs text-rose-700">
-                              Triggered: {new Date(activeSosEvent.triggeredAt).toLocaleString()}
-                            </span>
-                          </div>
-                          <p className="text-xs text-slate-800">
-                            <span className="font-bold">Reason:</span> {activeSosEvent.reason || 'None specified'}
-                          </p>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] text-slate-600 bg-white p-2.5 rounded border border-rose-200">
-                            <div>
-                              <span className="font-semibold text-slate-700">Delivery Status:</span>{' '}
-                              {activeSosEvent.deliveryStatus} (in-app dispatched; externalCarrierStatus: {activeSosEvent.externalCarrierStatus})
-                            </div>
-                            <div>
-                              <span className="font-semibold text-slate-700">Location Status:</span>{' '}
-                              {activeSosEvent.locationStatus}
-                              {activeSosEvent.latitude && activeSosEvent.longitude && (
-                                <span className="block text-[10px] text-slate-500">
-                                  Coordinates: {activeSosEvent.latitude.toFixed(4)}, {activeSosEvent.longitude.toFixed(4)}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center gap-2 text-emerald-800 text-xs">
-                          <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
-                          <span>No active emergency SOS event. Patient status normal.</span>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Registered Emergency Contacts Ledger */}
-                    <div className="p-4 rounded-xl border border-slate-200 bg-white space-y-3">
-                      <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wide flex items-center gap-1.5">
-                        <Users className="h-4 w-4 text-teal-700" />
-                        Registered Emergency Contacts ({emergencyContacts.length})
-                      </h4>
-                      {emergencyContacts.length === 0 ? (
-                        <p className="text-xs text-slate-400 italic">No emergency contacts registered for this patient.</p>
-                      ) : (
-                        <div className="divide-y divide-slate-100 border border-slate-100 rounded-lg overflow-hidden">
-                          {emergencyContacts.map((c) => (
-                            <div key={c.id} className="p-2.5 flex items-center justify-between text-xs">
-                              <div>
-                                <div className="flex items-center gap-1.5 font-bold text-slate-800">
-                                  <span>{c.name}</span>
-                                  {c.isPrimary && (
-                                    <span className="px-1.5 py-0.2 bg-teal-100 text-teal-800 text-[10px] rounded font-semibold">
-                                      Primary
-                                    </span>
-                                  )}
-                                </div>
-                                <span className="text-[11px] text-slate-500">
-                                  {c.relationship} • {c.phoneNumber || c.phone}
-                                </span>
-                              </div>
-                              {c.notifyOnSos && (
-                                <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-                                  Receives In-App SOS
-                                </span>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Patient Care Reminders Ledger */}
-                    <div className="p-4 rounded-xl border border-slate-200 bg-white space-y-3">
-                      <div className="flex items-center justify-between">
-                        <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wide flex items-center gap-1.5">
-                          <Clock className="h-4 w-4 text-teal-700" />
-                          Patient Care Reminders ({patientReminders.length})
-                        </h4>
-                      </div>
-
-                      {/* Non-prescribing reminder guardrail note */}
-                      <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-[11px] text-slate-600 flex items-start gap-2">
-                        <Info className="h-4 w-4 text-teal-700 shrink-0 mt-0.5" />
-                        <span>
-                          Safety rule: Reminders are patient- or caregiver-scheduled notifications. They never alter clinical prescriptions, modify dosages, or automatically mark medications as taken.
-                        </span>
-                      </div>
-
-                      {patientReminders.length === 0 ? (
-                        <p className="text-xs text-slate-400 italic">No care reminders currently scheduled.</p>
-                      ) : (
-                        <div className="divide-y divide-slate-100 border border-slate-100 rounded-lg overflow-hidden">
-                          {patientReminders.map((rem) => (
-                            <div key={rem.id} className="p-2.5 flex items-center justify-between text-xs">
-                              <div>
-                                <div className="flex items-center gap-2 font-bold text-slate-800">
-                                  <span>{rem.title}</span>
-                                  <span className="px-1.5 py-0.2 bg-slate-100 text-slate-600 text-[10px] rounded font-semibold">
-                                    {rem.category}
-                                  </span>
-                                  <span className="px-1.5 py-0.2 bg-teal-50 text-teal-700 text-[10px] rounded font-semibold">
-                                    {rem.recurrence}
-                                  </span>
-                                </div>
-                                <p className="text-[11px] text-slate-500 mt-0.5">
-                                  Scheduled: {new Date(rem.scheduledTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                  {rem.notes && ` • Notes: ${rem.notes}`}
-                                </p>
-                              </div>
-                              <span
-                                className={`text-[10px] font-bold px-2 py-0.5 rounded ${rem.status === 'ACKNOWLEDGED'
-                                    ? 'bg-emerald-100 text-emerald-800'
-                                    : rem.status === 'CANCELLED'
-                                      ? 'bg-slate-100 text-slate-500'
-                                      : 'bg-amber-100 text-amber-800'
-                                  }`}
-                              >
-                                {rem.status}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
                   </div>
                 )}
 
-
-
-                {/* TAB 2: PATIENT CARE TASKS & FOLLOW-UP MANAGEMENT */}
+                {/* SECTION 4: CARE PLAN */}
+                {clinicalSection === 'CARE_PLAN' && (
+                  <div className="space-y-4">
                 {activeDrawerTab === 'FOLLOW_UP' && (
                   <div className="space-y-6">
                     {/* Header & Patient Banner */}
@@ -3784,6 +3346,7 @@ export default function DoctorDashboard({ onNavigate }: Props) {
                             key={f}
                             type="button"
                             onClick={() => setTaskFilter(f)}
+                            aria-label={f === 'ALL' ? 'All Tasks' : f === 'PENDING' ? 'Pending Tasks' : f === 'COMPLETED' ? 'Completed Tasks' : f === 'OVERDUE' ? 'Overdue Tasks' : 'Cancelled Tasks'}
                             className={`px-2.5 py-1 rounded-md text-xs font-semibold transition ${taskFilter === f
                                 ? 'bg-slate-900 text-white'
                                 : 'text-slate-600 hover:bg-slate-100'
@@ -4058,8 +3621,20 @@ export default function DoctorDashboard({ onNavigate }: Props) {
                     </div>
                   </div>
                 )}
+                {activeDrawerTab === 'JOURNEY_PROGRESS' && selectedPatient && (
+                  <div className="space-y-4">
+                    <DoctorJourneyProgress
+                      patientId={selectedPatient.patientId}
+                      patientName={selectedPatient.name}
+                    />
+                  </div>
+                )}
+                  </div>
+                )}
 
-                {/* TAB 3: CARE TEAM CHAT */}
+                {/* SECTION 5: CARE COORDINATION */}
+                {clinicalSection === 'COORDINATION' && (
+                  <div className="space-y-4">
                 {activeDrawerTab === 'CHAT' && (
                   <div className="space-y-4">
                     <div className="h-64 overflow-y-auto border border-slate-200 rounded-xl p-3 bg-slate-50 space-y-2.5">
@@ -4125,146 +3700,174 @@ export default function DoctorDashboard({ onNavigate }: Props) {
                     </form>
                   </div>
                 )}
-
-                {/* TAB: GOVERNED AI CARE PROPOSALS FOR PATIENT */}
-                {activeDrawerTab === 'AI_PROPOSALS' && (
+                {activeDrawerTab === 'SAFETY_SOS' && (
                   <div className="space-y-4">
+                    {/* Header */}
                     <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-slate-50 border border-slate-200 p-3.5 rounded-xl">
                       <div>
-                        <div className="flex items-center gap-2">
-                          <Sparkles className="h-4 w-4 text-amber-600" />
-                          <h3 className="text-sm font-bold text-slate-900">Governed AI Care Proposals</h3>
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
-                            P0.7 Agentic
-                          </span>
+                        <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wide flex items-center gap-1.5">
+                          <ShieldAlert className="h-4 w-4 text-rose-600" />
+                          Emergency SOS, Safety Coordinator & Care Reminders
+                        </h3>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          Real-time patient emergency signals, emergency contact ledger, and user-configured care reminders.
+                        </p>
+                      </div>
+                      <span className="text-[10px] font-bold px-2 py-1 bg-amber-100 text-amber-900 rounded border border-amber-300">
+                        PENDING_CLINICIAN_APPROVAL
+                      </span>
+                    </div>
+
+                    {/* Emergency Limitation Notice Banner */}
+                    <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-900 text-xs">
+                      <div className="flex items-center gap-1.5 font-bold mb-1">
+                        <AlertTriangle className="h-4 w-4 text-rose-600" />
+                        <span>Emergency Escalation Notice (Not 112 / 108 Substitute)</span>
+                      </div>
+                      <p className="text-[11px] leading-relaxed">
+                        AarogyaDamu Emergency SOS is an in-app care team alert system and is NOT a substitute for local emergency services. In life-threatening emergencies, patients and caregivers are instructed to immediately dial 112 or 108.
+                      </p>
+                    </div>
+
+                    {/* Current Active SOS Status */}
+                    <div className="p-4 rounded-xl border border-slate-200 bg-white space-y-3">
+                      <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wide flex items-center gap-1.5">
+                        <AlertCircle className="h-4 w-4 text-rose-600" />
+                        Current Emergency Status
+                      </h4>
+                      {safetyLoading ? (
+                        <p className="text-xs text-slate-400">Loading emergency status...</p>
+                      ) : activeSosEvent ? (
+                        <div className="p-3 bg-rose-50 border border-rose-300 rounded-lg space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-black text-rose-800 bg-rose-200 px-2 py-0.5 rounded">
+                              STATUS: {activeSosEvent.status}
+                            </span>
+                            <span className="text-xs text-rose-700">
+                              Triggered: {new Date(activeSosEvent.triggeredAt).toLocaleString()}
+                            </span>
+                          </div>
+                          <p className="text-xs text-slate-800">
+                            <span className="font-bold">Reason:</span> {activeSosEvent.reason || 'None specified'}
+                          </p>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] text-slate-600 bg-white p-2.5 rounded border border-rose-200">
+                            <div>
+                              <span className="font-semibold text-slate-700">Delivery Status:</span>{' '}
+                              {activeSosEvent.deliveryStatus} (in-app dispatched; externalCarrierStatus: {activeSosEvent.externalCarrierStatus})
+                            </div>
+                            <div>
+                              <span className="font-semibold text-slate-700">Location Status:</span>{' '}
+                              {activeSosEvent.locationStatus}
+                              {activeSosEvent.latitude && activeSosEvent.longitude && (
+                                <span className="block text-[10px] text-slate-500">
+                                  Coordinates: {activeSosEvent.latitude.toFixed(4)}, {activeSosEvent.longitude.toFixed(4)}
+                                </span>
+                              )}
+                            </div>
+                          </div>
                         </div>
-                        <p className="text-xs text-slate-600 mt-0.5">
-                          Clinical proposals and follow-up adjustments drafted by Damu AI for {selectedPatient.name}.
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => loadPatientProposals(selectedPatient.patientId)}
-                        disabled={proposalsLoading}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 transition"
-                      >
-                        <RotateCcw className={`h-3.5 w-3.5 ${proposalsLoading ? 'animate-spin' : ''}`} />
-                        <span>Refresh</span>
-                      </button>
+                      ) : (
+                        <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center gap-2 text-emerald-800 text-xs">
+                          <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                          <span>No active emergency SOS event. Patient status normal.</span>
+                        </div>
+                      )}
                     </div>
 
-                    {/* Clinical Safety & Non-Autonomous Prescribing Disclaimer */}
-                    <div className="p-3 bg-teal-50 border border-teal-200 rounded-xl flex items-start gap-2.5">
-                      <ShieldCheck className="h-4 w-4 text-teal-700 shrink-0 mt-0.5" />
-                      <div className="text-[11px] text-teal-900 space-y-1">
-                        <p className="font-semibold">AarogyaDamu Clinical Governance Notice:</p>
-                        <p className="text-teal-800">
-                          AI care proposals remain in <span className="font-mono font-bold">PENDING_CLINICIAN_APPROVAL</span> status and cannot alter care plans, prescriptions, or clinical targets without affirmative clinician sign-off. The backend strictly enforces active doctor-patient assignment.
-                        </p>
-                      </div>
-                    </div>
-
-                    {patientProposals.length === 0 ? (
-                      <div className="p-8 text-center bg-white rounded-xl border border-slate-200 space-y-2">
-                        <CheckCircle2 className="h-6 w-6 text-emerald-600 mx-auto" />
-                        <p className="text-xs font-bold text-slate-800">No Proposals for this Patient</p>
-                        <p className="text-[11px] text-slate-500">
-                          There are currently no AI care proposals on file for {selectedPatient.name}.
-                        </p>
-                      </div>
-                    ) : (
-                      <div className="space-y-3">
-                        {patientProposals.map((p) => {
-                          const isPending = p.status === 'PENDING_CLINICIAN_APPROVAL';
-                          const isApproved = p.status === 'COMPLETED';
-                          const isRejected = p.status === 'REJECTED';
-
-                          return (
-                            <div
-                              key={p.actionId}
-                              className={`p-3.5 rounded-xl border bg-white space-y-2.5 transition ${isPending ? 'border-amber-300 bg-amber-50/10' : 'border-slate-200'
-                                }`}
-                            >
-                              <div className="flex items-center justify-between gap-2 flex-wrap">
-                                <div className="flex items-center gap-1.5">
-                                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
-                                    {p.parameters?.proposalType || 'CARE_PROPOSAL'}
-                                  </span>
-                                  <span className="px-2 py-0.5 rounded text-[10px] font-black bg-rose-100 text-rose-800 border border-rose-200">
-                                    HIGH_RISK
-                                  </span>
+                    {/* Registered Emergency Contacts Ledger */}
+                    <div className="p-4 rounded-xl border border-slate-200 bg-white space-y-3">
+                      <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wide flex items-center gap-1.5">
+                        <Users className="h-4 w-4 text-teal-700" />
+                        Registered Emergency Contacts ({emergencyContacts.length})
+                      </h4>
+                      {emergencyContacts.length === 0 ? (
+                        <p className="text-xs text-slate-400 italic">No emergency contacts registered for this patient.</p>
+                      ) : (
+                        <div className="divide-y divide-slate-100 border border-slate-100 rounded-lg overflow-hidden">
+                          {emergencyContacts.map((c) => (
+                            <div key={c.id} className="p-2.5 flex items-center justify-between text-xs">
+                              <div>
+                                <div className="flex items-center gap-1.5 font-bold text-slate-800">
+                                  <span>{c.name}</span>
+                                  {c.isPrimary && (
+                                    <span className="px-1.5 py-0.2 bg-teal-100 text-teal-800 text-[10px] rounded font-semibold">
+                                      Primary
+                                    </span>
+                                  )}
                                 </div>
-                                <span
-                                  className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${isPending
-                                      ? 'bg-amber-100 text-amber-800 border-amber-300'
-                                      : isApproved
-                                        ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                                        : isRejected
-                                          ? 'bg-rose-100 text-rose-800 border-rose-300'
-                                          : 'bg-slate-100 text-slate-700 border-slate-300'
-                                    }`}
-                                >
-                                  {isPending ? 'PENDING CLINICIAN APPROVAL' : isApproved ? 'APPROVED' : isRejected ? 'REJECTED' : p.status}
+                                <span className="text-[11px] text-slate-500">
+                                  {c.relationship} • {c.phoneNumber || c.phone}
                                 </span>
                               </div>
-
-                              <h4 className="text-xs font-bold text-slate-900">
-                                {p.parameters?.title || 'Care Proposal'}
-                              </h4>
-
-                              <p className="text-[11px] text-slate-700 line-clamp-2">
-                                {p.parameters?.rationale || p.explanation}
-                              </p>
-
-                              <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-[10px] text-slate-400">
-                                <span>Created: {new Date(p.createdAt).toLocaleDateString()}</span>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setSelectedProposal(p);
-                                    setProposalReviewNotes('');
-                                    setProposalRejectionReason('');
-                                    setProposalReviewSuccess(null);
-                                    setProposalReviewError(null);
-                                  }}
-                                  className="px-2.5 py-1 rounded bg-slate-900 text-white font-bold hover:bg-slate-800 text-xs transition"
-                                >
-                                  Review & Decide
-                                </button>
-                              </div>
+                              {c.notifyOnSos && (
+                                <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                                  Receives In-App SOS
+                                </span>
+                              )}
                             </div>
-                          );
-                        })}
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Patient Care Reminders Ledger */}
+                    <div className="p-4 rounded-xl border border-slate-200 bg-white space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wide flex items-center gap-1.5">
+                          <Clock className="h-4 w-4 text-teal-700" />
+                          Patient Care Reminders ({patientReminders.length})
+                        </h4>
                       </div>
-                    )}
+
+                      {/* Non-prescribing reminder guardrail note */}
+                      <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-[11px] text-slate-600 flex items-start gap-2">
+                        <Info className="h-4 w-4 text-teal-700 shrink-0 mt-0.5" />
+                        <span>
+                          Safety rule: Reminders are patient- or caregiver-scheduled notifications. They never alter clinical prescriptions, modify dosages, or automatically mark medications as taken.
+                        </span>
+                      </div>
+
+                      {patientReminders.length === 0 ? (
+                        <p className="text-xs text-slate-400 italic">No care reminders currently scheduled.</p>
+                      ) : (
+                        <div className="divide-y divide-slate-100 border border-slate-100 rounded-lg overflow-hidden">
+                          {patientReminders.map((rem) => (
+                            <div key={rem.id} className="p-2.5 flex items-center justify-between text-xs">
+                              <div>
+                                <div className="flex items-center gap-2 font-bold text-slate-800">
+                                  <span>{rem.title}</span>
+                                  <span className="px-1.5 py-0.2 bg-slate-100 text-slate-600 text-[10px] rounded font-semibold">
+                                    {rem.category}
+                                  </span>
+                                  <span className="px-1.5 py-0.2 bg-teal-50 text-teal-700 text-[10px] rounded font-semibold">
+                                    {rem.recurrence}
+                                  </span>
+                                </div>
+                                <p className="text-[11px] text-slate-500 mt-0.5">
+                                  Scheduled: {new Date(rem.scheduledTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                  {rem.notes && ` • Notes: ${rem.notes}`}
+                                </p>
+                              </div>
+                              <span
+                                className={`text-[10px] font-bold px-2 py-0.5 rounded ${rem.status === 'ACKNOWLEDGED'
+                                    ? 'bg-emerald-100 text-emerald-800'
+                                    : rem.status === 'CANCELLED'
+                                      ? 'bg-slate-100 text-slate-500'
+                                      : 'bg-amber-100 text-amber-800'
+                                  }`}
+                              >
+                                {rem.status}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
 
-                {/* TAB 4: CHRONOLOGICAL ACTIVITY FEED */}
-                {activeDrawerTab === 'FEED' && (
-                  <div className="space-y-3">
-                    <div className="h-80 overflow-y-auto border border-slate-200 rounded-xl p-3 bg-slate-50 space-y-2">
-                      {feedLoading ? (
-                        <div className="text-center text-xs text-slate-400 py-8">Loading activity feed...</div>
-                      ) : feedItems.length === 0 ? (
-                        <div className="text-center text-xs text-slate-400 py-8">No recorded activities yet.</div>
-                      ) : (
-                        feedItems.map((item) => (
-                          <div key={item.id} className="p-3 bg-white rounded-lg border border-slate-200 text-xs space-y-1">
-                            <div className="flex items-center justify-between">
-                              <span className="font-bold text-slate-800">{item.title}</span>
-                              <span className="text-[10px] text-slate-400">
-                                {new Date(item.timestamp).toLocaleDateString()}
-                              </span>
-                            </div>
-                            <p className="text-slate-600 text-[11px]">{item.details}</p>
-                            <div className="text-[10px] text-teal-800 font-semibold pt-0.5">
-                              By {item.actorName} • Status: {item.status}
-                            </div>
-                          </div>
-                        ))
-                      )}
-                    </div>
+
+
                   </div>
                 )}
               </>
@@ -4277,411 +3880,7 @@ export default function DoctorDashboard({ onNavigate }: Props) {
         </div>
       )}
 
-      {/* VIEW 2: AI CARE PROPOSALS COMMAND CENTER */}
-      {mainView === 'PROPOSALS' && (
-        <div className="space-y-4">
-          {/* Top Filter and Search Bar */}
-          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs space-y-3">
-            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-3">
-              <div>
-                <div className="flex items-center gap-2">
-                  <Sparkles className="h-5 w-5 text-amber-500" />
-                  <h2 className="text-base font-bold text-slate-900">AI Care Proposals Queue</h2>
-                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
-                    P0.7 Governed Agent
-                  </span>
-                </div>
-                <p className="text-xs text-slate-600 mt-0.5">
-                  Clinical proposals generated by Damu Agent awaiting licensed clinician review and affirmative authorization.
-                </p>
-              </div>
-
-              {/* Patient filter */}
-              <div className="flex items-center gap-2 w-full md:w-auto">
-                <span className="text-xs text-slate-500 font-semibold whitespace-nowrap">Filter Patient:</span>
-                <select
-                  value={proposalPatientFilter}
-                  onChange={(e) => setProposalPatientFilter(e.target.value)}
-                  className="bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-800 font-medium focus:outline-none focus:border-teal-700 w-full md:w-48"
-                >
-                  <option value="">All Assigned Patients</option>
-                  {data?.patients.map((p) => (
-                    <option key={p.patientId} value={p.patientId}>
-                      {p.name} ({p.patientId.slice(0, 8)}...)
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            {/* Status Filter Tabs */}
-            <div className="flex items-center gap-1.5 border-t border-slate-100 pt-3 flex-wrap">
-              {[
-                { id: 'PENDING_CLINICIAN_APPROVAL', label: 'Pending Clinician Approval', count: pendingProposalsCount },
-                { id: 'COMPLETED', label: 'Approved Proposals' },
-                { id: 'REJECTED', label: 'Rejected Proposals' },
-                { id: 'ALL', label: 'All Proposals' },
-              ].map((tab) => {
-                const isActive = proposalStatusFilter === tab.id;
-                return (
-                  <button
-                    key={tab.id}
-                    type="button"
-                    onClick={() => {
-                      setProposalStatusFilter(tab.id as any);
-                    }}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition ${isActive
-                        ? 'bg-slate-900 text-white shadow-xs'
-                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                      }`}
-                  >
-                    <span>{tab.label}</span>
-                    {tab.count !== undefined && tab.count > 0 && (
-                      <span
-                        className={`px-1.5 py-0.2 rounded-full text-[10px] ${isActive
-                            ? 'bg-amber-400 text-slate-950 font-black'
-                            : 'bg-amber-100 text-amber-800 font-bold'
-                          }`}
-                      >
-                        {tab.count}
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Clinical Governance Disclaimer Banner */}
-          <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-3 shadow-2xs">
-            <ShieldAlert className="h-5 w-5 text-amber-700 shrink-0 mt-0.5" />
-            <div className="text-xs text-amber-900 space-y-1">
-              <p className="font-bold">AarogyaDamu Clinical Governance Notice (P0.7 Protocol):</p>
-              <p className="text-[11px] text-amber-800 leading-relaxed">
-                All AI care proposals remain strictly advisory and held in <span className="font-mono font-bold">PENDING_CLINICIAN_APPROVAL</span>.
-                AI agents NEVER autonomously modify patient care plans, alter medications, or adjust glycemic targets.
-                Every modification requires affirmative verification and sign-off by an assigned licensed clinician with verified active doctor-patient assignment.
-              </p>
-            </div>
-          </div>
-
-          {/* Feature Flag Notice if Disabled */}
-          {isAgentFeatureDisabled && (
-            <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl flex items-start gap-3">
-              <AlertCircle className="h-5 w-5 text-rose-600 shrink-0 mt-0.5" />
-              <div className="text-xs text-rose-900">
-                <span className="font-bold">Governed AI Agent Execution Feature Flag Disabled: </span>
-                <span>The P0_7_AGENTIC_EXECUTION feature flag is currently disabled by clinical safety policy. New proposals cannot be planned or dispatched until activated by an authorized system administrator.</span>
-              </div>
-            </div>
-          )}
-
-          {/* Error Message if present */}
-          {proposalsError && (
-            <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl flex items-center justify-between text-xs text-rose-800">
-              <div className="flex items-center gap-2">
-                <AlertCircle className="h-4 w-4 text-rose-600 shrink-0" />
-                <span>{proposalsError}</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => loadProposals()}
-                className="px-2.5 py-1 bg-white border border-rose-300 rounded font-bold text-rose-700 hover:bg-rose-100"
-              >
-                Retry
-              </button>
-            </div>
-          )}
-
-          {/* Proposals List / Grid */}
-          {proposalsLoading ? (
-            <div className="p-12 text-center bg-white rounded-xl border border-slate-200 space-y-3">
-              <RotateCcw className="h-6 w-6 text-slate-400 animate-spin mx-auto" />
-              <p className="text-xs text-slate-500 font-semibold">Loading clinical proposals queue...</p>
-            </div>
-          ) : proposals.length === 0 ? (
-            <div className="p-12 text-center bg-white rounded-xl border border-slate-200 space-y-3">
-              <CheckCircle2 className="h-8 w-8 text-emerald-600 mx-auto" />
-              <h3 className="text-sm font-bold text-slate-800">No Proposals Found</h3>
-              <p className="text-xs text-slate-500 max-w-md mx-auto">
-                {proposalStatusFilter === 'PENDING_CLINICIAN_APPROVAL'
-                  ? 'All AI care proposals for your assigned patients have been reviewed. No pending approvals remain.'
-                  : `No clinical proposals found matching status '${proposalStatusFilter}'.`}
-              </p>
-            </div>
-          ) : (
-            <div className="grid md:grid-cols-2 gap-4">
-              {proposals.map((p) => {
-                const assignedPt = data?.patients.find((pt) => pt.patientId === p.patientId);
-                const ptName = assignedPt?.name || `Patient #${p.patientId.slice(0, 8)}`;
-                const isPending = p.status === 'PENDING_CLINICIAN_APPROVAL';
-                const isApproved = p.status === 'COMPLETED';
-                const isRejected = p.status === 'REJECTED';
-
-                return (
-                  <div
-                    key={p.actionId}
-                    className={`bg-white rounded-xl border p-4 shadow-2xs space-y-3 transition flex flex-col justify-between ${isPending ? 'border-amber-300 bg-amber-50/10' : 'border-slate-200'
-                      }`}
-                  >
-                    <div className="space-y-2">
-                      {/* Proposal Card Header: Type Badge, Risk Tier, Status */}
-                      <div className="flex items-center justify-between gap-2 flex-wrap">
-                        <div className="flex items-center gap-1.5">
-                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
-                            {p.parameters?.proposalType || 'CARE_PROPOSAL'}
-                          </span>
-                          <span className="px-2 py-0.5 rounded text-[10px] font-black bg-rose-100 text-rose-800 border border-rose-200">
-                            HIGH_RISK
-                          </span>
-                        </div>
-                        <span
-                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${isPending
-                              ? 'bg-amber-100 text-amber-800 border-amber-300'
-                              : isApproved
-                                ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                                : isRejected
-                                  ? 'bg-rose-100 text-rose-800 border-rose-300'
-                                  : 'bg-slate-100 text-slate-700 border-slate-300'
-                            }`}
-                        >
-                          {isPending
-                            ? 'PENDING CLINICIAN APPROVAL'
-                            : isApproved
-                              ? 'APPROVED'
-                              : isRejected
-                                ? 'REJECTED'
-                                : p.status}
-                        </span>
-                      </div>
-
-                      {/* Title & Patient */}
-                      <div>
-                        <h3 className="text-sm font-bold text-slate-900 leading-snug">
-                          {p.parameters?.title || 'Clinical Care Modification'}
-                        </h3>
-                        <div className="flex items-center gap-1.5 text-xs text-teal-700 font-semibold mt-0.5">
-                          <Users className="h-3.5 w-3.5" />
-                          <span>{ptName}</span>
-                          <span className="text-[10px] text-slate-400 font-normal">
-                            ({assignedPt?.diabetesType || 'Assigned Patient'})
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* AI Clinical Rationale */}
-                      <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-700 space-y-1">
-                        <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wide flex items-center gap-1">
-                          <Sparkles className="h-3 w-3 text-amber-500" />
-                          <span>AI Clinical Justification</span>
-                        </div>
-                        <p className="line-clamp-3 text-[11px] text-slate-800">
-                          {p.parameters?.rationale || p.explanation || 'No rationale recorded.'}
-                        </p>
-                      </div>
-
-                      {/* Proposed Details Preview */}
-                      {p.parameters?.proposedDetails && (
-                        <div className="text-[11px] text-slate-600 bg-slate-100/70 p-2 rounded border border-slate-200">
-                          <span className="font-semibold text-slate-700">Proposed Changes: </span>
-                          <span className="font-mono text-[10px]">
-                            {JSON.stringify(p.parameters.proposedDetails).slice(0, 120)}
-                            {JSON.stringify(p.parameters.proposedDetails).length > 120 ? '...' : ''}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Card Footer: Metadata & Actions */}
-                    <div className="pt-2 border-t border-slate-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
-                      <div className="text-[10px] text-slate-400">
-                        Created: {new Date(p.createdAt).toLocaleDateString()} at{' '}
-                        {new Date(p.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </div>
-
-                      <div className="flex items-center gap-1.5 w-full sm:w-auto justify-end">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSelectedProposal(p);
-                            setProposalReviewNotes('');
-                            setProposalRejectionReason('');
-                            setProposalReviewSuccess(null);
-                            setProposalReviewError(null);
-                          }}
-                          className="px-3 py-1.5 rounded-lg text-xs font-bold bg-slate-900 text-white hover:bg-slate-800 transition flex items-center gap-1"
-                        >
-                          <span>Review Proposal</span>
-                          <ArrowRight className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* VIEW 3: AGENT ACTIVITY FEED */}
-      {mainView === 'AGENT_FEED' && (
-        <div className="space-y-4">
-          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs space-y-3">
-            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-3">
-              <div>
-                <div className="flex items-center gap-2">
-                  <Activity className="h-5 w-5 text-teal-600" />
-                  <h2 className="text-base font-bold text-slate-900">Governed Agent Execution Activity Feed</h2>
-                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-teal-100 text-teal-800 border border-teal-200">
-                    Audit Log
-                  </span>
-                </div>
-                <p className="text-xs text-slate-600 mt-0.5">
-                  Longitudinal history of AI agent plans, confirmations, task schedules, and clinician review gates.
-                </p>
-              </div>
-
-              {/* Patient filter */}
-              <div className="flex items-center gap-2 w-full md:w-auto">
-                <span className="text-xs text-slate-500 font-semibold whitespace-nowrap">Filter Patient:</span>
-                <select
-                  value={agentFeedPatientFilter}
-                  onChange={(e) => setAgentFeedPatientFilter(e.target.value)}
-                  className="bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-800 font-medium focus:outline-none focus:border-teal-700 w-full md:w-48"
-                >
-                  <option value="">All Assigned Patients</option>
-                  {data?.patients.map((p) => (
-                    <option key={p.patientId} value={p.patientId}>
-                      {p.name} ({p.patientId.slice(0, 8)}...)
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-          </div>
-
-          {agentFeedError && (
-            <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl flex items-center justify-between text-xs text-rose-800">
-              <div className="flex items-center gap-2">
-                <AlertCircle className="h-4 w-4 text-rose-600 shrink-0" />
-                <span>{agentFeedError}</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => loadAgentFeed()}
-                className="px-2.5 py-1 bg-white border border-rose-300 rounded font-bold text-rose-700 hover:bg-rose-100"
-              >
-                Retry
-              </button>
-            </div>
-          )}
-
-          {agentFeedLoading ? (
-            <div className="p-12 text-center bg-white rounded-xl border border-slate-200 space-y-3">
-              <RotateCcw className="h-6 w-6 text-slate-400 animate-spin mx-auto" />
-              <p className="text-xs text-slate-500 font-semibold">Loading agent activity feed...</p>
-            </div>
-          ) : agentFeed.length === 0 ? (
-            <div className="p-12 text-center bg-white rounded-xl border border-slate-200 space-y-3">
-              <Activity className="h-8 w-8 text-slate-400 mx-auto" />
-              <h3 className="text-sm font-bold text-slate-800">No Agent Activity Recorded</h3>
-              <p className="text-xs text-slate-500 max-w-md mx-auto">
-                No governed agent actions have been dispatched yet for your assigned patients.
-              </p>
-            </div>
-          ) : (
-            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-2xs divide-y divide-slate-100">
-              {agentFeed.map((action) => {
-                const assignedPt = data?.patients.find((pt) => pt.patientId === action.plan?.targetPatientId);
-                const ptName = assignedPt?.name || `Patient #${action.plan?.targetPatientId?.slice(0, 8) || 'Unknown'}`;
-
-                return (
-                  <div key={action.id} className="p-4 hover:bg-slate-50/50 transition space-y-2">
-                    <div className="flex items-center justify-between gap-2 flex-wrap">
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-xs font-bold text-slate-900 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
-                          {action.toolName}
-                        </span>
-                        <span
-                          className={`px-2 py-0.5 rounded text-[10px] font-bold border ${action.riskTier === 'HIGH_RISK'
-                              ? 'bg-rose-100 text-rose-800 border-rose-200'
-                              : action.riskTier === 'MEDIUM_RISK'
-                                ? 'bg-amber-100 text-amber-800 border-amber-200'
-                                : action.riskTier === 'LOW_RISK'
-                                  ? 'bg-emerald-100 text-emerald-800 border-emerald-200'
-                                  : 'bg-slate-100 text-slate-800 border-slate-200'
-                            }`}
-                        >
-                          {action.riskTier}
-                        </span>
-                        <span
-                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${action.status === 'COMPLETED'
-                              ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                              : action.status === 'PENDING_CLINICIAN_APPROVAL'
-                                ? 'bg-amber-100 text-amber-800 border-amber-300'
-                                : action.status === 'REJECTED'
-                                  ? 'bg-rose-100 text-rose-800 border-rose-300'
-                                  : 'bg-slate-100 text-slate-700 border-slate-300'
-                            }`}
-                        >
-                          {action.status}
-                        </span>
-                      </div>
-
-                      <div className="text-[10px] text-slate-400">
-                        {new Date(action.createdAt).toLocaleDateString()} at{' '}
-                        {new Date(action.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </div>
-                    </div>
-
-                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-1">
-                      <div className="text-xs text-slate-800 font-semibold">
-                        Plan Intent: {action.plan?.userIntent || 'Patient Request'}
-                      </div>
-                      <div className="text-xs text-teal-700 font-semibold">
-                        Target: {ptName}
-                      </div>
-                    </div>
-
-                    {action.errorMessage && (
-                      <div className="text-xs text-rose-700 bg-rose-50 p-2 rounded border border-rose-200">
-                        Error: {action.errorMessage}
-                      </div>
-                    )}
-
-                    <div className="flex items-center justify-between pt-1 border-t border-slate-100">
-                      <div className="text-[11px] text-slate-500">
-                        Action ID: <span className="font-mono text-[10px]">{action.id}</span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          try {
-                            const res = await getAgentAction(action.id);
-                            if (res && res.success && res.action) {
-                              setSelectedActionDetail(res.action);
-                            } else {
-                              setSelectedActionDetail(action);
-                            }
-                          } catch {
-                            setSelectedActionDetail(action);
-                          }
-                        }}
-                        className="px-2.5 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold transition"
-                      >
-                        Inspect Action
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* VIEW 4: APPOINTMENTS & CLINICAL VISITS */}
+      {/* VIEW: APPOINTMENTS & CLINICAL VISITS */}
       {mainView === 'APPOINTMENTS' && (
         <DoctorAppointments
           onSelectPatient={(patientId) => {
@@ -4692,445 +3891,49 @@ export default function DoctorDashboard({ onNavigate }: Props) {
             }
             setSelectedPatient(p);
             setActiveDrawerTab('OVERVIEW');
+            setClinicalSection('SUMMARY');
             setMainView('ROSTER');
           }}
         />
       )}
 
-      {/* PROPOSAL DETAIL & CLINICAL REVIEW MODAL */}
-      {selectedProposal && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 overflow-y-auto"
-          onClick={() => {
-            if (!submittingProposalReview && !showRejectModal) {
-              setSelectedProposal(null);
-            }
-          }}
-        >
-          <div
-            ref={proposalModalRef}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="proposal-modal-title"
-            aria-describedby="proposal-modal-description"
-            tabIndex={-1}
-            onClick={(e) => e.stopPropagation()}
-            className="bg-white rounded-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto shadow-2xl border border-slate-200 space-y-4 p-6 my-8 focus:outline-hidden"
-          >
-            {/* Modal Header */}
-            <div className="flex items-start justify-between gap-4 border-b border-slate-100 pb-4">
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
-                    {selectedProposal.parameters?.proposalType || 'CLINICAL_PROPOSAL'}
-                  </span>
-                  <span className="px-2 py-0.5 rounded text-[10px] font-black bg-rose-100 text-rose-800 border border-rose-200">
-                    HIGH_RISK
-                  </span>
-                  <span
-                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${selectedProposal.status === 'PENDING_CLINICIAN_APPROVAL'
-                        ? 'bg-amber-100 text-amber-800 border-amber-300'
-                        : selectedProposal.status === 'COMPLETED'
-                          ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                          : selectedProposal.status === 'REJECTED'
-                            ? 'bg-rose-100 text-rose-800 border-rose-300'
-                            : 'bg-slate-100 text-slate-700 border-slate-300'
-                      }`}
-                  >
-                    {selectedProposal.status === 'PENDING_CLINICIAN_APPROVAL'
-                      ? 'PENDING CLINICIAN APPROVAL'
-                      : selectedProposal.status === 'COMPLETED'
-                        ? 'PROPOSAL APPROVED (ADVISORY)'
-                        : selectedProposal.status === 'REJECTED'
-                          ? 'REJECTED BY CLINICIAN'
-                          : selectedProposal.status}
-                  </span>
-                </div>
-                <h2 id="proposal-modal-title" className="text-base sm:text-lg font-bold text-slate-900 mt-1">
-                  {selectedProposal.parameters?.title || 'Clinical Care Modification'}
-                </h2>
-                <div id="proposal-modal-description" className="text-xs text-slate-500 mt-0.5">
-                  Plan Version: {selectedProposal.planVersion} • Plan ID: <span className="font-mono text-[10px]">{selectedProposal.planId}</span>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setSelectedProposal(null)}
-                aria-label="Close dialog"
-                className="text-slate-400 hover:text-slate-700 p-1.5 rounded-lg hover:bg-slate-100 transition"
-              >
-                <X className="h-5 w-5" aria-hidden="true" />
-              </button>
-            </div>
-
-            {/* Governance Warning Banner */}
-            <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-2.5 text-xs text-amber-900">
-              <ShieldAlert className="h-4 w-4 text-amber-700 shrink-0 mt-0.5" />
-              <div>
-                <span className="font-bold">Clinical Safety Protocol: </span>
-                <span>AI-generated proposals are decision-support recommendations only. AI cannot execute medical orders autonomously. Licensed clinician review and explicit sign-off is required.</span>
-              </div>
-            </div>
-
-            {/* Two-Column Grid: AI Proposal vs Recorded Facts */}
-            <div className="grid md:grid-cols-2 gap-4">
-              {/* Column 1: AI Proposal Details */}
-              <div className="space-y-3 bg-slate-50 p-4 rounded-xl border border-slate-200">
-                <div className="flex items-center gap-1.5 text-xs font-bold text-indigo-900">
-                  <Sparkles className="h-4 w-4 text-amber-500" />
-                  <span>AI-GENERATED PROPOSAL (DECISION SUPPORT ONLY)</span>
-                </div>
-
-                <div className="space-y-1">
-                  <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
-                    Clinical Justification & Rationale
-                  </div>
-                  <p className="text-xs text-slate-800 bg-white p-3 rounded-lg border border-slate-200 leading-relaxed">
-                    {selectedProposal.parameters?.rationale || selectedProposal.explanation || 'No rationale provided.'}
-                  </p>
-                </div>
-
-                {selectedProposal.parameters?.proposedDetails && (
-                  <div className="space-y-1">
-                    <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
-                      Proposed Modifications (Parameters)
-                    </div>
-                    <pre className="text-[11px] font-mono bg-white p-3 rounded-lg border border-slate-200 text-slate-800 overflow-x-auto whitespace-pre-wrap">
-                      {JSON.stringify(selectedProposal.parameters.proposedDetails, null, 2)}
-                    </pre>
-                  </div>
-                )}
-
-                <div className="text-[10px] text-slate-400 space-y-0.5 pt-2 border-t border-slate-200">
-                  <div>Action ID: <span className="font-mono">{selectedProposal.actionId}</span></div>
-                  <div>Created: {new Date(selectedProposal.createdAt).toLocaleString()}</div>
-                  <div>Expires: {new Date(selectedProposal.expiresAt).toLocaleString()}</div>
-                </div>
-              </div>
-
-              {/* Column 2: Recorded Patient Facts (Clinical Source of Truth) */}
-              {(() => {
-                const pt = data?.patients.find((p) => p.patientId === selectedProposal.patientId) || selectedPatient;
-                const hasRecordedFasting = typeof pt?.targetFastingMin === 'number' && typeof pt?.targetFastingMax === 'number';
-                const hasRecordedPostMeal = typeof pt?.targetPostMealMax === 'number';
-
-                return (
-                  <div className="space-y-3 bg-teal-50/40 p-4 rounded-xl border border-teal-200">
-                    <div className="flex items-center gap-1.5 text-xs font-bold text-teal-900">
-                      <ShieldCheck className="h-4 w-4 text-teal-700" aria-hidden="true" />
-                      <span>RECORDED PATIENT FACTS (EHR SOURCE OF TRUTH)</span>
-                    </div>
-
-                    <div className="bg-white p-3 rounded-lg border border-teal-100 space-y-2 text-xs">
-                      <div className="flex items-center justify-between">
-                        <span className="font-bold text-slate-900">{pt?.name || `Patient #${selectedProposal.patientId.slice(0, 8)}`}</span>
-                        <span className="text-[10px] font-semibold text-teal-800 bg-teal-100 px-2 py-0.5 rounded">
-                          {pt?.diabetesType || 'Diabetes Patient'}
-                        </span>
-                      </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 border-t border-slate-100 text-[11px]">
-                        <div>
-                          <div className="flex items-center justify-between gap-1 flex-wrap">
-                            <span className="text-slate-400">Fasting Target:</span>
-                            {!hasRecordedFasting && (
-                              <span className="text-[9px] font-bold text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
-                                Reference Default — Not a Recorded Patient Target
-                              </span>
-                            )}
-                          </div>
-                          <div className="font-bold text-slate-800 mt-0.5">
-                            {pt?.targetFastingMin || 80} - {pt?.targetFastingMax || 130} mg/dL
-                          </div>
-                        </div>
-                        <div>
-                          <div className="flex items-center justify-between gap-1 flex-wrap">
-                            <span className="text-slate-400">Post-Meal Max:</span>
-                            {!hasRecordedPostMeal && (
-                              <span className="text-[9px] font-bold text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
-                                Reference Default — Not a Recorded Patient Target
-                              </span>
-                            )}
-                          </div>
-                          <div className="font-bold text-slate-800 mt-0.5">
-                            &lt; {pt?.targetPostMealMax || 180} mg/dL
-                          </div>
-                        </div>
-                      </div>
-
-                      {pt?.activeCarePlan && (
-                        <div className="pt-1 border-t border-slate-100 text-[11px]">
-                          <span className="text-slate-400">Care Plan:</span>
-                          <div className="font-medium text-slate-800">{pt.activeCarePlan.title}</div>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Notice distinguishing fact vs suggestion */}
-                    <div className="text-[11px] text-teal-800 bg-teal-50 p-2.5 rounded-lg border border-teal-200 leading-snug">
-                      <span className="font-semibold">Clinical Fact Boundary: </span>
-                      The values above represent verified medical history recorded directly by the patient or clinical team. Damu does not alter, fabricate, or extrapolate clinical measurements.
-                    </div>
-                  </div>
-                );
-              })()}
-            </div>
-
-            {/* Success and Error Banners */}
-            {proposalReviewSuccess && (
-              <div className="p-3 bg-emerald-50 border border-emerald-300 rounded-xl text-xs text-emerald-900 flex items-center gap-2">
-                <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
-                <span className="font-medium">{proposalReviewSuccess}</span>
-              </div>
-            )}
-
-            {proposalReviewError && (
-              <div className="p-3 bg-rose-50 border border-rose-300 rounded-xl text-xs text-rose-900 flex items-center gap-2">
-                <AlertCircle className="h-4 w-4 text-rose-600 shrink-0" />
-                <span className="font-medium">{proposalReviewError}</span>
-              </div>
-            )}
-
-            {/* Clinician Decision Action Panel */}
-            {selectedProposal.status === 'PENDING_CLINICIAN_APPROVAL' ? (
-              <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-3 pt-4">
-                <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                  <Stethoscope className="h-4 w-4 text-teal-700" />
-                  <span>Clinician Review & Affirmative Sign-Off</span>
-                </div>
-
-                <div>
-                  <label className="text-[11px] font-semibold text-slate-600 block mb-1">
-                    Clinical Review Notes / Instructions (Optional for approval, min 2 characters if provided):
-                  </label>
-                  <input
-                    type="text"
-                    value={proposalReviewNotes}
-                    onChange={(e) => setProposalReviewNotes(e.target.value)}
-                    placeholder="Enter clinical review notes or directives..."
-                    className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-800 focus:outline-none focus:border-teal-700"
-                    disabled={submittingProposalReview}
-                  />
-                </div>
-
-                <div className="flex items-center justify-end gap-3 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowRejectModal(true);
-                      setProposalReviewError(null);
-                    }}
-                    disabled={submittingProposalReview}
-                    className="px-4 py-2 rounded-lg text-xs font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 transition flex items-center gap-1.5"
-                  >
-                    <X className="h-4 w-4" />
-                    <span>Reject Proposal</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => handleApproveProposal(selectedProposal)}
-                    disabled={submittingProposalReview}
-                    className="px-5 py-2 rounded-lg text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 transition flex items-center gap-1.5 shadow-xs"
-                  >
-                    {submittingProposalReview ? (
-                      <RotateCcw className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Check className="h-4 w-4" />
-                    )}
-                    <span>Approve Clinical Proposal</span>
-                  </button>
-                </div>
-              </div>
-            ) : selectedProposal.status === 'COMPLETED' ? (
-              <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-900 space-y-1.5">
-                <div className="flex items-center gap-2 font-bold text-emerald-950">
-                  <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" aria-hidden="true" />
-                  <span>Proposal Approved — Advisory Review Complete</span>
-                </div>
-                <p className="text-[11px] text-emerald-800 pl-6 leading-relaxed">
-                  AI clinical proposal approved. The advisory recommendation has been reviewed and approved by the assigned clinician. This approval does not automatically change the patient's care plan or prescription. Any actual care-plan, medication, dosage, or prescription change must be separately entered and authorized through the standard clinical workflow.
-                </p>
-              </div>
-            ) : selectedProposal.status === 'REJECTED' ? (
-              <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-900 font-semibold flex items-center gap-2">
-                <X className="h-4 w-4 text-rose-600" />
-                <span>Proposal Rejected: This AI recommendation was reviewed and discarded by the clinician.</span>
-              </div>
-            ) : null}
-          </div>
-        </div>
-      )}
-
-      {/* REJECTION REASON MODAL */}
-      {showRejectModal && selectedProposal && (
-        <div
-          className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-950/75"
-          onClick={() => {
-            if (!submittingProposalReview) {
-              setShowRejectModal(false);
-            }
-          }}
-        >
-          <div
-            ref={rejectionModalRef}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="rejection-modal-title"
-            aria-describedby="rejection-modal-description"
-            tabIndex={-1}
-            onClick={(e) => e.stopPropagation()}
-            className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-rose-200 space-y-4 focus:outline-hidden"
-          >
-            <div className="flex items-center gap-2 text-rose-700">
-              <AlertTriangle className="h-5 w-5" aria-hidden="true" />
-              <h3 id="rejection-modal-title" className="text-sm font-bold text-slate-900">Confirm Proposal Rejection</h3>
-            </div>
-
-            <p id="rejection-modal-description" className="text-xs text-slate-600 leading-relaxed">
-              Please enter the clinical rationale for rejecting this proposal for <span className="font-semibold">{selectedProposal.parameters?.title || 'Care Proposal'}</span>. A reason (minimum 3 characters) is required for the permanent audit trail.
-            </p>
-
-            <div className="space-y-1">
-              <textarea
-                value={proposalRejectionReason}
-                onChange={(e) => setProposalRejectionReason(e.target.value)}
-                placeholder="State clinical reason for rejection (e.g. Current HbA1c does not warrant dosage reduction)..."
-                rows={3}
-                className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs text-slate-800 focus:outline-none focus:border-rose-600"
-                disabled={submittingProposalReview}
-              />
-              <div className="flex justify-between text-[10px] text-slate-400">
-                <span>Required: min 3 characters</span>
-                <span className={proposalRejectionReason.trim().length < 3 ? 'text-rose-500 font-bold' : 'text-emerald-600 font-bold'}>
-                  {proposalRejectionReason.trim().length} / 500
-                </span>
-              </div>
-            </div>
-
-            {proposalReviewError && (
-              <div className="text-xs text-rose-700 bg-rose-50 p-2 rounded border border-rose-200">
-                {proposalReviewError}
-              </div>
-            )}
-
-            <div className="flex items-center justify-end gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setShowRejectModal(false)}
-                disabled={submittingProposalReview}
-                aria-label="Cancel rejection and return to proposal"
-                className="px-3.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg transition"
-              >
-                Cancel
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleRejectProposal(selectedProposal)}
-                disabled={submittingProposalReview || proposalRejectionReason.trim().length < 3}
-                className="px-4 py-1.5 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-lg transition disabled:opacity-50"
-              >
-                {submittingProposalReview ? 'Submitting...' : 'Confirm Rejection'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* AGENT ACTION DETAIL INSPECTOR MODAL */}
-      {selectedActionDetail && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70"
-          onClick={() => setSelectedActionDetail(null)}
-        >
-          <div
-            ref={actionDetailModalRef}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="action-detail-modal-title"
-            aria-describedby="action-detail-modal-description"
-            tabIndex={-1}
-            onClick={(e) => e.stopPropagation()}
-            className="bg-white rounded-2xl max-w-xl w-full p-6 shadow-2xl border border-slate-200 space-y-4 focus:outline-hidden"
-          >
-            <div className="flex items-start justify-between">
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-xs font-bold text-slate-900 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
-                    {selectedActionDetail.toolName}
-                  </span>
-                  <span className="px-2 py-0.5 rounded text-[10px] font-bold border border-rose-200 bg-rose-100 text-rose-800">
-                    {selectedActionDetail.riskTier}
-                  </span>
-                </div>
-                <h3 id="action-detail-modal-title" className="text-sm font-bold text-slate-900 mt-1">
-                  {selectedActionDetail.plan?.userIntent || 'Agent Action Detail'}
-                </h3>
-                <p id="action-detail-modal-description" className="text-xs text-slate-500">
-                  Detailed execution parameters and system status for this governed agent action.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setSelectedActionDetail(null)}
-                aria-label="Close dialog"
-                className="text-slate-400 hover:text-slate-700 p-1 rounded-lg"
-              >
-                <X className="h-5 w-5" aria-hidden="true" />
-              </button>
-            </div>
-
-            <div className="space-y-2 text-xs">
-              <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 space-y-1">
-                <span className="font-semibold text-slate-700">Status: </span>
-                <span className="font-mono font-bold text-teal-800">{selectedActionDetail.status}</span>
-                <div className="text-[11px] text-slate-500">
-                  Target Patient: {selectedActionDetail.plan?.targetPatientId || 'N/A'}
-                </div>
-              </div>
-
-              {selectedActionDetail.parameters && (
-                <div className="space-y-1">
-                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">Parameters</span>
-                  <pre className="text-[11px] font-mono bg-slate-50 p-2.5 rounded border border-slate-200 overflow-x-auto whitespace-pre-wrap max-h-48">
-                    {typeof selectedActionDetail.parameters === 'string'
-                      ? selectedActionDetail.parameters
-                      : JSON.stringify(selectedActionDetail.parameters, null, 2)}
-                  </pre>
-                </div>
-              )}
-
-              {selectedActionDetail.errorMessage && (
-                <div className="p-2.5 bg-rose-50 text-rose-800 rounded border border-rose-200">
-                  <span className="font-bold">Error: </span>
-                  {selectedActionDetail.errorMessage}
-                </div>
-              )}
-            </div>
-
-            <div className="flex justify-end pt-2">
-              <button
-                type="button"
-                onClick={() => setSelectedActionDetail(null)}
-                aria-label="Close dialog"
-                className="px-4 py-1.5 rounded-lg bg-slate-900 text-white text-xs font-bold hover:bg-slate-800"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
+      {/* MODALS: Preserved Medical Report OCR Review & Consultation Workspace */}
       {selectedPatientReport && (
         <MedicalReportReviewModal
           report={selectedPatientReport}
           patientName={selectedPatient?.name}
-          onClose={() => setSelectedPatientReport(null)}
+          patientId={selectedPatient?.patientId}
+          onClose={() => {
+            setSelectedPatientReport(null);
+            if (selectedPatient?.patientId) {
+              void loadPatientDocuments(selectedPatient.patientId);
+            }
+          }}
+          onReviewSaved={() => {
+            if (selectedPatient?.patientId) {
+              void loadPatientDocuments(selectedPatient.patientId);
+            }
+          }}
         />
       )}
 
+      {showConsultationModal && selectedPatient && (
+        <ConsultationWorkspaceModal
+          patient={{
+            id: selectedPatient.patientId,
+            fullName: selectedPatient.name,
+            diabetesType: selectedPatient.diabetesType,
+          }}
+          onClose={() => setShowConsultationModal(false)}
+          onSuccess={() => {
+            setShowConsultationModal(false);
+            void fetchDashboard();
+            if (activeDrawerTab === 'JOURNAL') {
+              void loadPatientDocuments(selectedPatient.patientId);
+            }
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -618,3 +618,366 @@ You can configure your preferences, set quiet hours, or toggle push notification
   };
 }
 
+// ==========================================
+// 12 GOVERNED AGENT WORKFLOW TOOLS (SECTION G)
+// ==========================================
+
+/**
+ * 1. Summarizing a patient's health timeline.
+ */
+export async function summarizeTimelineTool(patientId: string): Promise<ToolExecutionOutput> {
+  const [obs, notes, tasks] = await Promise.all([
+    prisma.healthObservation.findMany({
+      where: { userId: patientId },
+      orderBy: { observedAt: 'desc' },
+      take: 5,
+    }),
+    prisma.consultationNote.findMany({
+      where: { userId: patientId, status: 'APPROVED' },
+      orderBy: { createdAt: 'desc' },
+      take: 3,
+    }),
+    prisma.careTask.findMany({
+      where: { userId: patientId },
+      orderBy: { dueAt: 'desc' },
+      take: 5,
+    }),
+  ]);
+
+  const summary = `Health Timeline Summary:
+• Recent Glucose / Vitals: ${obs.length} entries recorded (latest ${obs[0]?.numericValue ?? 'N/A'} ${obs[0]?.unit ?? ''} on ${obs[0]?.observedAt?.toISOString()?.slice(0, 10) ?? 'N/A'}).
+• Completed Consultations: ${notes.length} approved encounters.
+• Care Tasks: ${tasks.filter((t) => t.status === 'COMPLETED').length} completed, ${tasks.filter((t) => t.status === 'PENDING').length} pending.`;
+
+  return {
+    toolName: 'tool_summarize_timeline',
+    data: { obsCount: obs.length, notesCount: notes.length, tasksCount: tasks.length },
+    summary,
+    sources: [{ type: 'PATIENT_RECORD', title: 'Longitudinal Patient Record', reference: 'PatientRecord:Timeline' }],
+  };
+}
+
+/**
+ * 2. Explaining CGM trends in simple language.
+ */
+export async function explainCgmTrendsTool(patientId: string, timeframe: string = '14d'): Promise<ToolExecutionOutput> {
+  const readings = await prisma.cgmGlucoseReading.findMany({
+    where: { patientId, dataQualityStatus: 'VALID' },
+    orderBy: { observedAt: 'desc' },
+    take: 100,
+  });
+
+  if (readings.length === 0) {
+    return {
+      toolName: 'tool_explain_cgm_trends',
+      data: { count: 0 },
+      summary: 'No CGM sensor readings are available yet. Connect a sensor or upload a glucose report to view trends.',
+      sources: [],
+    };
+  }
+
+  const values = readings.map((r) => r.glucoseValueMgDl);
+  const avg = Math.round(values.reduce((a, b) => a + b, 0) / values.length);
+  const inRange = Math.round((values.filter((v) => v >= 70 && v <= 180).length / values.length) * 100);
+  const belowRange = Math.round((values.filter((v) => v < 70).length / values.length) * 100);
+  const aboveRange = Math.round((values.filter((v) => v > 180).length / values.length) * 100);
+
+  const summary = `Over the past ${timeframe}:
+• Average Glucose: ${avg} mg/dL.
+• Time in Range: ${inRange}% of your readings were in your target range (70–180 mg/dL).
+• Time Below Range: ${belowRange}% (aim is less than 4%).
+• Time Above Range: ${aboveRange}% (aim is less than 25%).
+Your glucose trend is currently stable. Keep up with your balanced meals and active walking routine!`;
+
+  return {
+    toolName: 'tool_explain_cgm_trends',
+    data: { avg, inRange, belowRange, aboveRange, count: readings.length },
+    summary,
+    sources: [{ type: 'PATIENT_RECORD', title: 'Continuous Glucose Monitor Readings', reference: 'Cgm:SensorLogs' }],
+  };
+}
+
+/**
+ * 3. Comparing glucose trends across two periods.
+ */
+export async function compareGlucosePeriodsTool(patientId: string, days: number = 7): Promise<ToolExecutionOutput> {
+  const now = new Date();
+  const mid = new Date(now.getTime() - days * 86400000);
+  const start = new Date(now.getTime() - days * 2 * 86400000);
+
+  const [periodA, periodB] = await Promise.all([
+    prisma.cgmGlucoseReading.findMany({
+      where: { patientId, observedAt: { gte: mid, lte: now }, dataQualityStatus: 'VALID' },
+    }),
+    prisma.cgmGlucoseReading.findMany({
+      where: { patientId, observedAt: { gte: start, lt: mid }, dataQualityStatus: 'VALID' },
+    }),
+  ]);
+
+  const avgA = periodA.length > 0 ? Math.round(periodA.reduce((s, r) => s + r.glucoseValueMgDl, 0) / periodA.length) : null;
+  const avgB = periodB.length > 0 ? Math.round(periodB.reduce((s, r) => s + r.glucoseValueMgDl, 0) / periodB.length) : null;
+
+  let summary = `Comparison:
+• Current Period (last ${days} days): ${avgA ? `${avgA} mg/dL average across ${periodA.length} readings` : 'No readings'}.
+• Prior Period (${days} days prior): ${avgB ? `${avgB} mg/dL average across ${periodB.length} readings` : 'No readings'}.`;
+
+  if (avgA && avgB) {
+    const diff = avgA - avgB;
+    if (diff < 0) {
+      summary += `\nYour average glucose improved by ${Math.abs(diff)} mg/dL compared to the previous period!`;
+    } else if (diff > 0) {
+      summary += `\nYour average glucose rose slightly by ${diff} mg/dL compared to the previous period. Review meal timing with your clinician.`;
+    } else {
+      summary += '\nYour average glucose remained perfectly consistent between the two periods.';
+    }
+  }
+
+  return {
+    toolName: 'tool_compare_glucose_periods',
+    data: { avgA, avgB, countA: periodA.length, countB: periodB.length },
+    summary,
+    sources: [{ type: 'PATIENT_RECORD', title: 'Comparative CGM Trends', reference: 'Cgm:BiPeriodicComparison' }],
+  };
+}
+
+/**
+ * 4. Identifying missing health information.
+ */
+export async function identifyMissingInfoTool(patientId: string): Promise<ToolExecutionOutput> {
+  const [profile, cgmCount, labCount, contactCount] = await Promise.all([
+    prisma.patientProfile.findFirst({ where: { userId: patientId } }),
+    prisma.cgmGlucoseReading.count({ where: { patientId } }),
+    prisma.healthDocument.count({ where: { userId: patientId } }),
+    prisma.emergencyContact.count({ where: { userId: patientId } }),
+  ]);
+
+  const gaps: string[] = [];
+  if (!profile?.knownAllergies || profile.knownAllergies === 'None documented') {
+    gaps.push('Drug allergies have not been formally confirmed.');
+  }
+  if (cgmCount === 0) {
+    gaps.push('No active CGM device connection or glucose readings on file.');
+  }
+  if (labCount === 0) {
+    gaps.push('No recent diagnostic laboratory reports uploaded to Health Vault.');
+  }
+  if (contactCount === 0) {
+    gaps.push('Emergency contact information is missing.');
+  }
+
+  const summary = gaps.length === 0
+    ? 'All core health information categories (Profile, CGM, Labs, Emergency contacts) are documented.'
+    : `Identified ${gaps.length} areas requiring documentation:\n• ${gaps.join('\n• ')}`;
+
+  return {
+    toolName: 'tool_identify_missing_info',
+    data: { gapsCount: gaps.length, gaps },
+    summary,
+    sources: [{ type: 'PATIENT_RECORD', title: 'Clinical Completeness Audit', reference: 'HealthAudit:Completeness' }],
+  };
+}
+
+/**
+ * 5. Organizing uploaded laboratory reports.
+ */
+export async function organizeLabReportsTool(patientId: string): Promise<ToolExecutionOutput> {
+  const docs = await prisma.healthDocument.findMany({
+    where: { userId: patientId },
+    orderBy: { reportDate: 'desc' },
+  });
+
+  const categories = docs.reduce((acc, d) => {
+    acc[d.category] = (acc[d.category] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+
+  const summary = `Organized ${docs.length} uploaded document(s) in Health Vault:
+${Object.entries(categories).map(([cat, count]) => `• ${cat}: ${count} document(s)`).join('\n')}
+Latest report: "${docs[0]?.title ?? 'None'}" (${docs[0]?.reportDate?.toISOString()?.slice(0, 10) ?? 'N/A'}, Status: ${docs[0]?.processingStatus ?? 'N/A'}).`;
+
+  return {
+    toolName: 'tool_organize_lab_reports',
+    data: { total: docs.length, categories },
+    summary,
+    sources: [{ type: 'PATIENT_RECORD', title: 'Health Vault Document Index', reference: 'HealthVault:Index' }],
+  };
+}
+
+/**
+ * 6. Preparing a consultation summary for the doctor.
+ */
+export async function prepareConsultationSummaryTool(patientId: string): Promise<ToolExecutionOutput> {
+  const [profile, latestObs, meds, recentNotes] = await Promise.all([
+    prisma.patientProfile.findFirst({ where: { userId: patientId } }),
+    prisma.healthObservation.findFirst({ where: { userId: patientId }, orderBy: { observedAt: 'desc' } }),
+    prisma.medicationSchedule.findMany({ where: { userId: patientId, isActive: true } }),
+    prisma.consultationNote.findFirst({ where: { userId: patientId, status: 'APPROVED' }, orderBy: { createdAt: 'desc' } }),
+  ]);
+
+  const summary = `### PRE-CONSULTATION CLINICAL BRIEFING
+• Patient: ${profile?.fullName || 'Selected Patient'} (${profile?.diabetesType || 'Type 2 Diabetes'}, diagnosed ${profile?.diagnosisYear || 'N/A'})
+• Target Fasting Range: ${profile?.targetFastingMin || 80}–${profile?.targetFastingMax || 130} mg/dL
+• Latest Glucose Observation: ${latestObs ? `${latestObs.numericValue} ${latestObs.unit} (${latestObs.context}, ${latestObs.observedAt.toISOString().slice(0, 10)})` : 'None documented'}
+• Active Regimen: ${meds.length > 0 ? meds.map((m) => `${m.medicationName} (${m.dosage}, ${m.frequency})`).join(', ') : 'No active medications'}
+• Previous Note Impression: ${recentNotes ? `Approved on ${recentNotes.createdAt.toISOString().slice(0, 10)} by ${recentNotes.clinicianName}` : 'First formal consultation'}`;
+
+  return {
+    toolName: 'tool_prepare_consultation_summary',
+    data: { patientId },
+    summary,
+    sources: [{ type: 'PATIENT_RECORD', title: 'Clinical Pre-Visit Summary', reference: 'ClinicalSummary:Briefing' }],
+  };
+}
+
+/**
+ * 7. Identifying overdue patient care tasks.
+ */
+export async function identifyOverdueTasksTool(patientId: string): Promise<ToolExecutionOutput> {
+  const overdue = await prisma.careTask.findMany({
+    where: {
+      userId: patientId,
+      status: 'PENDING',
+      dueAt: { lt: new Date() },
+    },
+    orderBy: { dueAt: 'asc' },
+  });
+
+  const summary = overdue.length === 0
+    ? 'All patient care tasks are current. There are no overdue self-care activities.'
+    : `Attention: ${overdue.length} overdue care task(s) detected:\n` +
+      overdue.map((t) => `• [${t.priority}] ${t.title} (Due: ${t.dueAt.toISOString().slice(0, 10)})`).join('\n');
+
+  return {
+    toolName: 'tool_identify_overdue_tasks',
+    data: { count: overdue.length, tasks: overdue.map((t) => ({ id: t.id, title: t.title, dueAt: t.dueAt })) },
+    summary,
+    sources: [{ type: 'CARE_PLAN', title: 'Patient Agenda & Care Tasks', reference: 'CarePlan:Tasks' }],
+  };
+}
+
+/**
+ * 8. Preparing draft reminders.
+ */
+export async function draftReminderTool(
+  patientId: string,
+  title: string = 'Daily Fasting Glucose Check',
+  time: string = '08:00',
+): Promise<ToolExecutionOutput> {
+  const summary = `Draft Reminder Prepared:
+• Title: "${title}"
+• Scheduled Time: ${time} daily
+• Purpose: Help maintain steady diabetes self-monitoring habits.
+Click "Confirm Reminder" to activate this notification in your AarogyaDamu account.`;
+
+  return {
+    toolName: 'tool_draft_reminder',
+    data: { patientId, title, time, actionRequired: 'PATIENT_CONFIRMATION' },
+    summary,
+    sources: [{ type: 'CARE_PLAN', title: 'Self-Care Reminder System', reference: 'Reminders:Draft' }],
+  };
+}
+
+/**
+ * 9. Creating draft care-team tasks.
+ */
+export async function draftCareTeamTaskTool(
+  patientId: string,
+  title: string,
+  instructions?: string,
+): Promise<ToolExecutionOutput> {
+  const summary = `Draft Care-Team Task Created:
+• Title: "${title}"
+• Instructions: "${instructions || 'Follow physician-directed protocol.'}"
+• Priority: MEDIUM
+• Status: PENDING_CONFIRMATION
+This task will be queued for the assigned care team once confirmed.`;
+
+  return {
+    toolName: 'tool_draft_care_team_task',
+    data: { patientId, title, instructions },
+    summary,
+    sources: [{ type: 'CARE_PLAN', title: 'Care Team Task Delegation', reference: 'CareTeam:Delegation' }],
+  };
+}
+
+/**
+ * 10. Finding relevant approved reports and observations.
+ */
+export async function queryApprovedReportsTool(patientId: string, docType?: string): Promise<ToolExecutionOutput> {
+  const docs = await prisma.healthDocument.findMany({
+    where: {
+      userId: patientId,
+      processingStatus: { in: ['READY', 'NEEDS_REVIEW'] },
+      ...(docType ? { category: docType } : {}),
+    },
+    orderBy: { reportDate: 'desc' },
+    take: 5,
+  });
+
+  const summary = docs.length === 0
+    ? 'No verified medical reports found matching the query.'
+    : `Found ${docs.length} verified report(s):\n` +
+      docs.map((d) => `• ${d.title} (${d.category}, ${d.reportDate.toISOString().slice(0, 10)})`).join('\n');
+
+  return {
+    toolName: 'tool_query_approved_reports',
+    data: { count: docs.length, reports: docs.map((d) => ({ id: d.id, title: d.title, category: d.category })) },
+    summary,
+    sources: [{ type: 'PATIENT_RECORD', title: 'Verified Health Vault Reports', reference: 'HealthVault:Verified' }],
+  };
+}
+
+/**
+ * 11. Preparing a patient-friendly explanation of approved clinical information.
+ */
+export async function explainClinicalInfoTool(term: string): Promise<ToolExecutionOutput> {
+  const lower = term.toLowerCase();
+  let explanation = '';
+
+  if (lower.includes('hba1c') || lower.includes('a1c')) {
+    explanation = 'HbA1c shows your average blood sugar level over the past 2 to 3 months. Think of it like a report card for your sugar control rather than just a quick snapshot.';
+  } else if (lower.includes('time in range') || lower.includes('tir')) {
+    explanation = 'Time in Range (TIR) tells you what percentage of your day your glucose stayed between 70 and 180 mg/dL. Doctors usually aim for 70% or more of your day to be in this safe green zone.';
+  } else if (lower.includes('gmi')) {
+    explanation = 'GMI (Glucose Management Indicator) gives an estimated HbA1c percentage calculated directly from your recent continuous sensor readings.';
+  } else if (lower.includes('creatinine') || lower.includes('egfr')) {
+    explanation = 'Creatinine and eGFR check how well your kidneys are filtering waste. For people with diabetes, keeping blood sugar and blood pressure steady protects your kidneys over the long term.';
+  } else {
+    explanation = `"${term}" is a clinical health metric. In diabetes care, discussing your exact targets with your doctor ensures treatment fits your lifestyle and symptoms safely.`;
+  }
+
+  return {
+    toolName: 'tool_explain_clinical_info',
+    data: { term, explanation },
+    summary: explanation,
+    sources: [{ type: 'EDUCATIONAL_KNOWLEDGE', title: 'Patient Education Guide (ADA/RSSDI)', reference: 'ClinicalGuidelines:RSSDI' }],
+  };
+}
+
+/**
+ * 12. Preparing a clinician review checklist.
+ */
+export async function prepareReviewChecklistTool(patientId: string): Promise<ToolExecutionOutput> {
+  const [profile, cgmCount, obsCount, meds] = await Promise.all([
+    prisma.patientProfile.findFirst({ where: { userId: patientId } }),
+    prisma.cgmGlucoseReading.count({ where: { patientId } }),
+    prisma.healthObservation.count({ where: { userId: patientId } }),
+    prisma.medicationSchedule.findMany({ where: { userId: patientId, isActive: true } }),
+  ]);
+
+  const summary = `Pre-populated 17-Point Clinical Review Checklist:
+• Patient Baseline: ${profile?.fullName || 'Patient'} (${profile?.diabetesType || 'Type 2 Diabetes'})
+• CGM Sensor Data: ${cgmCount} readings available for TIR/CV calculation
+• Laboratory & Vitals: ${obsCount} observations recorded
+• Active Medications: ${meds.length} prescriptions ready for clinician verification
+The two-level review workspace is prepared for nurse initial check and doctor final approval.`;
+
+  return {
+    toolName: 'tool_prepare_review_checklist',
+    data: { patientId, cgmCount, obsCount, medsCount: meds.length },
+    summary,
+    sources: [{ type: 'EDUCATIONAL_KNOWLEDGE', title: 'Standard Clinical Review Protocol', reference: 'ReviewProtocol:Checklist' }],
+  };
+}
+
+

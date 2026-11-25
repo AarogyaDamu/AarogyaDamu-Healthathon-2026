@@ -1,0 +1,58 @@
+# AarogyaDamu Docker Ignore
+.git
+.github
+node_modules
+**/node_modules
+
+# Environment & Secrets (Never bake into images)
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+
+# Build Outputs & Caches
+dist
+**/dist
+build
+**/build
+.expo
+**/.expo
+web-build
+*.tsbuildinfo
+
+# Logs & Diagnostics
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Test, Documentation & Evidence Artifacts
+coverage
+.nyc_output
+.vitest
+scratch
+artifacts
+tests
+docs
+*.md
+!README.md
+*.zip
+api.log
+git-diff-summary.txt
+
+# Databases & Backups
+*.db
+*.sqlite
+*.sqlite3
+services/api/prisma/backups
+**/backups
+
+# Upload Storage (Mount persistent volumes instead)
+services/api/uploads/*
+!services/api/uploads/.gitkeep
+services/api/uploads/private/*
+!services/api/uploads/private/.gitkeep
+

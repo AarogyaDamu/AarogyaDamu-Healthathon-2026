@@ -94,14 +94,21 @@ describe('Phase 2: Clinical Role Boundaries & Doctor-Led Medication Prescribing 
       activeCaregiver.id,
       readOnlyCaregiver.id,
     ];
-    await prisma.medicationAdherenceEvent.deleteMany({ where: { userId: { in: userIds } } });
-    await prisma.medicationSchedule.deleteMany({ where: { userId: { in: userIds } } });
+    // Preserve immutable MedicationAdherenceEvent & AuditLog history (enforced by PostgreSQL triggers).
+    const adherenceEvents = await prisma.medicationAdherenceEvent.findMany({
+      where: { userId: { in: userIds } },
+      select: { medicationId: true },
+    });
+    const protectedMedIds = new Set(adherenceEvents.map((e) => e.medicationId));
+    await prisma.medicationSchedule.deleteMany({
+      where: {
+        userId: { in: userIds },
+        id: { notIn: Array.from(protectedMedIds) },
+      },
+    });
     await prisma.careNotification.deleteMany({ where: { userId: { in: userIds } } });
-    await prisma.auditLog.deleteMany({ where: { userId: { in: userIds } } });
     await prisma.caregiverConsent.deleteMany({ where: { patientId: { in: userIds } } });
     await prisma.doctorPatientAssignment.deleteMany({ where: { patientId: { in: userIds } } });
-    await prisma.patientProfile.deleteMany({ where: { userId: { in: userIds } } });
-    await prisma.user.deleteMany({ where: { id: { in: userIds } } });
     await prisma.$disconnect();
   });
 

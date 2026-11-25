@@ -10,7 +10,7 @@ test('doctor dashboard provides Phase 4 Appointments & Clinical Visits view', ()
   const dashboard = source(path.join('pages', 'DoctorDashboard.tsx'));
 
   // Main view selector modes includes APPOINTMENTS
-  assert.match(dashboard, /'ROSTER' \| 'PROPOSALS' \| 'AGENT_FEED' \| 'APPOINTMENTS'/);
+  assert.match(dashboard, /'ROSTER' \| 'APPOINTMENTS'/);
   assert.match(dashboard, /Appointments & Visits/);
 
   // Component integration
@@ -74,4 +74,12 @@ test('api client exposes Phase 4 appointment management and scheduling methods',
   assert.match(types, /interface DoctorAvailabilitySlot/);
   assert.match(types, /interface DoctorScheduleSetting/);
   assert.match(types, /interface DoctorTimeOffItem/);
+});
+
+test('doctor workstation never renders "Patient details unavailable" fallback', () => {
+  const dashboard = source(path.join('pages', 'DoctorDashboard.tsx'));
+  const comp = source(path.join('components', 'DoctorAppointments.tsx'));
+
+  assert.doesNotMatch(dashboard, /Patient details unavailable/);
+  assert.doesNotMatch(comp, /Patient details unavailable/);
 });

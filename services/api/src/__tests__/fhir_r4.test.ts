@@ -124,7 +124,7 @@ describe('HL7 FHIR R4 (v4.0.1) Healthcare Interoperability & Conformance Suite',
   // 4. OBSERVATION RESOURCE VALIDATION (LOINC & UCUM)
   // ==========================================================================
   describe('4. Observation Resource with Verified LOINC & UCUM Coding', () => {
-    it('maps fasting glucometer reading to LOINC 14771-0 with UCUM mg/dL', () => {
+    it('maps fasting capillary glucometer reading to LOINC 41653-7 with UCUM mg/dL', () => {
       const obs = {
         id: 'obs-glucose-1',
         userId: mockPatientId,
@@ -142,7 +142,7 @@ describe('HL7 FHIR R4 (v4.0.1) Healthcare Interoperability & Conformance Suite',
       expect(fhirObs.resourceType).toBe('Observation');
       expect(fhirObs.status).toBe('final');
       expect(fhirObs.code.coding?.[0].system).toBe('http://loinc.org');
-      expect(fhirObs.code.coding?.[0].code).toBe(LOINC_CODES.GLUCOSE_BLOOD_GLUCOMETER.code);
+      expect(fhirObs.code.coding?.[0].code).toBe('41653-7');
       expect(fhirObs.valueQuantity?.value).toBe(118);
       expect(fhirObs.valueQuantity?.system).toBe('http://unitsofmeasure.org');
       expect(fhirObs.valueQuantity?.code).toBe('mg/dL');
@@ -150,6 +150,46 @@ describe('HL7 FHIR R4 (v4.0.1) Healthcare Interoperability & Conformance Suite',
 
       const validation = validateFhirResource(fhirObs);
       expect(validation.valid).toBe(true);
+    });
+
+    it('distinguishes molar substance concentration (14771-0, 15074-8) from mass concentration (41653-7, 1558-6)', () => {
+      // 14771-0: Fasting serum in mmol/L
+      const labMolar = mapToFhirObservation({
+        id: 'obs-lab-molar',
+        userId: mockPatientId,
+        type: 'BLOOD_GLUCOSE',
+        numericValue: 5.4,
+        unit: 'mmol/L',
+        context: 'FASTING',
+        provenance: 'LAB_CONFIRMED',
+      });
+      expect(labMolar.code.coding?.[0].code).toBe('14771-0');
+      expect(labMolar.valueQuantity?.code).toBe('mmol/L');
+
+      // 15074-8: Whole blood glucose in mmol/L
+      const bloodMolar = mapToFhirObservation({
+        id: 'obs-blood-molar',
+        userId: mockPatientId,
+        type: 'BLOOD_GLUCOSE',
+        numericValue: 7.1,
+        unit: 'mmol/L',
+        context: 'RANDOM',
+      });
+      expect(bloodMolar.code.coding?.[0].code).toBe('15074-8');
+      expect(bloodMolar.valueQuantity?.code).toBe('mmol/L');
+
+      // 1558-6: Fasting serum in mg/dL
+      const labMass = mapToFhirObservation({
+        id: 'obs-lab-mass',
+        userId: mockPatientId,
+        type: 'BLOOD_GLUCOSE',
+        numericValue: 92,
+        unit: 'mg/dL',
+        context: 'FASTING',
+        provenance: 'LAB_CONFIRMED',
+      });
+      expect(labMass.code.coding?.[0].code).toBe('1558-6');
+      expect(labMass.valueQuantity?.code).toBe('mg/dL');
     });
 
     it('maps 2-hour postprandial glucose to LOINC 88365-2', () => {

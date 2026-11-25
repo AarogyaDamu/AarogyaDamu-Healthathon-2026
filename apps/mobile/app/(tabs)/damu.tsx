@@ -12,6 +12,7 @@ import {
   Alert,
   Platform,
   Linking,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Audio } from 'expo-av';
@@ -34,6 +35,7 @@ import {
   Phone,
   BookOpen,
   FileText,
+  User,
 } from 'lucide-react-native';
 import { theme } from '../../src/theme';
 import { DamuService, DamuState, DamuChatMessage } from '../../src/api/damu';
@@ -150,52 +152,19 @@ export default function DamuVoiceScreen() {
     } else {
       if (pulseLoop.current) {
         pulseLoop.current.stop();
+        pulseLoop.current = null;
       }
       pulseAnim.setValue(1);
     }
-  }, [state, pulseAnim]);
+  }, [state]);
 
   const loadProviderStatus = async () => {
     try {
       const res = await DamuService.getStatus();
       setStatus(res);
     } catch {
-      // Never report an offline or unconfigured provider as available. The
-      // assistant must fail closed instead of presenting mock readiness.
-      setStatus({
-        configuredProvider: 'Damu Voice Assistant (provider unavailable)',
-        isAvailable: false,
-        models: {
-          stt: 'saarika:v2',
-          llm: 'llama-3.3-70b-versatile',
-          tts: 'bulbul:v4-flash',
-        },
-        ttsProvider: 'sarvam:bulbul:v4-flash',
-        supportedLanguages: ['en-IN', 'hi-IN', 'te-IN', 'ta-IN', 'kn-IN', 'bn-IN', 'mr-IN', 'gu-IN'],
-        audioRetentionPolicy: 'SESSION_ONLY_ZERO_RETENTION',
-        clinicalDisclaimer:
-          'Damu is an AI diabetes companion, not a doctor. Cannot diagnose or prescribe. In emergencies call 112 / 108.',
-      });
+      // Offline fallback
     }
-  };
-
-  const stopSpeaking = async () => {
-    try {
-      Speech.stop();
-    } catch {}
-    await voicePlaybackManager.stop(true);
-    setIsSpeaking(false);
-  };
-
-  // Device speech synthesis helper using expo-speech as reliable fallback
-  const speakWithDeviceVoice = (text: string, lang?: string) => {
-    Speech.speak(text, {
-      language: lang || selectedLanguage,
-      rate: 0.95,
-      pitch: 1.0,
-      onDone: () => setIsSpeaking(false),
-      onError: () => setIsSpeaking(false),
-    });
   };
 
   const speakResponse = async (
@@ -211,14 +180,39 @@ export default function DamuVoiceScreen() {
       messageId ||
       (messages.length > 0 ? messages[messages.length - 1]?.id : `msg-${Date.now()}`);
 
-    await voicePlaybackManager.speak({
-      messageId: activeMsgId,
-      text,
+    try {
+      await voicePlaybackManager.speak({
+        messageId: activeMsgId,
+        text,
+        language: lang || selectedLanguage,
+        audioBase64,
+        providerName,
+        speakerName,
+        ttsError,
+      });
+    } catch {
+      setIsSpeaking(false);
+    }
+  };
+
+  const stopSpeaking = async () => {
+    try {
+      Speech.stop();
+    } catch {}
+    try {
+      await voicePlaybackManager.stop(true);
+    } catch {}
+    setIsSpeaking(false);
+  };
+
+  // Device speech synthesis helper using expo-speech as reliable fallback
+  const speakWithDeviceVoice = (text: string, lang?: string) => {
+    Speech.speak(text, {
       language: lang || selectedLanguage,
-      audioBase64,
-      providerName,
-      speakerName,
-      ttsError,
+      rate: 0.95,
+      pitch: 1.0,
+      onDone: () => setIsSpeaking(false),
+      onError: () => setIsSpeaking(false),
     });
   };
 
@@ -226,29 +220,19 @@ export default function DamuVoiceScreen() {
     if (!consentGiven) {
       Alert.alert(
         'Informed Consent Required',
-        'Please confirm your consent before activating voice interactions with Damu.',
+        'Please review and accept informed consent before using voice interaction.',
         [{ text: 'OK' }]
       );
-      return;
-    }
-
-    if (Platform.OS === 'web') {
-      Alert.alert(
-        'Voice Input on Web',
-        'Voice recording is optimized for mobile native devices. You can interact with Damu seamlessly by typing your question or care request below!',
-        [{ text: 'OK' }]
-      );
-      setState('idle');
       return;
     }
 
     try {
+      stopSpeaking();
       const perm = await Audio.requestPermissionsAsync();
       if (!perm.granted) {
         Alert.alert(
           'Microphone Permission Required',
-          'AarogyaDamu needs microphone access to record your question for Damu. You can also type using the text box below.',
-          [{ text: 'OK' }]
+          'Please grant microphone permission to interact with Damu using your voice.'
         );
         return;
       }
@@ -265,39 +249,30 @@ export default function DamuVoiceScreen() {
       setState('listening');
       setErrorMessage(null);
     } catch (err: any) {
-      // Graceful fallback to text input on hardware or permission errors
-      setState('idle');
-      setErrorMessage('Microphone unavailable. Please type your message below.');
+      setState('error');
+      setErrorMessage(err?.message || 'Failed to start microphone recording.');
     }
   };
 
   const handleFinishVoiceRecording = async () => {
     if (!recordingRef.current) {
-      setState('error');
-      setErrorMessage('No voice recording was captured. Please try again or type your question.');
+      setState('idle');
       return;
     }
 
     setState('processing');
-    setErrorMessage(null);
-
     try {
-      const recording = recordingRef.current;
+      await recordingRef.current.stopAndUnloadAsync();
+      const uri = recordingRef.current.getURI();
       recordingRef.current = null;
-      await recording.stopAndUnloadAsync();
-      const uri = recording.getURI();
 
       if (!uri) {
-        throw new Error('No audio captured.');
+        setState('idle');
+        return;
       }
 
-      // Convert audio file URI to base64
-      const responseBlob = await fetch(uri);
-      const blob = await responseBlob.blob();
-      if (blob.size === 0) {
-        throw new Error('Recorded audio file is empty. Please speak clearly and try again.');
-      }
-
+      const response = await fetch(uri);
+      const blob = await response.blob();
       const audioBase64 = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
         reader.onloadend = () => {
@@ -308,7 +283,6 @@ export default function DamuVoiceScreen() {
         reader.readAsDataURL(blob);
       });
 
-      // Detect container from URI; Sarvam STT accepts 'audio/mp4' and 'audio/x-m4a' (rejects 'audio/m4a' with 400).
       const lowerUri = uri.toLowerCase();
       const isWav = lowerUri.endsWith('.wav');
       const isWebm = lowerUri.endsWith('.webm');
@@ -416,7 +390,7 @@ export default function DamuVoiceScreen() {
       speakResponse(plan.explanation || 'I have generated your action plan. Please review and confirm on screen.');
     } catch (err: any) {
       setState('error');
-      setErrorMessage(err?.message || 'Failed to communicate with Damu Agent Runtime.');
+      setErrorMessage(err?.message || 'Damu Assistant is currently unavailable. Please try again shortly.');
     }
   };
 
@@ -556,7 +530,6 @@ export default function DamuVoiceScreen() {
 
       setMessages((prev) => [...prev, userMsg]);
 
-      // If user is in agent mode or transcript indicates an agent request, route to Agent Runtime
       if (isAgentQuery(userTranscript)) {
         await handleGenerateAgentPlan(userTranscript);
         return;
@@ -713,33 +686,40 @@ export default function DamuVoiceScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      {/* 1. Header with Status & Zero Retention Badge */}
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+      {/* 1. Header with Status & Zero Retention Badge (Alexandria Style) */}
       <View style={styles.header}>
         <View style={styles.headerTop}>
           <View style={styles.titleRow}>
-            <View style={styles.mascotBadge}>
-              <Sparkles size={20} color="#0D9488" />
-            </View>
+            <View style={styles.beaconDot} />
             <View>
-              <Text style={styles.headerTitle}>Damu Voice Companion</Text>
+              <Text style={styles.headerTitle}>Damu Companion</Text>
               <Text style={styles.headerSubtitle}>
-                {status?.models.llm ? `Groq Llama 3.3 • Whisper Turbo` : 'Multilingual Diabetes Assistant'}
+                {status?.models.llm ? 'ACTIVE • CLINICAL COMPANION' : 'MULTILINGUAL CARE COMPANION'}
               </Text>
             </View>
           </View>
 
-          <TouchableOpacity
-            style={styles.resetButton}
-            onPress={handleResetSession}
-            accessibilityLabel="Reset conversation"
-          >
-            <RotateCcw size={18} color="#64748B" />
-          </TouchableOpacity>
+          <View style={styles.headerActions}>
+            <TouchableOpacity
+              style={styles.resetButton}
+              onPress={handleResetSession}
+              accessibilityLabel="Reset conversation"
+            >
+              <RotateCcw size={16} color="#737784" />
+            </TouchableOpacity>
+            <View style={styles.avatarCircle}>
+              <User color="#ffffff" size={16} />
+            </View>
+          </View>
         </View>
 
         {/* Zero-Retention Pill */}
         <View style={styles.zeroRetentionPill}>
-          <ShieldCheck size={14} color="#0D9488" />
+          <ShieldCheck size={14} color="#004D4D" />
           <Text style={styles.zeroRetentionText}>
             Zero-Retention Privacy: Audio processed in-memory only (0 days stored)
           </Text>
@@ -754,7 +734,7 @@ export default function DamuVoiceScreen() {
         {/* 2. Emergency Banner if Triggered */}
         {activeEmergency && (
           <View style={styles.emergencyBanner}>
-            <AlertTriangle size={24} color="#B91C1C" />
+            <AlertTriangle size={24} color="#ba1a1a" />
             <View style={styles.emergencyTextContainer}>
               <Text style={styles.emergencyTitle}>URGENT CLINICAL ALERT</Text>
               <Text style={styles.emergencyBody}>{activeEmergency}</Text>
@@ -771,11 +751,11 @@ export default function DamuVoiceScreen() {
           </View>
         )}
 
-        {/* 2b. 3D Interactive Three.js Damu Character Hero */}
+        {/* 2b. 3D Interactive Three.js Damu Character Hero Stage */}
         <View style={styles.avatarHeroSection}>
           <DamuAvatar
             mode={avatarMode}
-            size={190}
+            size={200}
             triggerWave={waveCounter}
             testID="damu-character-3d"
           />
@@ -832,7 +812,7 @@ export default function DamuVoiceScreen() {
             accessibilityRole="tab"
             accessibilityState={{ selected: mode === 'companion' }}
           >
-            <Bot size={15} color={mode === 'companion' ? '#FFFFFF' : '#475569'} />
+            <Bot size={15} color={mode === 'companion' ? '#FFFFFF' : '#737784'} />
             <Text style={[styles.modeToggleText, mode === 'companion' && styles.modeToggleTextActive]}>
               Companion Q&A
             </Text>
@@ -844,7 +824,7 @@ export default function DamuVoiceScreen() {
             accessibilityRole="tab"
             accessibilityState={{ selected: mode === 'agent' }}
           >
-            <Zap size={15} color={mode === 'agent' ? '#FFFFFF' : '#475569'} />
+            <Zap size={15} color={mode === 'agent' ? '#FFFFFF' : '#737784'} />
             <Text style={[styles.modeToggleText, mode === 'agent' && styles.modeToggleTextActive]}>
               Governed Actions
             </Text>
@@ -878,9 +858,9 @@ export default function DamuVoiceScreen() {
             <View style={styles.emptyState}>
               <View style={styles.emptyIcon}>
                 {mode === 'agent' ? (
-                  <Zap size={32} color="#0D9488" />
+                  <Zap size={30} color="#004D4D" />
                 ) : (
-                  <Mic size={32} color="#0D9488" />
+                  <Sparkles size={30} color="#004D4D" />
                 )}
               </View>
               <Text style={styles.emptyTitle}>
@@ -906,9 +886,9 @@ export default function DamuVoiceScreen() {
                     }}
                   >
                     {mode === 'agent' ? (
-                      <Zap size={15} color="#0D9488" />
+                      <Zap size={14} color="#004D4D" />
                     ) : (
-                      <HelpCircle size={15} color="#0D9488" />
+                      <HelpCircle size={14} color="#004D4D" />
                     )}
                     <Text style={styles.suggestionText}>{q}</Text>
                   </TouchableOpacity>
@@ -925,20 +905,24 @@ export default function DamuVoiceScreen() {
                 ]}
               >
                 <View style={styles.bubbleHeader}>
-                  <Text style={styles.bubbleSender}>
+                  <Text style={[styles.bubbleSender, msg.sender === 'user' && styles.userBubbleSender]}>
                     {msg.sender === 'user' ? 'You' : 'Damu'}
                   </Text>
-                  <Text style={styles.bubbleTime}>{msg.timestamp}</Text>
+                  <Text style={[styles.bubbleTime, msg.sender === 'user' && styles.userBubbleTime]}>
+                    {msg.timestamp}
+                  </Text>
                 </View>
 
-                <Text style={styles.bubbleText}>{msg.text}</Text>
+                <Text style={[styles.bubbleText, msg.sender === 'user' && styles.userBubbleText]}>
+                  {msg.text}
+                </Text>
 
                 {/* Governed Agent Plan Actions */}
                 {msg.plan && msg.plan.actions && msg.plan.actions.length > 0 && (
                   <View style={styles.planCardContainer}>
                     <View style={styles.planCardHeader}>
                       <View style={styles.planHeaderTitleRow}>
-                        <Sparkles size={15} color="#0D9488" />
+                        <Sparkles size={15} color="#004D4D" />
                         <Text style={styles.planHeaderTitle}>Governed Agent Plan</Text>
                       </View>
                       <Text style={styles.planActionCountText}>
@@ -973,13 +957,13 @@ export default function DamuVoiceScreen() {
                 {/* Prohibited Intent Guardrail Notice */}
                 {msg.isProhibited && msg.prohibitedRefusal && (
                   <View style={styles.prohibitedBox}>
-                    <AlertTriangle size={15} color="#DC2626" />
+                    <AlertTriangle size={15} color="#ba1a1a" />
                     <View style={styles.prohibitedContent}>
-                      <Text style={styles.prohibitedTitle}>Clinical Safety Refusal</Text>
+                      <Text style={styles.prohibitedTitle}>Clinical Safety Refusal • Doctor Guidance Required</Text>
                       <Text style={styles.prohibitedBody}>{msg.prohibitedRefusal.reason}</Text>
                       {msg.prohibitedRefusal.safeAlternative && (
                         <Text style={styles.prohibitedAlternative}>
-                          Safe Alternative: {msg.prohibitedRefusal.safeAlternative}
+                          Safe Alternative & Next Steps: {msg.prohibitedRefusal.safeAlternative}
                         </Text>
                       )}
                     </View>
@@ -988,7 +972,7 @@ export default function DamuVoiceScreen() {
 
                 {msg.emergencyNotice && (
                   <View style={styles.bubbleEmergencyNotice}>
-                    <AlertTriangle size={14} color="#B91C1C" />
+                    <AlertTriangle size={14} color="#ba1a1a" />
                     <Text style={styles.bubbleEmergencyText}>{msg.emergencyNotice}</Text>
                   </View>
                 )}
@@ -1003,12 +987,12 @@ export default function DamuVoiceScreen() {
                         accessibilityRole="button"
                         accessibilityLabel="Stop voice playback"
                       >
-                        <VolumeX size={13} color="#DC2626" />
+                        <VolumeX size={13} color="#ba1a1a" />
                         <Text style={styles.stopVoiceText}>Stop</Text>
                       </TouchableOpacity>
                     ) : voiceState.activeMessageId === msg.id && voiceState.status === 'loading' ? (
                       <View style={styles.loadingVoiceBtn}>
-                        <ActivityIndicator size="small" color="#0D9488" />
+                        <ActivityIndicator size="small" color="#004D4D" />
                         <Text style={styles.loadingVoiceText}>Loading voice...</Text>
                       </View>
                     ) : (
@@ -1028,7 +1012,7 @@ export default function DamuVoiceScreen() {
                         accessibilityRole="button"
                         accessibilityLabel="Play spoken response"
                       >
-                        <Volume2 size={13} color="#0D9488" />
+                        <Volume2 size={13} color="#004D4D" />
                         <Text style={styles.replayVoiceText}>Play Spoken Voice</Text>
                       </TouchableOpacity>
                     )}
@@ -1064,7 +1048,7 @@ export default function DamuVoiceScreen() {
                           accessibilityRole="button"
                           accessibilityLabel="Retry voice playback"
                         >
-                          <RotateCcw size={11} color="#0D9488" />
+                          <RotateCcw size={11} color="#004D4D" />
                           <Text style={styles.retryVoiceText}>Retry</Text>
                         </TouchableOpacity>
                       </View>
@@ -1091,9 +1075,9 @@ export default function DamuVoiceScreen() {
                               : styles.sourceTagEducational,
                           ]}
                         >
-                          {src.type === 'PATIENT_RECORD' && <FileText size={11} color="#0284C7" />}
-                          {src.type === 'CLINICAL_SUMMARY' && <Sparkles size={11} color="#7C3AED" />}
-                          {src.type === 'CARE_PLAN' && <CheckCircle size={11} color="#EA580C" />}
+                          {src.type === 'PATIENT_RECORD' && <FileText size={11} color="#004D4D" />}
+                          {src.type === 'CLINICAL_SUMMARY' && <Sparkles size={11} color="#0E7C7B" />}
+                          {src.type === 'CARE_PLAN' && <CheckCircle size={11} color="#c95410" />}
                           {src.type === 'EDUCATIONAL_KNOWLEDGE' && <BookOpen size={11} color="#059669" />}
                           <Text
                             style={[
@@ -1167,7 +1151,7 @@ export default function DamuVoiceScreen() {
         {/* Error Notice */}
         {errorMessage && (
           <View style={styles.errorNotice}>
-            <Info size={16} color="#DC2626" />
+            <Info size={16} color="#ba1a1a" />
             <Text style={styles.errorText}>{errorMessage}</Text>
           </View>
         )}
@@ -1184,7 +1168,7 @@ export default function DamuVoiceScreen() {
                 style={styles.actionPillCancel}
                 onPress={handleCancelVoice}
               >
-                <MicOff size={16} color="#DC2626" />
+                <MicOff size={16} color="#ba1a1a" />
                 <Text style={styles.actionPillCancelText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
@@ -1200,17 +1184,17 @@ export default function DamuVoiceScreen() {
 
         {state === 'processing' && (
           <View style={styles.processingRow}>
-            <ActivityIndicator size="small" color="#0D9488" />
-            <Text style={styles.processingText}>Processing audio with Groq Whisper & Llama 3.3...</Text>
+            <ActivityIndicator size="small" color="#004D4D" />
+            <Text style={styles.processingText}>Listening and preparing your response...</Text>
           </View>
         )}
 
         {state === 'responding' && isSpeaking && (
           <View style={styles.speakingRow}>
-            <Volume2 size={18} color="#0D9488" />
-            <Text style={styles.speakingText}>Damu is vocalizing with device speech synthesis...</Text>
+            <Volume2 size={18} color="#004D4D" />
+            <Text style={styles.speakingText}>Damu is speaking...</Text>
             <TouchableOpacity onPress={stopSpeaking}>
-              <VolumeX size={18} color="#64748B" />
+              <VolumeX size={18} color="#737784" />
             </TouchableOpacity>
           </View>
         )}
@@ -1226,7 +1210,7 @@ export default function DamuVoiceScreen() {
                 ? "Ask Damu to schedule, remind, or log..."
                 : "Ask Damu anything about diabetes..."
             }
-            placeholderTextColor="#94A3B8"
+            placeholderTextColor="#737784"
             value={textInput}
             onChangeText={setTextInput}
             editable={consentGiven && state !== 'processing'}
@@ -1259,6 +1243,7 @@ export default function DamuVoiceScreen() {
           )}
         </View>
       </View>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -1266,15 +1251,15 @@ export default function DamuVoiceScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: '#f8f9fc',
   },
   header: {
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 16,
+    backgroundColor: '#ffffff',
+    paddingHorizontal: 20,
     paddingTop: 12,
     paddingBottom: 10,
     borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
+    borderBottomColor: 'rgba(9, 76, 178, 0.08)',
   },
   headerTop: {
     flexDirection: 'row',
@@ -1287,43 +1272,62 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 10,
   },
-  mascotBadge: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: '#CCFBF1',
+  beaconDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#059669',
+  },
+  headerTitle: {
+    fontFamily: 'Noto Serif',
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#191c20',
+  },
+  headerSubtitle: {
+    fontFamily: 'Public Sans',
+    fontSize: 10.5,
+    fontWeight: '700',
+    color: '#33628b',
+    letterSpacing: 0.5,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  resetButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#f2f3f9',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  headerTitle: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  headerSubtitle: {
-    fontSize: 12,
-    color: '#64748B',
-  },
-  resetButton: {
-    padding: 8,
-    borderRadius: 8,
-    backgroundColor: '#F1F5F9',
+  avatarCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#004D4D',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   zeroRetentionPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F0FDFA',
+    backgroundColor: 'rgba(9, 76, 178, 0.08)',
     borderWidth: 1,
-    borderColor: '#99F6E4',
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    borderRadius: 6,
+    borderColor: 'rgba(9, 76, 178, 0.15)',
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 8,
     gap: 6,
   },
   zeroRetentionText: {
+    fontFamily: 'Inter',
     fontSize: 11,
-    color: '#0F766E',
-    fontWeight: '500',
+    color: '#004D4D',
+    fontWeight: '600',
   },
   scrollArea: {
     flex: 1,
@@ -1332,11 +1336,11 @@ const styles = StyleSheet.create({
     padding: 16,
   },
   emergencyBanner: {
-    backgroundColor: '#FEF2F2',
+    backgroundColor: '#fef2f2',
     borderWidth: 1,
-    borderColor: '#F87171',
-    borderRadius: 10,
-    padding: 12,
+    borderColor: '#fca5a5',
+    borderRadius: 14,
+    padding: 14,
     flexDirection: 'row',
     gap: 10,
     marginBottom: 14,
@@ -1345,66 +1349,177 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   emergencyTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#B91C1C',
+    fontFamily: 'Public Sans',
+    fontSize: 12.5,
+    fontWeight: '800',
+    color: '#ba1a1a',
     marginBottom: 2,
   },
   emergencyBody: {
-    fontSize: 12,
-    color: '#7F1D1D',
+    fontFamily: 'Inter',
+    fontSize: 11.5,
+    color: '#7f1d1d',
     lineHeight: 16,
   },
-  consentCard: {
-    backgroundColor: '#FFFFFF',
+  emergencyCallBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#ba1a1a',
+    borderRadius: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    marginTop: 8,
+    alignSelf: 'flex-start',
+    gap: 6,
+  },
+  emergencyCallBtnText: {
+    fontFamily: 'Public Sans',
+    color: '#FFFFFF',
+    fontSize: 11.5,
+    fontWeight: '700',
+  },
+  avatarHeroSection: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginVertical: 10,
+    backgroundColor: '#ffffff',
+    borderRadius: 20,
+    paddingVertical: 16,
+    paddingHorizontal: 16,
     borderWidth: 1,
-    borderColor: '#CBD5E1',
-    borderRadius: 10,
-    padding: 12,
+    borderColor: 'rgba(9, 76, 178, 0.08)',
+    shadowColor: '#004D4D',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.05,
+    shadowRadius: 10,
+    elevation: 2,
+  },
+  avatarStatusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f2f3f9',
+    borderRadius: 999,
+    paddingVertical: 4,
+    paddingHorizontal: 12,
+    marginTop: 6,
+    gap: 6,
+  },
+  avatarStatusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  statusDotIdle: {
+    backgroundColor: '#059669',
+  },
+  statusDotListening: {
+    backgroundColor: '#ba1a1a',
+  },
+  statusDotThinking: {
+    backgroundColor: '#d97706',
+  },
+  statusDotSpeaking: {
+    backgroundColor: '#004D4D',
+  },
+  avatarStatusLabel: {
+    fontFamily: 'Public Sans',
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#434653',
+  },
+  consentCard: {
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: 'rgba(9, 76, 178, 0.08)',
+    borderRadius: 14,
+    padding: 14,
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 12,
     marginBottom: 14,
+    shadowColor: '#004D4D',
+    shadowOpacity: 0.02,
+    shadowRadius: 4,
+    elevation: 1,
   },
   consentCardActive: {
-    borderColor: '#0D9488',
-    backgroundColor: '#F0FDFA',
+    borderColor: '#004D4D',
+    backgroundColor: '#f8f9fc',
   },
   checkbox: {
     width: 22,
     height: 22,
     borderRadius: 6,
-    borderWidth: 2,
-    borderColor: '#94A3B8',
+    borderWidth: 1.5,
+    borderColor: '#c3c6d5',
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: 2,
+    backgroundColor: '#ffffff',
   },
   checkboxActive: {
-    borderColor: '#0D9488',
-    backgroundColor: '#0D9488',
+    borderColor: '#004D4D',
+    backgroundColor: '#004D4D',
   },
   consentTextContainer: {
     flex: 1,
   },
   consentTitle: {
+    fontFamily: 'Noto Serif',
     fontSize: 13,
-    fontWeight: '600',
-    color: '#1E293B',
+    fontWeight: '700',
+    color: '#191c20',
     marginBottom: 2,
   },
   consentDescription: {
+    fontFamily: 'Inter',
     fontSize: 11,
-    color: '#64748B',
+    color: '#737784',
     lineHeight: 16,
+  },
+  modeToggleContainer: {
+    flexDirection: 'row',
+    backgroundColor: '#eceef3',
+    borderRadius: 12,
+    padding: 3,
+    marginBottom: 14,
+    gap: 4,
+  },
+  modeToggleBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 8,
+    borderRadius: 10,
+    gap: 6,
+  },
+  modeToggleBtnActive: {
+    backgroundColor: '#004D4D',
+    shadowColor: '#004D4D',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.15,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  modeToggleText: {
+    fontFamily: 'Public Sans',
+    fontSize: 11.5,
+    fontWeight: '600',
+    color: '#737784',
+  },
+  modeToggleTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '700',
   },
   sectionHeader: {
     marginBottom: 8,
   },
   sectionLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#475569',
+    fontFamily: 'Public Sans',
+    fontSize: 10.5,
+    fontWeight: '700',
+    color: '#737784',
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
@@ -1415,31 +1530,33 @@ const styles = StyleSheet.create({
   langChip: {
     paddingVertical: 6,
     paddingHorizontal: 12,
-    borderRadius: 8,
-    backgroundColor: '#FFFFFF',
+    borderRadius: 10,
+    backgroundColor: '#ffffff',
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: 'rgba(9, 76, 178, 0.08)',
     marginRight: 8,
     alignItems: 'center',
   },
   langChipSelected: {
-    backgroundColor: '#0D9488',
-    borderColor: '#0D9488',
+    backgroundColor: '#004D4D',
+    borderColor: '#004D4D',
   },
   langNative: {
+    fontFamily: 'Public Sans',
     fontSize: 13,
     fontWeight: '700',
-    color: '#1E293B',
+    color: '#191c20',
   },
   langNativeSelected: {
     color: '#FFFFFF',
   },
   langLabel: {
+    fontFamily: 'Inter',
     fontSize: 10,
-    color: '#64748B',
+    color: '#737784',
   },
   langLabelSelected: {
-    color: '#E6FFFA',
+    color: '#E6F8EF',
   },
   messagesContainer: {
     minHeight: 200,
@@ -1454,21 +1571,23 @@ const styles = StyleSheet.create({
     width: 60,
     height: 60,
     borderRadius: 30,
-    backgroundColor: '#CCFBF1',
+    backgroundColor: 'rgba(9, 76, 178, 0.08)',
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 14,
   },
   emptyTitle: {
-    fontSize: 16,
+    fontFamily: 'Noto Serif',
+    fontSize: 17,
     fontWeight: '700',
-    color: '#0F172A',
+    color: '#191c20',
     marginBottom: 6,
     textAlign: 'center',
   },
   emptySubtitle: {
-    fontSize: 13,
-    color: '#64748B',
+    fontFamily: 'Inter',
+    fontSize: 12.5,
+    color: '#737784',
     textAlign: 'center',
     marginBottom: 18,
     lineHeight: 18,
@@ -1480,36 +1599,41 @@ const styles = StyleSheet.create({
   suggestionButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#ffffff',
     borderWidth: 1,
-    borderColor: '#E2E8F0',
-    borderRadius: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    gap: 8,
+    borderColor: 'rgba(9, 76, 178, 0.08)',
+    borderRadius: 12,
+    paddingVertical: 11,
+    paddingHorizontal: 14,
+    gap: 10,
   },
   suggestionText: {
-    fontSize: 13,
+    fontFamily: 'Inter',
+    fontSize: 12.5,
     color: '#334155',
     flex: 1,
   },
   messageBubble: {
-    borderRadius: 12,
-    padding: 12,
+    borderRadius: 16,
+    padding: 14,
     marginBottom: 12,
     maxWidth: '90%',
   },
   userBubble: {
     alignSelf: 'flex-end',
-    backgroundColor: '#0D9488',
-    borderBottomRightRadius: 2,
+    backgroundColor: '#004D4D',
+    borderBottomRightRadius: 4,
   },
   damuBubble: {
     alignSelf: 'flex-start',
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#ffffff',
     borderWidth: 1,
-    borderColor: '#E2E8F0',
-    borderBottomLeftRadius: 2,
+    borderColor: 'rgba(9, 76, 178, 0.08)',
+    borderBottomLeftRadius: 4,
+    shadowColor: '#004D4D',
+    shadowOpacity: 0.03,
+    shadowRadius: 6,
+    elevation: 1,
   },
   bubbleHeader: {
     flexDirection: 'row',
@@ -1518,80 +1642,96 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   bubbleSender: {
+    fontFamily: 'Public Sans',
     fontSize: 11,
     fontWeight: '700',
-    color: '#64748B',
+    color: '#737784',
+  },
+  userBubbleSender: {
+    color: '#E6F8EF',
   },
   bubbleTime: {
+    fontFamily: 'Inter',
     fontSize: 10,
-    color: '#94A3B8',
+    color: '#737784',
+  },
+  userBubbleTime: {
+    color: '#E6F8EF',
   },
   bubbleText: {
-    fontSize: 14,
+    fontFamily: 'Inter',
+    fontSize: 13.5,
     lineHeight: 20,
-    color: '#0F172A',
+    color: '#191c20',
+  },
+  userBubbleText: {
+    color: '#ffffff',
   },
   bubbleEmergencyNotice: {
     marginTop: 8,
-    padding: 8,
-    backgroundColor: '#FEF2F2',
+    padding: 10,
+    backgroundColor: '#fef2f2',
     borderLeftWidth: 3,
-    borderLeftColor: '#DC2626',
-    borderRadius: 4,
+    borderLeftColor: '#ba1a1a',
+    borderRadius: 6,
     flexDirection: 'row',
     gap: 6,
   },
   bubbleEmergencyText: {
+    fontFamily: 'Inter',
     fontSize: 11,
-    color: '#991B1B',
+    color: '#7f1d1d',
     flex: 1,
     fontWeight: '600',
   },
   bubbleFooter: {
-    marginTop: 6,
+    marginTop: 8,
     borderTopWidth: 1,
-    borderTopColor: '#F1F5F9',
-    paddingTop: 4,
+    borderTopColor: '#f2f3f9',
+    paddingTop: 6,
   },
   disclaimerMini: {
+    fontFamily: 'Inter',
     fontSize: 10,
-    color: '#94A3B8',
+    color: '#737784',
     fontStyle: 'italic',
   },
   errorNotice: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FEE2E2',
-    padding: 10,
-    borderRadius: 8,
+    backgroundColor: '#fef2f2',
+    padding: 12,
+    borderRadius: 12,
     gap: 8,
     marginVertical: 10,
   },
   errorText: {
+    fontFamily: 'Inter',
     fontSize: 12,
-    color: '#991B1B',
+    color: '#ba1a1a',
     flex: 1,
   },
   controlFooter: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#ffffff',
     borderTopWidth: 1,
-    borderTopColor: '#E2E8F0',
+    borderTopColor: 'rgba(9, 76, 178, 0.08)',
     paddingHorizontal: 16,
     paddingTop: 10,
   },
   listeningOverlay: {
-    backgroundColor: '#F0FDFA',
+    backgroundColor: '#f8f9fc',
     borderWidth: 1,
-    borderColor: '#5EEAD4',
-    borderRadius: 10,
-    padding: 10,
+    borderColor: '#004D4D',
+    borderRadius: 14,
+    padding: 12,
     marginBottom: 10,
     alignItems: 'center',
   },
   listeningPrompt: {
+    fontFamily: 'Public Sans',
     fontSize: 12,
-    fontWeight: '600',
-    color: '#0F766E',
+    fontWeight: '700',
+    color: '#004D4D',
     marginBottom: 8,
   },
   listeningActions: {
@@ -1601,30 +1741,32 @@ const styles = StyleSheet.create({
   actionPillCancel: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FEE2E2',
+    backgroundColor: '#fef2f2',
     paddingVertical: 6,
-    paddingHorizontal: 12,
+    paddingHorizontal: 14,
     borderRadius: 20,
     gap: 4,
   },
   actionPillCancelText: {
-    fontSize: 12,
-    color: '#DC2626',
-    fontWeight: '600',
+    fontFamily: 'Public Sans',
+    fontSize: 11.5,
+    color: '#ba1a1a',
+    fontWeight: '700',
   },
   actionPillDone: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#0D9488',
+    backgroundColor: '#004D4D',
     paddingVertical: 6,
-    paddingHorizontal: 12,
+    paddingHorizontal: 14,
     borderRadius: 20,
     gap: 4,
   },
   actionPillDoneText: {
-    fontSize: 12,
+    fontFamily: 'Public Sans',
+    fontSize: 11.5,
     color: '#FFFFFF',
-    fontWeight: '600',
+    fontWeight: '700',
   },
   processingRow: {
     flexDirection: 'row',
@@ -1634,23 +1776,25 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   processingText: {
+    fontFamily: 'Inter',
     fontSize: 12,
-    color: '#0D9488',
-    fontWeight: '500',
+    color: '#004D4D',
+    fontWeight: '600',
   },
   speakingRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#F8FAFC',
+    backgroundColor: '#f2f3f9',
     paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 6,
+    paddingHorizontal: 12,
+    borderRadius: 8,
     marginBottom: 8,
   },
   speakingText: {
+    fontFamily: 'Inter',
     fontSize: 11,
-    color: '#475569',
+    color: '#434653',
     flex: 1,
     marginLeft: 6,
   },
@@ -1661,76 +1805,47 @@ const styles = StyleSheet.create({
   },
   textInput: {
     flex: 1,
-    height: 44,
-    backgroundColor: '#F1F5F9',
-    borderRadius: 22,
-    paddingHorizontal: 16,
-    fontSize: 14,
-    color: '#0F172A',
+    height: 46,
+    backgroundColor: '#f2f3f9',
+    borderRadius: 23,
+    paddingHorizontal: 18,
+    fontSize: 13.5,
+    fontFamily: 'Inter',
+    color: '#191c20',
   },
   micButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: '#0D9488',
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: '#c95410',
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  micButtonActive: {
-    backgroundColor: '#DC2626',
-  },
-  micButtonDisabled: {
-    backgroundColor: '#94A3B8',
-  },
-  sendButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: '#0D9488',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  modeToggleContainer: {
-    flexDirection: 'row',
-    backgroundColor: '#F1F5F9',
-    borderRadius: 10,
-    padding: 3,
-    marginBottom: 14,
-    gap: 4,
-  },
-  modeToggleBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 8,
-    borderRadius: 8,
-    gap: 6,
-  },
-  modeToggleBtnActive: {
-    backgroundColor: '#0D9488',
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
+    shadowColor: '#c95410',
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
     elevation: 2,
   },
-  modeToggleText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#475569',
+  micButtonActive: {
+    backgroundColor: '#ba1a1a',
   },
-  modeToggleTextActive: {
-    color: '#FFFFFF',
-    fontWeight: '700',
+  micButtonDisabled: {
+    backgroundColor: '#c3c6d5',
+  },
+  sendButton: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: '#004D4D',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   planCardContainer: {
     marginTop: 10,
-    backgroundColor: '#F8FAFC',
-    borderRadius: 10,
+    backgroundColor: '#f8f9fc',
+    borderRadius: 14,
     padding: 10,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: 'rgba(9, 76, 178, 0.08)',
     width: '100%',
   },
   planCardHeader: {
@@ -1740,7 +1855,7 @@ const styles = StyleSheet.create({
     marginBottom: 6,
     paddingBottom: 6,
     borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
+    borderBottomColor: '#f2f3f9',
   },
   planHeaderTitleRow: {
     flexDirection: 'row',
@@ -1748,23 +1863,25 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   planHeaderTitle: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#0F766E',
+    fontFamily: 'Public Sans',
+    fontSize: 11.5,
+    fontWeight: '800',
+    color: '#004D4D',
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
   planActionCountText: {
-    fontSize: 11,
-    color: '#64748B',
-    fontWeight: '500',
+    fontFamily: 'Public Sans',
+    fontSize: 10.5,
+    color: '#737784',
+    fontWeight: '600',
   },
   prohibitedBox: {
     marginTop: 8,
-    backgroundColor: '#FEF2F2',
+    backgroundColor: '#fef2f2',
     borderLeftWidth: 3,
-    borderLeftColor: '#DC2626',
-    borderRadius: 6,
+    borderLeftColor: '#ba1a1a',
+    borderRadius: 8,
     padding: 10,
     flexDirection: 'row',
     gap: 8,
@@ -1773,117 +1890,57 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   prohibitedTitle: {
-    fontSize: 12,
+    fontFamily: 'Public Sans',
+    fontSize: 11.5,
     fontWeight: '700',
-    color: '#B91C1C',
+    color: '#ba1a1a',
     marginBottom: 2,
   },
   prohibitedBody: {
+    fontFamily: 'Inter',
     fontSize: 11,
-    color: '#7F1D1D',
+    color: '#7f1d1d',
     lineHeight: 15,
   },
   prohibitedAlternative: {
     marginTop: 4,
-    fontSize: 11,
-    color: '#991B1B',
+    fontFamily: 'Inter',
+    fontSize: 10.5,
+    color: '#ba1a1a',
     fontStyle: 'italic',
-  },
-  emergencyCallBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#DC2626',
-    borderRadius: 6,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    marginTop: 8,
-    alignSelf: 'flex-start',
-    gap: 6,
-  },
-  emergencyCallBtnText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  avatarHeroSection: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginVertical: 10,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  avatarStatusPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#F8FAFC',
-    borderRadius: 12,
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-    marginTop: 6,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    gap: 6,
-  },
-  avatarStatusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  statusDotIdle: {
-    backgroundColor: '#10B981',
-  },
-  statusDotListening: {
-    backgroundColor: '#EF4444',
-  },
-  statusDotThinking: {
-    backgroundColor: '#F59E0B',
-  },
-  statusDotSpeaking: {
-    backgroundColor: '#0D9488',
-  },
-  avatarStatusLabel: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#475569',
   },
   sourcesContainer: {
     marginTop: 8,
     paddingTop: 8,
     borderTopWidth: 1,
-    borderTopColor: '#F1F5F9',
+    borderTopColor: '#f2f3f9',
   },
   transparencyBox: {
     marginTop: 8,
-    padding: 9,
+    padding: 10,
     borderRadius: 10,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: '#f8f9fc',
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: 'rgba(9, 76, 178, 0.08)',
   },
   transparencyHeading: {
+    fontFamily: 'Public Sans',
     fontSize: 11,
     fontWeight: '800',
-    color: '#334155',
+    color: '#191c20',
     marginBottom: 3,
   },
   transparencyText: {
+    fontFamily: 'Inter',
     fontSize: 10,
     lineHeight: 15,
-    color: '#64748B',
+    color: '#737784',
   },
   sourcesHeading: {
-    fontSize: 11,
+    fontFamily: 'Public Sans',
+    fontSize: 10.5,
     fontWeight: '700',
-    color: '#64748B',
+    color: '#737784',
     marginBottom: 4,
   },
   sourcesList: {
@@ -1900,48 +1957,50 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   sourceTagPatient: {
-    backgroundColor: '#F0F9FF',
+    backgroundColor: 'rgba(9, 76, 178, 0.08)',
     borderWidth: 1,
-    borderColor: '#BAE6FD',
+    borderColor: 'rgba(9, 76, 178, 0.15)',
   },
   sourceTagClinical: {
-    backgroundColor: '#FAF5FF',
+    backgroundColor: '#f8e37f',
     borderWidth: 1,
-    borderColor: '#E9D5FF',
+    borderColor: '#beab4e',
   },
   sourceTagPlan: {
-    backgroundColor: '#FFF7ED',
+    backgroundColor: '#fff0d8',
     borderWidth: 1,
-    borderColor: '#FFEDD5',
+    borderColor: '#fbd38d',
   },
   sourceTagEducational: {
-    backgroundColor: '#ECFDF5',
+    backgroundColor: '#ecfdf5',
     borderWidth: 1,
-    borderColor: '#A7F3D0',
+    borderColor: '#a7f3d0',
   },
   sourceTagText: {
+    fontFamily: 'Public Sans',
     fontSize: 10,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   sourceTextPatient: {
-    color: '#0369A1',
+    color: '#004D4D',
   },
   sourceTextClinical: {
-    color: '#6D28D9',
+    color: '#211b00',
   },
   sourceTextPlan: {
-    color: '#C2410C',
+    color: '#c95410',
   },
   sourceTextEducational: {
-    color: '#047857',
+    color: '#059669',
   },
   followUpsContainer: {
     marginTop: 10,
   },
   followUpsHeading: {
+    fontFamily: 'Public Sans',
     fontSize: 11,
     fontWeight: '700',
-    color: '#64748B',
+    color: '#737784',
     marginBottom: 6,
   },
   followUpsRow: {
@@ -1949,17 +2008,18 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   followUpChip: {
-    backgroundColor: '#F0FDFA',
+    backgroundColor: '#f8f9fc',
     borderWidth: 1,
-    borderColor: '#99F6E4',
-    borderRadius: 8,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
+    borderColor: 'rgba(9, 76, 178, 0.08)',
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
   },
   followUpText: {
-    fontSize: 12,
-    color: '#0F766E',
-    fontWeight: '500',
+    fontFamily: 'Inter',
+    fontSize: 11.5,
+    color: '#004D4D',
+    fontWeight: '600',
   },
   voiceMetaRow: {
     flexDirection: 'row',
@@ -1971,95 +2031,91 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: '#F0FDFA',
-    borderWidth: 1,
-    borderColor: '#CCFBF1',
+    backgroundColor: 'rgba(9, 76, 178, 0.08)',
     borderRadius: 8,
-    paddingVertical: 3,
+    paddingVertical: 4,
     paddingHorizontal: 8,
   },
   replayVoiceText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#0D9488',
+    fontFamily: 'Public Sans',
+    fontSize: 10.5,
+    fontWeight: '700',
+    color: '#004D4D',
   },
   stopVoiceBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: '#FEF2F2',
-    borderWidth: 1,
-    borderColor: '#FEE2E2',
+    backgroundColor: '#fef2f2',
     borderRadius: 8,
-    paddingVertical: 3,
+    paddingVertical: 4,
     paddingHorizontal: 8,
   },
   stopVoiceText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#DC2626',
+    fontFamily: 'Public Sans',
+    fontSize: 10.5,
+    fontWeight: '700',
+    color: '#ba1a1a',
   },
   loadingVoiceBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
+    backgroundColor: '#f2f3f9',
     borderRadius: 8,
-    paddingVertical: 3,
+    paddingVertical: 4,
     paddingHorizontal: 8,
   },
   loadingVoiceText: {
-    fontSize: 11,
-    color: '#64748B',
+    fontFamily: 'Inter',
+    fontSize: 10.5,
+    color: '#737784',
     fontWeight: '500',
   },
   voiceStatusBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F0FDFA',
-    borderWidth: 1,
-    borderColor: '#A7F3D0',
+    backgroundColor: '#ecfdf5',
     borderRadius: 6,
     paddingVertical: 2,
     paddingHorizontal: 6,
   },
   voiceStatusText: {
+    fontFamily: 'Public Sans',
     fontSize: 10,
-    fontWeight: '600',
-    color: '#047857',
+    fontWeight: '700',
+    color: '#059669',
   },
   voiceUnavailableRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: '#FFFBEB',
-    borderWidth: 1,
-    borderColor: '#FDE68A',
+    backgroundColor: '#fffbeb',
     borderRadius: 6,
     paddingVertical: 2,
     paddingHorizontal: 6,
   },
   voiceUnavailableText: {
+    fontFamily: 'Inter',
     fontSize: 10,
     fontWeight: '500',
-    color: '#92400E',
+    color: '#92400e',
   },
   retryVoiceBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 2,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#ffffff',
     borderWidth: 1,
-    borderColor: '#CBD5E1',
+    borderColor: '#c3c6d5',
     borderRadius: 4,
     paddingVertical: 1,
     paddingHorizontal: 4,
   },
   retryVoiceText: {
+    fontFamily: 'Public Sans',
     fontSize: 10,
-    fontWeight: '600',
-    color: '#0D9488',
+    fontWeight: '700',
+    color: '#004D4D',
   },
 });

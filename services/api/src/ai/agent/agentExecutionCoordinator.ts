@@ -1,5 +1,6 @@
 import { prisma } from '../../server';
 import { AgentToolName, AgentActorRole, AgentPlanStatus } from '@aarogyadamu/contracts';
+import { runWithTenantContext } from '../../db/tenantContext';
 import { executeAgentTool, ToolExecutionResult } from './toolExecutor';
 
 export interface ExecuteClaimedActionParams {
@@ -50,104 +51,109 @@ export async function executeClaimedAction(
     parsedParams = {};
   }
 
-  // 2. Dispatch underlying tool
-  const toolResult: ToolExecutionResult = await executeAgentTool(
-    action.toolName as AgentToolName,
-    parsedParams,
-    {
-      actorId,
-      targetPatientId: action.plan.targetPatientId,
-      actorRole,
-      idempotencyKey: action.idempotencyKey,
-      actionId: action.id,
-      planId: action.planId,
-    },
+  // 2. Dispatch underlying tool & persist audit record under patient tenant context
+  // so PostgreSQL RLS policies on AgentAuditRecord and AgentPlan satisfy WITH CHECK and RETURNING requirements
+  return await runWithTenantContext(
+    { userId: action.plan.targetPatientId, patientId: action.plan.targetPatientId, role: 'PATIENT' },
+    async () => {
+      const toolResult: ToolExecutionResult = await executeAgentTool(
+        action.toolName as AgentToolName,
+        parsedParams,
+        {
+          actorId,
+          targetPatientId: action.plan.targetPatientId,
+          actorRole,
+          idempotencyKey: action.idempotencyKey,
+          actionId: action.id,
+          planId: action.planId,
+        },
+      );
+
+      let updatedActionStatus: 'COMPLETED' | 'FAILED' = 'COMPLETED';
+      let auditRecordId: string | undefined = undefined;
+
+      if (toolResult.success) {
+        // Create audit record
+        const audit = await prisma.agentAuditRecord.create({
+          data: {
+            userId: action.plan.targetPatientId,
+            agentName: 'Damu',
+            riskTier: action.riskTier,
+            actionType: action.toolName,
+            summary: `Executed agent action: ${action.toolName}`,
+            payload: JSON.stringify({
+              parameters: parsedParams,
+              result: toolResult.result,
+            }),
+            requiresClinicianApproval: action.riskTier === 'HIGH_RISK',
+            approvalStatus: 'APPROVED',
+            approvedBy: action.confirmedByUserId || actorId,
+            approvedAt: action.confirmedAt || new Date(),
+            executionResult: JSON.stringify(toolResult.result),
+          },
+        });
+        auditRecordId = audit.id;
+
+        await prisma.agentAction.update({
+          where: { id: action.id },
+          data: {
+            status: 'COMPLETED',
+            executedAt: new Date(),
+            executionResult: JSON.stringify(toolResult.result),
+            errorCode: null,
+            errorMessage: null,
+            auditRecordId,
+          },
+        });
+        updatedActionStatus = 'COMPLETED';
+      } else {
+        await prisma.agentAction.update({
+          where: { id: action.id },
+          data: {
+            status: 'FAILED',
+            executedAt: new Date(),
+            errorCode: toolResult.errorCode || 'EXECUTION_FAILED',
+            errorMessage: toolResult.errorMessage || 'Execution failed',
+            executionResult: JSON.stringify({ error: toolResult.errorMessage }),
+          },
+        });
+        updatedActionStatus = 'FAILED';
+      }
+
+      // 4. Update parent plan status based on aggregate action states
+      const siblingActions = await prisma.agentAction.findMany({
+        where: { planId: action.planId },
+      });
+
+      const allCompleted = siblingActions.every((a) => a.status === 'COMPLETED');
+      const allFailed = siblingActions.every((a) => a.status === 'FAILED');
+      const anyCompleted = siblingActions.some((a) => a.status === 'COMPLETED');
+
+      let status: AgentPlanStatus = action.plan.status as AgentPlanStatus;
+      if (allCompleted) {
+        status = 'COMPLETED';
+      } else if (allFailed) {
+        status = 'FAILED';
+      } else if (anyCompleted) {
+        status = 'PARTIALLY_EXECUTED';
+      }
+
+      await prisma.agentPlan.update({
+        where: { id: action.planId },
+        data: { status },
+      });
+
+      return {
+        success: toolResult.success,
+        actionId: action.id,
+        toolName: action.toolName as AgentToolName,
+        status: updatedActionStatus,
+        executionResult: toolResult.result,
+        errorCode: toolResult.errorCode,
+        errorMessage: toolResult.errorMessage,
+        planStatus: status,
+      };
+    }
   );
-
-  let updatedActionStatus: 'COMPLETED' | 'FAILED' = 'COMPLETED';
-  let auditRecordId: string | undefined = undefined;
-
-  // 3. Handle success vs failure
-  if (toolResult.success) {
-    // Create audit record
-    const audit = await prisma.agentAuditRecord.create({
-      data: {
-        userId: action.plan.targetPatientId,
-        agentName: 'Damu',
-        riskTier: action.riskTier,
-        actionType: action.toolName,
-        summary: `Executed agent action: ${action.toolName}`,
-        payload: JSON.stringify({
-          parameters: parsedParams,
-          result: toolResult.result,
-        }),
-        requiresClinicianApproval: action.riskTier === 'HIGH_RISK',
-        approvalStatus: 'APPROVED',
-        approvedBy: action.confirmedByUserId || actorId,
-        approvedAt: action.confirmedAt || new Date(),
-        executionResult: JSON.stringify(toolResult.result),
-      },
-    });
-    auditRecordId = audit.id;
-
-    await prisma.agentAction.update({
-      where: { id: action.id },
-      data: {
-        status: 'COMPLETED',
-        executedAt: new Date(),
-        executionResult: JSON.stringify(toolResult.result),
-        errorCode: null,
-        errorMessage: null,
-        auditRecordId,
-      },
-    });
-    updatedActionStatus = 'COMPLETED';
-  } else {
-    await prisma.agentAction.update({
-      where: { id: action.id },
-      data: {
-        status: 'FAILED',
-        executedAt: new Date(),
-        errorCode: toolResult.errorCode || 'EXECUTION_FAILED',
-        errorMessage: toolResult.errorMessage || 'Execution failed',
-        executionResult: JSON.stringify({ error: toolResult.errorMessage }),
-      },
-    });
-    updatedActionStatus = 'FAILED';
-  }
-
-  // 4. Update parent plan status based on aggregate action states
-  const siblingActions = await prisma.agentAction.findMany({
-    where: { planId: action.planId },
-  });
-
-  const allCompleted = siblingActions.every((a) => a.status === 'COMPLETED');
-  const allFailed = siblingActions.every((a) => a.status === 'FAILED');
-  const anyCompleted = siblingActions.some((a) => a.status === 'COMPLETED');
-
-  let newPlanStatus: AgentPlanStatus = action.plan.status as AgentPlanStatus;
-  if (allCompleted) {
-    newPlanStatus = 'COMPLETED';
-  } else if (allFailed) {
-    newPlanStatus = 'FAILED';
-  } else if (anyCompleted) {
-    newPlanStatus = 'PARTIALLY_EXECUTED';
-  }
-
-  await prisma.agentPlan.update({
-    where: { id: action.planId },
-    data: { status: newPlanStatus },
-  });
-
-  return {
-    success: toolResult.success,
-    actionId: action.id,
-    toolName: action.toolName as AgentToolName,
-    status: updatedActionStatus,
-    executionResult: toolResult.result,
-    errorCode: toolResult.errorCode,
-    errorMessage: toolResult.errorMessage,
-    planStatus: newPlanStatus,
-  };
 }
 

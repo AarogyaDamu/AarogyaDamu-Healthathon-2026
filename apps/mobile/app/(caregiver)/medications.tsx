@@ -110,7 +110,7 @@ export default function CaregiverMedicationsScreen() {
 
         {/* Clinical Boundary Notice */}
         <View style={styles.boundaryNotice}>
-          <Info size={14} color="#0F766E" />
+          <Info size={14} color={theme.colors.primary} />
           <Text style={styles.boundaryNoticeText}>
             Prescriptions are strictly doctor-managed. Caregivers cannot create, alter dosages, pause, or delete clinical prescriptions.
           </Text>
@@ -125,7 +125,7 @@ export default function CaregiverMedicationsScreen() {
         </View>
       ) : error ? (
         <View style={styles.errorCard}>
-          <AlertCircle size={28} color="#DC2626" />
+          <AlertCircle size={28} color="#ba1a1a" />
           <Text style={styles.errorTitle}>Access Restricted</Text>
           <Text style={styles.errorBody}>{error}</Text>
         </View>
@@ -145,7 +145,7 @@ export default function CaregiverMedicationsScreen() {
             <View key={med.id} style={styles.medCard}>
               <View style={styles.cardHeader}>
                 <View style={styles.medIconBox}>
-                  <Pill size={18} color="#0F766E" />
+                  <Pill size={18} color={theme.colors.primary} />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.medName}>{med.medicineName}</Text>
@@ -193,7 +193,7 @@ export default function CaregiverMedicationsScreen() {
 
               {/* Prescription Date */}
               <View style={styles.footerRow}>
-                <Calendar size={12} color="#64748B" />
+                <Calendar size={12} color="#535f70" />
                 <Text style={styles.footerText}>
                   Prescribed: {new Date(med.prescribedAt).toLocaleDateString()}
                 </Text>
@@ -209,7 +209,7 @@ export default function CaregiverMedicationsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: '#f8f9fc',
   },
   content: {
     padding: 16,
@@ -217,146 +217,166 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   header: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 16,
+    backgroundColor: '#ffffff',
+    borderRadius: 20,
+    padding: 18,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
-    gap: 8,
-    ...theme.shadows.card,
+    borderColor: 'rgba(9, 76, 178, 0.08)',
+    gap: 10,
+    ...theme.shadows.soft,
   },
   headerTitle: {
+    fontFamily: theme.fonts.serif,
     fontSize: 20,
-    fontWeight: '800',
-    color: '#0F172A',
+    fontWeight: '700',
+    color: '#191c20',
   },
   headerSubtitle: {
-    fontSize: 12,
-    color: '#64748B',
-    lineHeight: 18,
+    fontFamily: theme.fonts.label,
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#535f70',
+    lineHeight: 16,
+    letterSpacing: 0.4,
   },
   boundaryNotice: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 8,
-    backgroundColor: '#F8FAFC',
-    borderRadius: 8,
-    padding: 10,
+    backgroundColor: '#fff0d8',
+    borderRadius: 12,
+    padding: 12,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: 'rgba(201, 84, 16, 0.2)',
     marginTop: 4,
   },
   boundaryNoticeText: {
+    fontFamily: theme.fonts.sans,
     fontSize: 11,
-    color: '#475569',
+    color: '#78350f',
     lineHeight: 16,
     flex: 1,
+    fontWeight: '500',
   },
   centerBox: {
-    padding: 30,
+    padding: 36,
     alignItems: 'center',
-    gap: 10,
+    gap: 12,
   },
   loadingText: {
+    fontFamily: theme.fonts.sans,
     fontSize: 13,
-    color: '#64748B',
+    color: '#535f70',
   },
   errorCard: {
-    backgroundColor: '#FEF2F2',
-    borderRadius: 12,
+    backgroundColor: '#fff8f7',
+    borderRadius: 16,
     padding: 18,
     alignItems: 'center',
     gap: 8,
     borderWidth: 1,
-    borderColor: '#FECACA',
+    borderColor: '#ffdad6',
   },
   errorTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#991B1B',
-  },
-  errorBody: {
-    fontSize: 12,
-    color: '#7F1D1D',
-    textAlign: 'center',
-  },
-  emptyCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 14,
-    padding: 24,
-    alignItems: 'center',
-    gap: 8,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  emptyTitle: {
+    fontFamily: theme.fonts.sans,
     fontSize: 15,
     fontWeight: '700',
-    color: '#0F172A',
+    color: '#ba1a1a',
+  },
+  errorBody: {
+    fontFamily: theme.fonts.sans,
+    fontSize: 12,
+    color: '#93000a',
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  emptyCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 28,
+    alignItems: 'center',
+    gap: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(9, 76, 178, 0.08)',
+    ...theme.shadows.soft,
+  },
+  emptyTitle: {
+    fontFamily: theme.fonts.serif,
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#191c20',
   },
   emptyBody: {
+    fontFamily: theme.fonts.sans,
     fontSize: 12,
-    color: '#64748B',
+    color: '#535f70',
     textAlign: 'center',
+    lineHeight: 18,
   },
   medCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 14,
-    padding: 14,
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 16,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
-    gap: 10,
+    borderColor: 'rgba(9, 76, 178, 0.08)',
+    gap: 12,
+    ...theme.shadows.soft,
   },
   cardHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 12,
   },
   medIconBox: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    backgroundColor: '#F0FDFA',
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: '#eef2ff',
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: '#CCFBF1',
+    borderColor: 'rgba(9, 76, 178, 0.12)',
   },
   medName: {
+    fontFamily: theme.fonts.sans,
     fontSize: 15,
     fontWeight: '700',
-    color: '#0F172A',
+    color: '#191c20',
   },
   genericName: {
+    fontFamily: theme.fonts.sans,
     fontSize: 11,
-    color: '#64748B',
+    color: '#535f70',
+    marginTop: 1,
   },
   statusBadge: {
     paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
+    paddingVertical: 4,
+    borderRadius: 8,
   },
   statusActive: {
-    backgroundColor: '#ECFDF5',
+    backgroundColor: '#e6f4ea',
   },
   statusPaused: {
-    backgroundColor: '#FEF2F2',
+    backgroundColor: '#fff8f7',
   },
   statusText: {
+    fontFamily: theme.fonts.label,
     fontSize: 10,
     fontWeight: '700',
+    letterSpacing: 0.3,
   },
   statusTextActive: {
-    color: '#059669',
+    color: '#137333',
   },
   statusTextPaused: {
-    color: '#DC2626',
+    color: '#ba1a1a',
   },
   dosageGrid: {
     flexDirection: 'row',
-    backgroundColor: '#F8FAFC',
-    borderRadius: 8,
-    padding: 10,
+    backgroundColor: '#f2f3f9',
+    borderRadius: 12,
+    padding: 12,
     justifyContent: 'space-between',
   },
   gridItem: {
@@ -364,55 +384,62 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   gridLabel: {
+    fontFamily: theme.fonts.label,
     fontSize: 9,
     fontWeight: '700',
-    color: '#64748B',
+    color: '#535f70',
     letterSpacing: 0.5,
   },
   gridValue: {
+    fontFamily: theme.fonts.sans,
     fontSize: 12,
     fontWeight: '700',
-    color: '#0F172A',
-    marginTop: 2,
+    color: '#191c20',
+    marginTop: 3,
   },
   instructionBox: {
-    backgroundColor: '#F8FAFC',
-    borderRadius: 8,
-    padding: 10,
+    backgroundColor: '#f8f9fc',
+    borderRadius: 12,
+    padding: 12,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
-    gap: 2,
+    borderColor: 'rgba(0, 77, 77, 0.08)',
+    gap: 4,
   },
   instructionLabel: {
+    fontFamily: theme.fonts.label,
     fontSize: 9,
     fontWeight: '700',
-    color: '#0F766E',
+    color: theme.colors.primary,
     letterSpacing: 0.5,
   },
   instructionText: {
+    fontFamily: theme.fonts.sans,
     fontSize: 12,
-    color: '#0F172A',
-    lineHeight: 16,
+    color: '#191c20',
+    lineHeight: 18,
   },
   foodBox: {
-    backgroundColor: '#F1F5F9',
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
+    backgroundColor: '#eceef3',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
     alignSelf: 'flex-start',
   },
   foodText: {
+    fontFamily: theme.fonts.sans,
     fontSize: 11,
-    color: '#475569',
+    color: '#41484d',
+    fontWeight: '500',
   },
   footerRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 5,
     marginTop: 2,
   },
   footerText: {
+    fontFamily: theme.fonts.sans,
     fontSize: 10,
-    color: '#64748B',
+    color: '#71787e',
   },
 });

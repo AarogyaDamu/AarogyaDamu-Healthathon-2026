@@ -22,7 +22,41 @@ export interface LoincCoding {
 }
 
 export const LOINC_CODES = {
-  // Blood Glucose Variations (by Timing and Method)
+  // Point-of-Care Capillary Blood Glucose by Glucometer (Mass Concentration: mg/dL)
+  GLUCOSE_CAPILLARY_GLUCOMETER: {
+    system: 'http://loinc.org',
+    code: '41653-7',
+    display: 'Glucose [Mass/volume] in Capillary blood by Glucometer',
+    shortName: 'Glucose BldC Glucometer-mCnc',
+    category: 'laboratory',
+    defaultUcumUnit: 'mg/dL',
+    validUcumUnits: ['mg/dL'],
+    referenceRange: {
+      low: 70,
+      high: 130,
+      unit: 'mg/dL',
+      text: 'Target fasting: 80-130 mg/dL; Target post-meal: <180 mg/dL',
+    },
+  } as const satisfies LoincCoding,
+
+  // Point-of-Care Capillary Blood Glucose by Glucometer (Substance Concentration: mmol/L)
+  GLUCOSE_CAPILLARY_GLUCOMETER_MOLAR: {
+    system: 'http://loinc.org',
+    code: '14743-9',
+    display: 'Glucose [Moles/volume] in Capillary blood by Glucometer',
+    shortName: 'Glucose BldC Glucometer-sCnc',
+    category: 'laboratory',
+    defaultUcumUnit: 'mmol/L',
+    validUcumUnits: ['mmol/L'],
+    referenceRange: {
+      low: 3.9,
+      high: 7.2,
+      unit: 'mmol/L',
+      text: 'Target fasting: 4.4-7.2 mmol/L; Target post-meal: <10.0 mmol/L',
+    },
+  } as const satisfies LoincCoding,
+
+  // Laboratory Fasting Glucose in Serum or Plasma (Mass Concentration: mg/dL)
   GLUCOSE_FASTING_SERUM: {
     system: 'http://loinc.org',
     code: '1558-6',
@@ -30,7 +64,7 @@ export const LOINC_CODES = {
     shortName: 'Glucose SerPl Fast-mCnc',
     category: 'laboratory',
     defaultUcumUnit: 'mg/dL',
-    validUcumUnits: ['mg/dL', 'mmol/L'],
+    validUcumUnits: ['mg/dL'],
     referenceRange: {
       low: 70,
       high: 99,
@@ -39,14 +73,102 @@ export const LOINC_CODES = {
     },
   } as const satisfies LoincCoding,
 
-  GLUCOSE_BLOOD_GLUCOMETER: {
+  // Laboratory Fasting Glucose in Serum or Plasma (Substance Concentration: mmol/L)
+  // Authoritative definition of LOINC 14771-0
+  GLUCOSE_FASTING_SERUM_MOLAR: {
     system: 'http://loinc.org',
     code: '14771-0',
-    display: 'Glucose [Mass/volume] in Blood by Glucometer',
-    shortName: 'Glucose Bld Glucometer-mCnc',
+    display: 'Fasting glucose [Moles/volume] in Serum or Plasma',
+    shortName: 'Glucose SerPl Fast-sCnc',
+    category: 'laboratory',
+    defaultUcumUnit: 'mmol/L',
+    validUcumUnits: ['mmol/L'],
+    referenceRange: {
+      low: 3.9,
+      high: 5.5,
+      unit: 'mmol/L',
+      text: 'Normal fasting: 3.9-5.5 mmol/L; Diabetes threshold: >=7.0 mmol/L',
+    },
+  } as const satisfies LoincCoding,
+
+  // Laboratory Fasting Glucose in Venous Blood (Mass Concentration: mg/dL)
+  GLUCOSE_FASTING_VENOUS: {
+    system: 'http://loinc.org',
+    code: '1557-8',
+    display: 'Fasting glucose [Mass/volume] in Venous blood',
+    shortName: 'Glucose BldV Fast-mCnc',
     category: 'laboratory',
     defaultUcumUnit: 'mg/dL',
-    validUcumUnits: ['mg/dL', 'mmol/L'],
+    validUcumUnits: ['mg/dL'],
+    referenceRange: {
+      low: 70,
+      high: 99,
+      unit: 'mg/dL',
+      text: 'Normal fasting: 70-99 mg/dL',
+    },
+  } as const satisfies LoincCoding,
+
+  // Laboratory Random Glucose in Serum or Plasma (Mass Concentration: mg/dL)
+  GLUCOSE_RANDOM_SERUM: {
+    system: 'http://loinc.org',
+    code: '2345-7',
+    display: 'Glucose [Mass/volume] in Serum or Plasma',
+    shortName: 'Glucose SerPl-mCnc',
+    category: 'laboratory',
+    defaultUcumUnit: 'mg/dL',
+    validUcumUnits: ['mg/dL'],
+    referenceRange: {
+      low: 70,
+      high: 140,
+      unit: 'mg/dL',
+      text: 'Normal random: 70-140 mg/dL',
+    },
+  } as const satisfies LoincCoding,
+
+  // Whole Blood Random Glucose (Mass Concentration: mg/dL)
+  GLUCOSE_RANDOM_BLOOD: {
+    system: 'http://loinc.org',
+    code: '2339-0',
+    display: 'Glucose [Mass/volume] in Blood',
+    shortName: 'Glucose Bld-mCnc',
+    category: 'laboratory',
+    defaultUcumUnit: 'mg/dL',
+    validUcumUnits: ['mg/dL'],
+    referenceRange: {
+      low: 70,
+      high: 180,
+      unit: 'mg/dL',
+      text: 'Normal random: 70-140 mg/dL; ADA diabetes target: <180 mg/dL',
+    },
+  } as const satisfies LoincCoding,
+
+  // Whole Blood Glucose (Substance Concentration: mmol/L)
+  // Authoritative definition of LOINC 15074-8
+  GLUCOSE_BLOOD_MOLAR: {
+    system: 'http://loinc.org',
+    code: '15074-8',
+    display: 'Glucose [Moles/volume] in Blood',
+    shortName: 'Glucose Bld-sCnc',
+    category: 'laboratory',
+    defaultUcumUnit: 'mmol/L',
+    validUcumUnits: ['mmol/L'],
+    referenceRange: {
+      low: 3.9,
+      high: 10.0,
+      unit: 'mmol/L',
+      text: 'Normal random: 3.9-7.8 mmol/L; ADA diabetes target: <10.0 mmol/L',
+    },
+  } as const satisfies LoincCoding,
+
+  // Preserved alias for capillary glucometer point-of-care (resolves to authoritative 41653-7)
+  GLUCOSE_BLOOD_GLUCOMETER: {
+    system: 'http://loinc.org',
+    code: '41653-7',
+    display: 'Glucose [Mass/volume] in Capillary blood by Glucometer',
+    shortName: 'Glucose BldC Glucometer-mCnc',
+    category: 'laboratory',
+    defaultUcumUnit: 'mg/dL',
+    validUcumUnits: ['mg/dL'],
     referenceRange: {
       low: 70,
       high: 130,
@@ -71,21 +193,6 @@ export const LOINC_CODES = {
     },
   } as const satisfies LoincCoding,
 
-  GLUCOSE_RANDOM_BLOOD: {
-    system: 'http://loinc.org',
-    code: '2339-0',
-    display: 'Glucose [Mass/volume] in Blood',
-    shortName: 'Glucose Bld-mCnc',
-    category: 'laboratory',
-    defaultUcumUnit: 'mg/dL',
-    validUcumUnits: ['mg/dL', 'mmol/L'],
-    referenceRange: {
-      low: 70,
-      high: 180,
-      unit: 'mg/dL',
-      text: 'Normal random: 70-140 mg/dL; ADA diabetes target: <180 mg/dL',
-    },
-  } as const satisfies LoincCoding,
 
   GLUCOSE_PRE_MEAL: {
     system: 'http://loinc.org',
@@ -249,47 +356,113 @@ export function resolveLoincCoding(params: {
   type: 'BLOOD_GLUCOSE' | 'HBA1C' | 'BLOOD_PRESSURE' | 'WEIGHT' | 'HEART_RATE' | string;
   context?: string;
   provenance?: string;
+  unit?: string;
+  specimen?: string;
 }): LoincCoding | null {
-  const { type, context, provenance } = params;
+  const { type, context, provenance, unit, specimen } = params;
+  const canonicalUnit = unit ? toCanonicalUcum(unit) : undefined;
 
   if (type === 'BLOOD_GLUCOSE') {
-    // Determine exact timing and measurement method
-    if (context === 'FASTING') {
-      if (provenance === 'LAB_CONFIRMED' || provenance === 'LAB_REPORT') {
-        return LOINC_CODES.GLUCOSE_FASTING_SERUM;
+    // Substance concentration (mmol/L) branch
+    if (canonicalUnit === 'mmol/L') {
+      if (context === 'FASTING') {
+        if (provenance === 'LAB_CONFIRMED' || provenance === 'LAB_REPORT' || specimen === 'SERUM_PLASMA') {
+          return LOINC_CODES.GLUCOSE_FASTING_SERUM_MOLAR; // 14771-0 (Fasting glucose in Serum/Plasma, mmol/L)
+        }
+        return LOINC_CODES.GLUCOSE_CAPILLARY_GLUCOMETER_MOLAR; // 14743-9 (Capillary glucometer, mmol/L)
       }
-      return LOINC_CODES.GLUCOSE_BLOOD_GLUCOMETER;
+      if (context === 'RANDOM') {
+        return LOINC_CODES.GLUCOSE_BLOOD_MOLAR; // 15074-8 (Whole blood glucose, mmol/L)
+      }
+      return LOINC_CODES.GLUCOSE_CAPILLARY_GLUCOMETER_MOLAR; // 14743-9 (Default molar POC glucometer)
+    }
+
+    // Mass concentration (mg/dL) branch (Default clinical standard for AarogyaDamu)
+    if (context === 'FASTING') {
+      if (provenance === 'LAB_CONFIRMED' || provenance === 'LAB_REPORT' || specimen === 'SERUM_PLASMA') {
+        return LOINC_CODES.GLUCOSE_FASTING_SERUM; // 1558-6 (Fasting glucose in Serum/Plasma, mg/dL)
+      }
+      if (provenance === 'VENOUS_BLOOD' || specimen === 'VENOUS_BLOOD') {
+        return LOINC_CODES.GLUCOSE_FASTING_VENOUS; // 1557-8 (Fasting glucose in Venous blood, mg/dL)
+      }
+      return LOINC_CODES.GLUCOSE_CAPILLARY_GLUCOMETER; // 41653-7 (Capillary blood by Glucometer, mg/dL)
     }
     if (context === 'POST_MEAL_2HR' || context === 'POST_MEAL') {
-      return LOINC_CODES.GLUCOSE_POST_MEAL_2HR;
+      return LOINC_CODES.GLUCOSE_POST_MEAL_2HR; // 88365-2 (Blood at 2h post-meal, mg/dL)
     }
     if (context === 'PRE_MEAL') {
-      return LOINC_CODES.GLUCOSE_PRE_MEAL;
+      return LOINC_CODES.GLUCOSE_PRE_MEAL; // 72171-2 (Blood pre-meal, mg/dL)
     }
     if (context === 'BEDTIME') {
-      return LOINC_CODES.GLUCOSE_BEDTIME;
+      return LOINC_CODES.GLUCOSE_BEDTIME; // 74774-1 (Blood at bedtime, mg/dL)
     }
-    // Default blood glucose point-of-care reading
-    return LOINC_CODES.GLUCOSE_BLOOD_GLUCOMETER;
+    if (context === 'RANDOM') {
+      if (provenance === 'LAB_CONFIRMED' || provenance === 'LAB_REPORT' || specimen === 'SERUM_PLASMA') {
+        return LOINC_CODES.GLUCOSE_RANDOM_SERUM; // 2345-7 (Serum/Plasma random, mg/dL)
+      }
+      return LOINC_CODES.GLUCOSE_RANDOM_BLOOD; // 2339-0 (Whole blood random, mg/dL)
+    }
+    // Default point-of-care capillary glucometer reading (mg/dL)
+    return LOINC_CODES.GLUCOSE_CAPILLARY_GLUCOMETER; // 41653-7
   }
 
   if (type === 'HBA1C') {
-    return LOINC_CODES.HBA1C_BLOOD;
+    return LOINC_CODES.HBA1C_BLOOD; // 4548-4 (Hemoglobin A1c in Blood, %)
   }
 
   if (type === 'BLOOD_PRESSURE') {
-    return LOINC_CODES.BLOOD_PRESSURE_PANEL;
+    return LOINC_CODES.BLOOD_PRESSURE_PANEL; // 85354-9 (BP panel, mm[Hg])
   }
 
   if (type === 'WEIGHT') {
-    return LOINC_CODES.BODY_WEIGHT;
+    return LOINC_CODES.BODY_WEIGHT; // 29463-7 (Body weight, kg)
   }
 
   if (type === 'HEART_RATE') {
-    return LOINC_CODES.HEART_RATE;
+    return LOINC_CODES.HEART_RATE; // 8867-4 (Heart rate, /min)
   }
 
   return null;
+}
+
+/**
+ * Validates clinical observation properties to prevent incorrect specimen, fasting-state, and unit combinations.
+ */
+export function validateClinicalObservationTerminology(obs: {
+  type: string;
+  unit?: string;
+  context?: string;
+  provenance?: string;
+  specimen?: string;
+  numericValue?: number;
+}): { valid: boolean; error?: string; loinc?: LoincCoding } {
+  const loinc = resolveLoincCoding(obs);
+  if (!loinc) {
+    return { valid: false, error: `Unsupported observation type: ${obs.type}` };
+  }
+
+  if (obs.unit) {
+    const canonical = toCanonicalUcum(obs.unit);
+    const isValidUnit = loinc.validUcumUnits.some((u) => toCanonicalUcum(u) === canonical);
+    if (!isValidUnit) {
+      return {
+        valid: false,
+        error: `Incompatible UCUM unit '${obs.unit}' for LOINC ${loinc.code} (${loinc.display}). Expected one of: ${loinc.validUcumUnits.join(', ')}`,
+      };
+    }
+  }
+
+  // Clinical consistency checks
+  if (obs.type === 'BLOOD_GLUCOSE') {
+    if (obs.provenance === 'LAB_CONFIRMED' && obs.specimen === 'CAPILLARY_BLOOD') {
+      return {
+        valid: false,
+        error: 'Clinical conflict: LAB_CONFIRMED provenance cannot have CAPILLARY_BLOOD specimen (standard lab requires venous serum/plasma).',
+      };
+    }
+  }
+
+  return { valid: true, loinc };
 }
 
 /**

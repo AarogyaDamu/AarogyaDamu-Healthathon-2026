@@ -473,7 +473,7 @@ router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
       console.warn('[Medications] Failed to create notification on update:', notifErr);
     }
 
-    void logClinicalMutationEvent({
+    await logClinicalMutationEvent({
       userId: existing.userId,
       actorId: user.id,
       action: 'MEDICATION_UPDATED',
@@ -550,7 +550,7 @@ router.post('/:id/review', requireClinician, async (req: Request, res: Response)
       },
     });
 
-    void logClinicalMutationEvent({
+    await logClinicalMutationEvent({
       userId: existing.userId,
       actorId: user.id,
       action: 'MEDICATION_REVIEWED',

@@ -220,8 +220,9 @@ export async function confirmAgentAction(
   const claimResult = await prisma.agentAction.updateMany({
     where: {
       id: actionId,
-      planId,
+      planId: effectivePlanId,
       status: 'AWAITING_CONFIRMATION',
+      expiresAt: { gt: new Date() },
     },
     data: {
       status: 'EXECUTING',
@@ -235,7 +236,15 @@ export async function confirmAgentAction(
   if (claimResult.count === 0) {
     // Action was claimed concurrently or transitioned out of AWAITING_CONFIRMATION
     const freshAction = await prisma.agentAction.findUnique({ where: { id: actionId } });
-    if (freshAction?.status === 'COMPLETED') {
+    if (!freshAction) {
+      return {
+        success: false,
+        errorCode: 'ACTION_NOT_FOUND',
+        errorMessage: `AgentAction with ID '${actionId}' was not found.`,
+      };
+    }
+
+    if (freshAction.status === 'COMPLETED') {
       let cachedResult: Record<string, unknown> = {};
       try {
         cachedResult = JSON.parse(freshAction.executionResult || '{}');
@@ -251,8 +260,39 @@ export async function confirmAgentAction(
       };
     }
 
+    if (freshAction.status === 'EXPIRED' || (freshAction.expiresAt && freshAction.expiresAt <= new Date())) {
+      return {
+        success: false,
+        actionId: freshAction.id,
+        status: 'EXPIRED',
+        errorCode: 'ACTION_EXPIRED',
+        errorMessage: 'Action expired past its validity window before execution could begin.',
+      };
+    }
+
+    if (freshAction.status === 'CANCELLED') {
+      return {
+        success: false,
+        actionId: freshAction.id,
+        status: 'CANCELLED',
+        errorCode: 'ACTION_CANCELLED',
+        errorMessage: 'Action was cancelled and cannot be executed.',
+      };
+    }
+
+    if (freshAction.status === 'EXECUTING' && freshAction.confirmationSignature === idempotencyKey) {
+      return {
+        success: true,
+        replayed: true,
+        actionId: freshAction.id,
+        status: 'EXECUTING',
+      };
+    }
+
     return {
       success: false,
+      actionId: freshAction.id,
+      status: freshAction.status,
       errorCode: 'CONCURRENT_CLAIM_CONFLICT',
       errorMessage: 'Action is no longer in awaiting confirmation state or has already been claimed by another process.',
     };
@@ -389,6 +429,7 @@ export async function reviewProposalAction(
       id: actionId,
       planId,
       status: 'PENDING_CLINICIAN_APPROVAL',
+      expiresAt: { gt: new Date() },
     },
     data: {
       status: 'EXECUTING',
@@ -403,10 +444,37 @@ export async function reviewProposalAction(
   });
 
   if (claimResult.count === 0) {
+    const freshAction = await prisma.agentAction.findUnique({ where: { id: actionId } });
+    if (freshAction?.status === 'COMPLETED') {
+      return {
+        success: true,
+        actionId,
+        status: 'COMPLETED',
+        errorMessage: undefined,
+      };
+    }
+    if (freshAction?.status === 'EXPIRED' || (freshAction?.expiresAt && freshAction.expiresAt <= new Date())) {
+      return {
+        success: false,
+        actionId,
+        status: 'EXPIRED',
+        errorCode: 'ACTION_EXPIRED',
+        errorMessage: 'Clinical proposal expired past its validity window.',
+      };
+    }
+    if (freshAction?.status === 'REJECTED') {
+      return {
+        success: false,
+        actionId,
+        status: 'REJECTED',
+        errorCode: 'ACTION_ALREADY_REJECTED',
+        errorMessage: 'Proposal was already rejected.',
+      };
+    }
     return {
       success: false,
       actionId,
-      status: action.status,
+      status: freshAction?.status || action.status,
       errorCode: 'CONCURRENT_CLAIM_CONFLICT',
       errorMessage: 'Action is no longer in pending clinician approval state.',
     };

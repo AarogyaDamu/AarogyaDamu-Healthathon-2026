@@ -1,20 +1,27 @@
 import { Router, Request, Response } from 'express';
 import multer from 'multer';
+import path from 'path';
 import { z } from 'zod';
 import { requireAuth } from '../middleware/auth';
 import { resolvePatientContext } from '../permissions/evaluator';
-import { savePrivateFile, deletePrivateFile } from '../services/storageService';
+import { preserveTenantContext } from '../db/tenantContext';
+import { savePrivateFile, readPrivateFile, deletePrivateFile, validateFileMagicBytes } from '../services/storageService';
 import { logAuditEvent } from '../audit/auditLogger';
 
 const router = Router();
 import { prisma } from '../db/prisma';
+
 const upload = multer({
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB limit
+    files: 1, // file count limit
+  },
   fileFilter: (_req, file, cb) => {
-    if (file.mimetype === 'application/pdf' || file.mimetype.startsWith('image/')) {
+    const allowedMimes = ['application/pdf', 'image/png', 'image/jpeg', 'image/webp'];
+    if (allowedMimes.includes(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(new Error('Invalid document format. Only PDF and images are accepted.'));
+      cb(new Error('Invalid document format. Only PDF, PNG, JPEG, and WebP are accepted.'));
     }
   },
 });
@@ -34,6 +41,8 @@ router.get('/', requireAuth, async (req: Request, res: Response): Promise<void> 
         notes: true,
         processingStatus: true,
         fileSizeBytes: true,
+        mimeType: true,
+        extractedData: true,
         createdAt: true,
       },
     });
@@ -46,7 +55,7 @@ router.get('/', requireAuth, async (req: Request, res: Response): Promise<void> 
 router.post(
   '/',
   requireAuth,
-  upload.single('file'),
+  preserveTenantContext(upload.single('file')),
   async (req: Request, res: Response): Promise<void> => {
     try {
       const { effectivePatientId } = await resolvePatientContext(req, 'MANAGE_DOCUMENTS');
@@ -62,10 +71,36 @@ router.post(
       let mimeType: string | undefined = undefined;
 
       if (req.file) {
-        const saved = await savePrivateFile(effectivePatientId, req.file.originalname, req.file.buffer);
+        // Enforce magic bytes inspection to prevent extension/mimetype spoofing
+        const magicResult = validateFileMagicBytes(req.file.buffer);
+        if (!magicResult.isValid) {
+          res.status(400).json({
+            error: 'Invalid file signature. Uploaded file contents do not match allowed formats (PDF, JPEG, PNG, WebP).',
+          });
+          return;
+        }
+
+        const allowedExtensions: Record<string, string[]> = {
+          'application/pdf': ['.pdf'],
+          'image/png': ['.png'],
+          'image/jpeg': ['.jpg', '.jpeg'],
+          'image/webp': ['.webp'],
+        };
+
+        const ext = path.extname(req.file.originalname).toLowerCase();
+        const detectedMime = magicResult.detectedMime!;
+        const validExts = allowedExtensions[detectedMime] || [];
+        if (ext && !validExts.includes(ext)) {
+          res.status(400).json({
+            error: `File extension "${ext}" does not match the detected file format (${detectedMime}).`,
+          });
+          return;
+        }
+
+        const saved = await savePrivateFile(effectivePatientId, req.file.originalname, req.file.buffer, detectedMime);
         storagePath = saved.storagePath;
         fileSizeBytes = saved.fileSizeBytes;
-        mimeType = req.file.mimetype;
+        mimeType = detectedMime;
       }
 
       const document = await prisma.healthDocument.create({
@@ -98,6 +133,45 @@ router.post(
   }
 );
 
+router.get('/:id/preview', requireAuth, async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { effectivePatientId } = await resolvePatientContext(req, 'VIEW_DOCUMENTS');
+    const { id } = req.params;
+
+    const doc = await prisma.healthDocument.findFirst({
+      where: { id, userId: effectivePatientId },
+    });
+
+    if (!doc || !doc.storagePath) {
+      res.status(404).json({ error: 'Clinical file not found or unauthorized' });
+      return;
+    }
+
+    const stored = await readPrivateFile(doc.storagePath);
+    if (!stored) {
+      res.status(404).json({ error: 'Clinical document file not found on storage volume' });
+      return;
+    }
+
+    res.setHeader('Content-Type', doc.mimeType || 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Security-Policy', "default-src 'none'");
+
+    await logAuditEvent({
+      userId: effectivePatientId,
+      actorId: (req as any).user.id,
+      action: 'DOCUMENT_PREVIEWED',
+      entityType: 'HealthDocument',
+      entityId: doc.id,
+    });
+
+    res.send(stored.buffer);
+  } catch (err: any) {
+    res.status(err.message.includes('Forbidden') ? 403 : 500).json({ error: err.message });
+  }
+});
+
 router.get('/:id/download', requireAuth, async (req: Request, res: Response): Promise<void> => {
   try {
     const { effectivePatientId } = await resolvePatientContext(req, 'VIEW_DOCUMENTS');
@@ -112,6 +186,16 @@ router.get('/:id/download', requireAuth, async (req: Request, res: Response): Pr
       return;
     }
 
+    const stored = await readPrivateFile(doc.storagePath);
+    if (!stored) {
+      res.status(404).json({ error: 'Clinical document file not found on storage volume' });
+      return;
+    }
+
+    res.setHeader('Content-Type', doc.mimeType || 'application/pdf');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Security-Policy', "default-src 'none'");
+
     await logAuditEvent({
       userId: effectivePatientId,
       actorId: (req as any).user.id,
@@ -120,7 +204,10 @@ router.get('/:id/download', requireAuth, async (req: Request, res: Response): Pr
       entityId: doc.id,
     });
 
-    res.download(doc.storagePath, `${doc.title}.pdf`);
+    const safeTitle = (doc.title || 'medical_report').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const safeExt = stored.ext || '.pdf';
+    res.setHeader('Content-Disposition', `attachment; filename="${safeTitle}${safeExt}"`);
+    res.send(stored.buffer);
   } catch (err: any) {
     res.status(err.message.includes('Forbidden') ? 403 : 500).json({ error: err.message });
   }

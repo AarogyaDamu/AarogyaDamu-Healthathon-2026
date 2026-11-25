@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { apiFetch, getActiveTargetPatientId } from '../api/client';
+import { apiFetch, getActiveTargetPatientId, setActiveTargetPatientId } from '../api/client';
 import { SkeletonBlock } from '../components/StateViews';
 import type { CarePlan, CarePlanProgress } from '../api/types';
 import {
@@ -16,6 +16,7 @@ import {
   Check,
   X,
   Flame,
+  Users,
 } from 'lucide-react';
 
 interface CareTask {
@@ -59,6 +60,8 @@ export default function CarePlanPage({ onNavigate }: { onNavigate?: (tab: string
   const [showHistoryDrawer, setShowHistoryDrawer] = useState(false);
 
   const targetPatientId = getActiveTargetPatientId();
+  const [selectedPatientId, setSelectedPatientId] = useState<string>(targetPatientId || '');
+  const [doctorPatients, setDoctorPatients] = useState<Array<{ id: string; name: string; diabetesType?: string }>>([]);
 
   const loadCarePlanData = async () => {
     try {
@@ -66,8 +69,32 @@ export default function CarePlanPage({ onNavigate }: { onNavigate?: (tab: string
       const userRes = await apiFetch<{ user: any; profile: any }>('/auth/me');
       setCurrentUser(userRes.user);
 
-      const effectiveId = targetPatientId || userRes.user.id;
-      setIsCaregiverMode(Boolean(targetPatientId && targetPatientId !== userRes.user.id));
+      let effectiveId = selectedPatientId || targetPatientId || userRes.user.id;
+
+      if (userRes.user?.isClinician) {
+        try {
+          const docDash = await apiFetch<any>('/coordination/doctor/dashboard');
+          if (Array.isArray(docDash?.patients) && docDash.patients.length > 0) {
+            const pts = docDash.patients.map((p: any) => ({
+              id: p.patientId || p.id,
+              name: p.name || p.fullName || 'Patient',
+              diabetesType: p.diabetesType || 'Type 2 Diabetes',
+            }));
+            setDoctorPatients(pts);
+
+            // If effectiveId is not one of the patients (or is the doctor's user id), default to first patient
+            if (!pts.some((p: any) => p.id === effectiveId)) {
+              effectiveId = pts[0].id;
+              setSelectedPatientId(pts[0].id);
+              setActiveTargetPatientId(pts[0].id);
+            }
+          }
+        } catch (e) {
+          console.warn('Could not load doctor patient list for CarePlan', e);
+        }
+      }
+
+      setIsCaregiverMode(Boolean(effectiveId && effectiveId !== userRes.user.id && !userRes.user?.isClinician));
 
       const [activeRes, historyRes, tasksRes] = await Promise.all([
         apiFetch<{ carePlan: CarePlan | null; progress: CarePlanProgress | null }>(
@@ -90,7 +117,7 @@ export default function CarePlanPage({ onNavigate }: { onNavigate?: (tab: string
 
   useEffect(() => {
     loadCarePlanData();
-  }, [targetPatientId]);
+  }, [targetPatientId, selectedPatientId]);
 
   const handleCompleteTask = async (taskId: string) => {
     if (completingTaskId) return;
@@ -190,7 +217,7 @@ export default function CarePlanPage({ onNavigate }: { onNavigate?: (tab: string
     }
     setSubmitting(true);
     try {
-      const effectiveId = targetPatientId || currentUser?.id;
+      const effectiveId = selectedPatientId || targetPatientId || currentUser?.id;
       const reviewDateIso = builderReviewDate ? new Date(builderReviewDate).toISOString() : null;
 
       let savedPlanId: string;
@@ -304,6 +331,38 @@ export default function CarePlanPage({ onNavigate }: { onNavigate?: (tab: string
           )}
         </div>
       </div>
+
+      {/* Clinician Patient Selector Banner */}
+      {isDoctor && doctorPatients.length > 0 && (
+        <div className="rounded-xl border border-teal-200 bg-teal-50/80 p-3 flex flex-wrap items-center justify-between gap-3 shadow-xs">
+          <div className="flex items-center gap-2.5">
+            <div className="p-1.5 rounded-lg bg-teal-700 text-white">
+              <Users className="h-4 w-4" />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold text-teal-950">Patient Care Plan:</span>
+              <select
+                value={selectedPatientId}
+                onChange={(e) => {
+                  const newId = e.target.value;
+                  setSelectedPatientId(newId);
+                  setActiveTargetPatientId(newId);
+                }}
+                className="rounded-lg border border-teal-300 bg-white px-3 py-1 text-xs font-bold text-slate-900 shadow-2xs focus:outline-none focus:ring-1 focus:ring-teal-500"
+              >
+                {doctorPatients.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.diabetesType || 'Type 2 Diabetes'})
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="text-xs text-teal-800 font-medium">
+            Attending Clinician: Dr. {currentUser?.profile?.fullName || currentUser?.email}
+          </div>
+        </div>
+      )}
 
       {error && (
         <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 flex items-start gap-3 text-rose-800 text-xs">

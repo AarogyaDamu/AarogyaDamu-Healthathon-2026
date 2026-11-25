@@ -1,4 +1,5 @@
 import { prisma } from '../../server';
+import { runWithTenantContext } from '../../db/tenantContext';
 import {
   AgentToolName,
   ToolScheduleCareTaskParams,
@@ -265,30 +266,33 @@ export async function executeAgentTool(
         const p = validatedParams as unknown as ToolDraftCareProposalParams;
 
         // HIGH_RISK: Creates an auditable care proposal record held for clinician approval
-        const auditRecord = await prisma.agentAuditRecord.create({
-          data: {
-            userId: context.targetPatientId,
-            agentName: 'Damu',
-            riskTier: 'HIGH_RISK',
-            actionType: 'CLINICAL_CARE_PROPOSAL',
-            summary: p.title,
-            payload: JSON.stringify({
-              proposalType: p.proposalType,
-              rationale: p.rationale,
-              proposedDetails: p.proposedDetails,
-              proposedBy: context.actorId,
-              idempotencyKey: context.idempotencyKey,
-            }),
-            requiresClinicianApproval: true,
-            approvalStatus: 'PENDING',
-          },
-        });
+        const auditRecord = await runWithTenantContext(
+          { userId: context.targetPatientId, patientId: context.targetPatientId, role: 'PATIENT' },
+          () => prisma.agentAuditRecord.create({
+            data: {
+              userId: context.targetPatientId,
+              agentName: 'Damu',
+              riskTier: 'HIGH_RISK',
+              actionType: 'CLINICAL_CARE_PROPOSAL',
+              summary: p.title,
+              payload: JSON.stringify({
+                proposalType: p.proposalType,
+                rationale: p.rationale,
+                proposedDetails: p.proposedDetails,
+                proposedBy: context.actorId,
+                idempotencyKey: context.idempotencyKey,
+              }),
+              requiresClinicianApproval: true,
+              approvalStatus: 'PENDING',
+            },
+          })
+        );
 
         return {
           success: true,
           toolName,
           result: {
-            proposalId: auditRecord.id,
+            proposalId: (auditRecord as any).id,
             proposalType: p.proposalType,
             title: p.title,
             requiresClinicianApproval: true,

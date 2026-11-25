@@ -6,17 +6,33 @@
 
 import fs from 'fs';
 import path from 'path';
+import { execSync } from 'child_process';
 
 describe('Synthetic Data & PII Sanitization Verification', () => {
   const rootDir = path.resolve(__dirname, '../../../..');
   const apiDir = path.resolve(__dirname, '../..');
 
-  it('confirms services/api/uploads/private contains NO real patient PDF files', () => {
+  it('confirms services/api/uploads/private contains NO tracked release PDFs and excludes local PDFs via .gitignore', () => {
+    const trackedUploadFiles = execSync('git ls-files services/api/uploads', {
+      cwd: rootDir,
+      encoding: 'utf8',
+    })
+      .split(/\r?\n/)
+      .map((f) => f.trim())
+      .filter((f) => f && !f.endsWith('.gitkeep'));
+    expect(trackedUploadFiles).toHaveLength(0);
+
     const uploadPrivateDir = path.join(apiDir, 'uploads/private');
     if (fs.existsSync(uploadPrivateDir)) {
-      const files = fs.readdirSync(uploadPrivateDir);
-      const pdfFiles = files.filter((f) => f.endsWith('.pdf'));
-      expect(pdfFiles).toHaveLength(0);
+      const pdfFiles = fs.readdirSync(uploadPrivateDir).filter((f) => f.endsWith('.pdf'));
+      for (const pdf of pdfFiles) {
+        const relPath = `services/api/uploads/private/${pdf}`;
+        const ignoredPath = execSync(`git check-ignore "${relPath}"`, {
+          cwd: rootDir,
+          encoding: 'utf8',
+        }).trim();
+        expect(ignoredPath).toBe(relPath);
+      }
     }
   });
 

@@ -110,6 +110,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return;
       }
 
+      setActiveTargetPatientId(null);
       setToken(getStoredToken());
       setUser(response.user);
       setProfile(response.profile ?? null);
@@ -202,6 +203,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         body: JSON.stringify({ email, password }),
       });
       await acceptDoctorSession(response);
+    } catch (error) {
+      setSessionNotice(null);
+      throw error;
     } finally {
       setAuthenticating(false);
     }

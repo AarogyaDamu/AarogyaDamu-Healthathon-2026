@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="AarogyaDamu app icon — white background">
+<title>AarogyaDamu app icon — white background</title>
+<defs>
+ <linearGradient id="tl" x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox"><stop offset="0" stop-color="#0DACA0"/><stop offset="0.38" stop-color="#0E7C7B"/><stop offset="1" stop-color="#004D4D"/></linearGradient>
+ <linearGradient id="tr" x1="1" y1="0" x2="0" y2="1" gradientUnits="objectBoundingBox"><stop offset="0" stop-color="#A7E6C3"/><stop offset="0.40" stop-color="#6BD7AE"/><stop offset="1" stop-color="#0E7C7B"/></linearGradient>
+ <linearGradient id="bl" x1="0" y1="1" x2="1" y2="0" gradientUnits="objectBoundingBox"><stop offset="0" stop-color="#A7E6C3"/><stop offset="0.55" stop-color="#18B59C"/><stop offset="1" stop-color="#0B7272"/></linearGradient>
+ <linearGradient id="br" x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox"><stop offset="0" stop-color="#004D4D"/><stop offset="0.55" stop-color="#0E7C7B"/><stop offset="1" stop-color="#0FA99E"/></linearGradient>
+ <linearGradient id="wordDamu" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#4FCBA2"/><stop offset="1" stop-color="#79DDB2"/></linearGradient>
+ </defs>
+<rect width="512" height="512" rx="104" fill="#FFFFFF"/><g transform="translate(52 52) scale(1.020000)"><path d="M 38 32 L 95 32 C 155 32 186 73 192 132 C 195 152 186 174 168 186 C 148 199 121 192 99 182 C 61 162 38 127 38 80 Z" fill="url(#tl)"/><path d="M 38 32 L 95 32 C 155 32 186 73 192 132 C 195 152 186 174 168 186 C 148 199 121 192 99 182 C 61 162 38 127 38 80 Z" fill="url(#tr)" transform="translate(400 0) scale(-1 1)"/><path d="M 38 32 L 95 32 C 155 32 186 73 192 132 C 195 152 186 174 168 186 C 148 199 121 192 99 182 C 61 162 38 127 38 80 Z" fill="url(#bl)" transform="translate(0 400) scale(1 -1)"/><path d="M 38 32 L 95 32 C 155 32 186 73 192 132 C 195 152 186 174 168 186 C 148 199 121 192 99 182 C 61 162 38 127 38 80 Z" fill="url(#br)" transform="translate(400 400) scale(-1 -1)"/><path d="M 178 132 H 222 V 178 H 263 V 222 H 222 V 268 H 178 V 222 H 137 V 178 H 178 Z" fill="#FFFFFF"/></g>
+</svg>

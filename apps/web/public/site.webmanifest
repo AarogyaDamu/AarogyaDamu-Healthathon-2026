@@ -1,0 +1,21 @@
+{
+  "name": "AarogyaDamu",
+  "short_name": "AarogyaDamu",
+  "description": "AarogyaDamu healthcare AI",
+  "start_url": "/",
+  "display": "standalone",
+  "theme_color": "#004D4D",
+  "background_color": "#E6F8EF",
+  "icons": [
+    {
+      "src": "/icons/android-chrome-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icons/android-chrome-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
