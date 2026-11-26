@@ -30,7 +30,7 @@ export default function PatientSwitcher() {
         onChange={handleChange}
         className="bg-white border border-teal-300 rounded px-2 py-1 text-xs font-bold text-slate-900 focus:outline-none cursor-pointer"
       >
-        <option value="self">Self (Ramesh Deshmukh)</option>
+        <option value="self">Self (Active Account)</option>
         {caregivingFor.map((c) => (
           <option key={c.consentId} value={c.patientId}>
             Dependent: {c.patientName} ({c.relationship})

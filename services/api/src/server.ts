@@ -210,7 +210,7 @@ const sendLiveness = (_req: Request, res: Response) => {
 };
 app.get('/health', sendLiveness);
 app.get('/health/live', sendLiveness);
-app.get('/health/staging-seed', async (req: Request, res: Response) => {
+const handleStagingSeed = async (req: Request, res: Response) => {
   if (env.APP_ENV !== 'staging') {
     res.status(404).json({ error: 'Not found.' });
     return;
@@ -221,12 +221,27 @@ app.get('/health/staging-seed', async (req: Request, res: Response) => {
     return;
   }
   try {
-    const result = await ensureStagingDemoDoctor(prisma);
+    const body = req.method === 'POST' && req.body && typeof req.body === 'object' ? req.body : {};
+    const result = await ensureStagingDemoDoctor(prisma, {
+      doctorPassword: typeof body.doctorPassword === 'string' ? body.doctorPassword : undefined,
+      patientPassword: typeof body.patientPassword === 'string' ? body.patientPassword : undefined,
+      patient2Password: typeof body.patient2Password === 'string' ? body.patient2Password : undefined,
+      patient3Password: typeof body.patient3Password === 'string' ? body.patient3Password : undefined,
+      caregiverPassword: typeof body.caregiverPassword === 'string' ? body.caregiverPassword : undefined,
+      rotatePasswords: body.rotatePasswords === true,
+    });
     res.json(result);
-  } catch {
-    res.status(500).json({ error: 'Staging demo seed operation failed.' });
+  } catch (err: any) {
+    const msg = String(err?.message || '');
+    const isConfigError = /password|APP_ENV|NODE_ENV|EXPECTED_NEON_ENDPOINT|refused/i.test(msg);
+    console.error('[Staging Demo Seed Endpoint Error]:', msg || 'Unknown seed failure');
+    res.status(isConfigError ? 400 : 500).json({
+      error: isConfigError ? msg : 'Staging demo seed operation failed.',
+    });
   }
-});
+};
+app.get('/health/staging-seed', handleStagingSeed);
+app.post('/health/staging-seed', handleStagingSeed);
 
 async function inspectDatabaseAndSecurityInvariants(): Promise<{
   connected: boolean;

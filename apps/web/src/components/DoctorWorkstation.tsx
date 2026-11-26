@@ -27,7 +27,7 @@ export const DoctorWorkstation: FC<DoctorWorkstationProps> = ({
   onLogout,
   doctorName,
   doctorEmail,
-  isSyntheticDemo: _isSyntheticDemo,
+  isSyntheticDemo,
   onToggleNotifications,
   unreadCount = 0,
 }) => {
@@ -117,6 +117,14 @@ export const DoctorWorkstation: FC<DoctorWorkstationProps> = ({
               <div>
                 <div className="flex items-center gap-2">
                   <span className="text-base font-bold text-white tracking-tight leading-tight">AarogyaDamu</span>
+                  {isSyntheticDemo && (
+                    <span
+                      title="SYNTHETIC DEMO DATA — NOT A REAL PATIENT RECORD"
+                      className="inline-flex items-center rounded-full border border-amber-400/50 bg-amber-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-200"
+                    >
+                      Synthetic Demo
+                    </span>
+                  )}
                 </div>
                 <div className="flex items-center gap-2 text-xs text-slate-300 font-medium mt-0.5">
                   <span className="text-slate-200 font-semibold">{displayName}</span>

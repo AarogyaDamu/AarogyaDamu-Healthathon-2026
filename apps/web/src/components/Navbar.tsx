@@ -56,7 +56,7 @@ export const Navbar: FC<NavbarProps> = ({
     <header className="sticky top-0 z-40 border-b border-slate-200 bg-white shadow-xs">
       {isSyntheticDemo && (
         <div className="bg-amber-600 py-1 px-4 text-center text-xs font-medium tracking-wide text-white">
-          Demonstration Mode: Using sample patient records for Ramesh Deshmukh
+          SYNTHETIC DEMO DATA — NOT A REAL PATIENT RECORD
         </div>
       )}
       <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
