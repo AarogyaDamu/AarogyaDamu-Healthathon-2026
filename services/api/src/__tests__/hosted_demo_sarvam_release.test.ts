@@ -447,6 +447,68 @@ describe('Hosted Demo (Render Free + Neon Free) & Sarvam OCR Regression Suite', 
         expect(fs.existsSync(uploadsPatientDir)).toBe(false);
       }
 
+      // Assigned doctor upload with saveToPatientRecord stores extracted report metadata in HealthDocument for the patient without saving binary files
+      const doctorSaveRes = await request(app)
+        .post('/api/ocr/extract-temporary')
+        .set('Authorization', `Bearer ${doctorToken}`)
+        .set('X-Target-Patient-Id', patientId)
+        .field('saveToPatientRecord', 'true')
+        .field('title', 'Doctor Uploaded Glycemic Panel')
+        .attach('file', Buffer.from(VALID_PDF_HEADER), {
+          filename: 'doctor-uploaded-panel.pdf',
+          contentType: 'application/pdf',
+        });
+
+      expect(doctorSaveRes.status).toBe(200);
+      expect(doctorSaveRes.body.success).toBe(true);
+      expect(doctorSaveRes.body.savedToPatientRecord).toBe(true);
+      expect(doctorSaveRes.body.temporaryCleanedUp).toBe(true);
+      expect(doctorSaveRes.body.document?.id).toBeTruthy();
+      expect(doctorSaveRes.body.document?.hasOriginalFile).toBe(false);
+      if (!existedBefore) {
+        expect(fs.existsSync(uploadsPatientDir)).toBe(false);
+      }
+
+      const afterDoctorSaveCount = await withTenantTransaction(
+        prisma,
+        { isSystemWorker: true, workerScope: 'DEMO_WORKER' },
+        (tx) => tx.healthDocument.count({ where: { userId: patientId } }),
+      );
+      expect(afterDoctorSaveCount).toBe(beforeDocs + 1);
+
+      const patientDocsRes = await request(app)
+        .get('/api/documents')
+        .set('Authorization', `Bearer ${patientToken}`);
+      expect(patientDocsRes.status).toBe(200);
+      const patientSideDoc = patientDocsRes.body.documents.find(
+        (doc: any) => doc.id === doctorSaveRes.body.document.id,
+      );
+      expect(patientSideDoc).toBeTruthy();
+      expect(patientSideDoc.title).toBe('Doctor Uploaded Glycemic Panel');
+      expect(patientSideDoc.hasOriginalFile).toBe(false);
+      expect(patientSideDoc.processingStatus).toBe('COMPLETED');
+      expect(patientSideDoc.extractedData?.rawOcrText).toContain('HbA1c: 6.7%');
+      expect(patientSideDoc.extractedData?.plainSummary).toBeTruthy();
+
+      const otherPatientDocsRes = await request(app)
+        .get('/api/documents')
+        .set('Authorization', `Bearer ${otherPatientToken}`);
+      expect(otherPatientDocsRes.status).toBe(200);
+      expect(
+        otherPatientDocsRes.body.documents.some((doc: any) => doc.id === doctorSaveRes.body.document.id),
+      ).toBe(false);
+
+      const unassignedSaveRes = await request(app)
+        .post('/api/ocr/extract-temporary')
+        .set('Authorization', `Bearer ${unassignedDoctorToken}`)
+        .set('X-Target-Patient-Id', patientId)
+        .field('saveToPatientRecord', 'true')
+        .attach('file', Buffer.from(VALID_PDF_HEADER), {
+          filename: 'unauthorized-doctor.pdf',
+          contentType: 'application/pdf',
+        });
+      expect(unassignedSaveRes.status).toBe(403);
+
       // Honest readiness telemetry
       const readyRes = await request(app).get('/health/ready');
       expect([200, 503]).toContain(readyRes.status);

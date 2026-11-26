@@ -23,6 +23,9 @@ test('web and mobile OCR components remove fake fallbacks and Google Cloud Visio
 
   // Both Web and Mobile route to temporary in-memory Sarvam OCR when durable storage is off
   assert.match(doctorDash, /\/ocr\/extract-temporary/);
+  assert.match(doctorDash, /saveToPatientRecord/);
+  assert.match(doctorDash, /'Upload report'/);
+  assert.doesNotMatch(doctorDash, /Scan Report \(Temp Sarvam OCR\)/);
   assert.match(doctorDash, /rawOcrText/);
   assert.match(doctorDash, /Temporary Sarvam OCR Result — File Not Stored/);
   assert.match(webHealth, /\/ocr\/extract-temporary/);

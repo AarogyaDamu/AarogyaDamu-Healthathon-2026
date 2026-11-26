@@ -57,6 +57,13 @@ interface BiomarkerItem {
   meaning: string;
 }
 
+interface StructuredLabField {
+  displayName: string;
+  extractedValue: string;
+  referenceRange?: string;
+  isAbnormal?: boolean;
+}
+
 interface ExtractedDataPayload {
   provider?: string;
   status?: string;
@@ -66,7 +73,10 @@ interface ExtractedDataPayload {
   doctor?: string;
   medicines?: MedicineItem[];
   biomarkers?: BiomarkerItem[];
+  structuredLabs?: Record<string, any>;
   doctorAdvice?: string[];
+  doctorReviewStatus?: string;
+  doctorNotes?: string | null;
   fileDataUrl?: string | null;
   isSynthetic?: boolean;
 }
@@ -79,9 +89,26 @@ interface HealthDocument {
   reportDate: string;
   notes?: string;
   processingStatus: string;
+  doctorReviewStatus?: string;
+  hasOriginalFile?: boolean;
   fileSizeBytes?: number;
   mimeType?: string;
   extractedData?: ExtractedDataPayload | null;
+}
+
+function getStructuredLabEntries(extractedData?: ExtractedDataPayload | null): Array<[string, StructuredLabField]> {
+  const labs = extractedData?.structuredLabs;
+  if (!labs || typeof labs !== 'object') return [];
+  return Object.entries(labs).filter(
+    ([key, val]) =>
+      key !== 'additionalFields' &&
+      val &&
+      typeof val === 'object' &&
+      'displayName' in val &&
+      'extractedValue' in val &&
+      Boolean((val as StructuredLabField).displayName) &&
+      Boolean((val as StructuredLabField).extractedValue),
+  ) as Array<[string, StructuredLabField]>;
 }
 
 export default function Health() {
@@ -1056,6 +1083,9 @@ export default function Health() {
                     const isPrescription = doc.category === 'PRESCRIPTION';
                     const medCount = doc.extractedData?.medicines?.length || 0;
                     const bioCount = doc.extractedData?.biomarkers?.length || 0;
+                    const structuredLabCount = getStructuredLabEntries(doc.extractedData).length;
+                    const resultCount = bioCount || structuredLabCount;
+                    const reviewStatus = doc.doctorReviewStatus || doc.extractedData?.doctorReviewStatus;
                     const displayTitle = formatDocumentDisplayTitle(doc.title, doc.category);
 
                     return (
@@ -1100,9 +1130,14 @@ export default function Health() {
                                 {medCount} Prescribed Medicine(s)
                               </span>
                             )}
-                            {!isPrescription && bioCount > 0 && (
+                            {!isPrescription && resultCount > 0 && (
                               <span className="px-2.5 py-0.5 rounded-full bg-teal-50 border border-teal-200 text-[10px] font-bold text-teal-900">
-                                {bioCount} Test Result(s) Included
+                                {resultCount} Test Result(s) Included
+                              </span>
+                            )}
+                            {reviewStatus === 'REVIEWED' && (
+                              <span className="px-2.5 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-[10px] font-bold text-emerald-800">
+                                Doctor Reviewed
                               </span>
                             )}
                             <span className="px-2.5 py-0.5 rounded-full bg-slate-100 text-[10px] font-medium text-slate-600 flex items-center gap-1">
@@ -1229,6 +1264,15 @@ export default function Health() {
                         'This document has been safely cataloged in your health records. Review the details below.'}
                     </p>
                   </div>
+
+                  {selectedDocForViewing.extractedData?.doctorNotes && (
+                    <div className="p-4 bg-emerald-50/70 border border-emerald-200 rounded-2xl space-y-1 shadow-2xs">
+                      <span className="font-bold text-emerald-900 text-xs block">Doctor Clinical Review Notes:</span>
+                      <p className="text-slate-800 leading-relaxed text-xs">
+                        {selectedDocForViewing.extractedData.doctorNotes}
+                      </p>
+                    </div>
+                  )}
 
                   {selectedDocForViewing.extractedData?.text && (
                     <div className="space-y-2 rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -1367,6 +1411,50 @@ export default function Health() {
                       </div>
                     )}
 
+                  {/* STRUCTURED LAB RESULTS (FROM SARVAM OCR WHEN BIOMARKER GAUGES ARE ABSENT) */}
+                  {(!selectedDocForViewing.extractedData?.biomarkers ||
+                    selectedDocForViewing.extractedData.biomarkers.length === 0) &&
+                    getStructuredLabEntries(selectedDocForViewing.extractedData).length > 0 && (
+                      <div className="space-y-3">
+                        <h4 className="font-bold text-slate-900 text-sm flex items-center gap-2">
+                          <Activity className="h-4 w-4 text-teal-700" /> Extracted Test Results:
+                        </h4>
+                        <div className="grid sm:grid-cols-2 gap-3">
+                          {getStructuredLabEntries(selectedDocForViewing.extractedData).map(([key, lab]) => (
+                            <div
+                              key={key}
+                              className={`p-3.5 rounded-2xl border ${
+                                lab.isAbnormal
+                                  ? 'bg-rose-50/50 border-rose-200'
+                                  : 'bg-emerald-50/30 border-emerald-200'
+                              }`}
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div>
+                                  <p className="font-bold text-slate-900 text-xs">{lab.displayName}</p>
+                                  {lab.referenceRange && (
+                                    <p className="text-[11px] text-slate-500 mt-0.5">Ref: {lab.referenceRange}</p>
+                                  )}
+                                </div>
+                                <div className="text-right">
+                                  <p className="text-sm font-extrabold text-slate-900">{lab.extractedValue}</p>
+                                  <span
+                                    className={`inline-block mt-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                      lab.isAbnormal
+                                        ? 'bg-rose-100 text-rose-800 border border-rose-200'
+                                        : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                                    }`}
+                                  >
+                                    {lab.isAbnormal ? 'Out of range' : 'Within range'}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                   {/* PRESCRIBED MEDICINES WITH VISUAL TIMING ORGANIZER */}
                   {selectedDocForViewing.extractedData?.medicines &&
                     selectedDocForViewing.extractedData.medicines.length > 0 && (
@@ -1447,6 +1535,14 @@ export default function Health() {
                     <div className="border border-slate-200 rounded-2xl p-4 bg-slate-100 text-center space-y-3">
                       <img src={selectedDocForViewing.extractedData.fileDataUrl} alt="Original Document File" className="max-h-[460px] w-auto mx-auto rounded-xl shadow-xs border border-slate-300" />
                       <div className="flex justify-center pt-2"><a href={selectedDocForViewing.extractedData.fileDataUrl} download={`${selectedDocForViewing.title}.png`} className="inline-flex items-center gap-2 px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition shadow-xs"><FileDown className="h-4 w-4" /> Download Original Document Image</a></div>
+                    </div>
+                  ) : selectedDocForViewing.hasOriginalFile === false ? (
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-6 text-center space-y-2">
+                      <FileText className="h-7 w-7 text-teal-700 mx-auto" />
+                      <p className="text-xs font-bold text-slate-900">Original file binary was not stored</p>
+                      <p className="text-[11px] text-slate-600 max-w-md mx-auto leading-relaxed">
+                        Your clinical report summary, extracted lab values, and OCR text are stored in your health record. The raw image or PDF file was scrubbed after extraction because persistent file storage is disabled on this demo.
+                      </p>
                     </div>
                   ) : (
                     <MedicalReportSourcePreview documentId={selectedDocForViewing.id} title={selectedDocForViewing.title} mimeType={selectedDocForViewing.mimeType} />

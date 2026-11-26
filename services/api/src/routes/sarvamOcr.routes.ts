@@ -85,23 +85,120 @@ router.post(
         file.originalname,
       );
 
+      const shouldSaveToPatientRecord =
+        req.body?.saveToPatientRecord === 'true' ||
+        req.body?.saveToPatientRecord === true ||
+        req.query?.saveToPatientRecord === 'true';
+
+      let savedDocument: {
+        id: string;
+        title: string;
+        category: string;
+        issuingFacility: string | null;
+        reportDate: Date;
+        processingStatus: string;
+      } | null = null;
+
+      if (shouldSaveToPatientRecord) {
+        const stripNullBytes = (value: string) => value.replace(/\u0000/g, '');
+        const requestedTitle =
+          typeof req.body?.title === 'string' ? stripNullBytes(req.body.title).trim() : '';
+        const fallbackTitle = stripNullBytes(path.basename(file.originalname || ''))
+          .replace(/\.[^.]+$/, '')
+          .replace(/[_-]+/g, ' ')
+          .trim();
+        const documentTitle = (requestedTitle || fallbackTitle || 'Uploaded medical report').slice(0, 160);
+        const requestedFacility =
+          typeof req.body?.issuingFacility === 'string'
+            ? stripNullBytes(req.body.issuingFacility).trim().slice(0, 160)
+            : '';
+        const issuingFacility =
+          requestedFacility || (actor.isClinician ? 'Treating Clinician Upload (Sarvam OCR)' : undefined);
+        const category = result.documentType === 'PRESCRIPTION' ? 'PRESCRIPTION' : 'LAB_REPORT';
+
+        const extractedPayload = stripNullBytes(
+          JSON.stringify({
+            provider: result.provider,
+            engine: result.engine,
+            status: 'COMPLETED',
+            documentType: result.documentType,
+            text: result.rawOcrText,
+            rawOcrText: result.rawOcrText,
+            structuredLabs: result.structuredLabs,
+            plainSummary: result.plainSummary,
+            doctorAdvice: result.doctorAdvice,
+            doctorReviewStatus: 'PENDING',
+            doctorNotes: null,
+            reviewedBy: null,
+            reviewedAt: null,
+            persistentFileStored: false,
+            uploadedByClinicianId: actor.isClinician ? actor.id : null,
+            sarvamJobId: result.sarvamJobId,
+            fieldsCount: Object.keys(result.structuredLabs || {}).length,
+          }),
+        );
+
+        savedDocument = await runWithTenantContext(
+          {
+            userId: actor.id,
+            patientId: effectivePatientId,
+            role: actor.isClinician ? 'DOCTOR' : 'PATIENT',
+          },
+          async () => {
+            return prisma.healthDocument.create({
+              data: {
+                userId: effectivePatientId,
+                title: documentTitle,
+                category,
+                issuingFacility,
+                processingStatus: 'COMPLETED',
+                notes:
+                  'Extracted via Sarvam Document AI and stored in the patient record. Original binary file scrubbed from memory (durable file storage unavailable).',
+                extractedData: extractedPayload,
+              },
+              select: {
+                id: true,
+                title: true,
+                category: true,
+                issuingFacility: true,
+                reportDate: true,
+                processingStatus: true,
+              },
+            });
+          },
+        );
+      }
+
       await logAuditEvent({
         userId: effectivePatientId,
         actorId: actor.id,
         action: 'DOCUMENT_TEMPORARY_OCR_EXTRACTED',
-        entityType: 'OcrTemporaryExtract',
+        entityType: savedDocument ? 'HealthDocument' : 'OcrTemporaryExtract',
+        entityId: savedDocument?.id,
         metadata: {
           mode: result.mode,
           engine: result.engine,
           documentType: result.documentType,
           persistentStorage: false,
+          persistentFileStored: false,
+          savedToPatientRecord: Boolean(savedDocument),
           temporaryCleanedUp: result.temporaryCleanedUp,
         },
         ipAddress: req.ip,
         userAgent: req.get('user-agent'),
       });
 
-      res.json(result);
+      res.json({
+        ...result,
+        savedToPatientRecord: Boolean(savedDocument),
+        document: savedDocument
+          ? {
+              ...savedDocument,
+              hasOriginalFile: false,
+              persistentFileStored: false,
+            }
+          : null,
+      });
     } catch (err: any) {
       if (err instanceof AuthorizationError || err?.status === 403 || err?.message?.includes('Forbidden')) {
         res.status(403).json({ error: err.message });

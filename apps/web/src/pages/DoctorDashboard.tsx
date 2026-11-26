@@ -413,6 +413,7 @@ export default function DoctorDashboard({ onNavigate }: Props) {
     try {
       const persistentAvailable = documentCapabilities?.persistentStorageAvailable ?? true;
       if (!persistentAvailable) {
+        formData.append('saveToPatientRecord', 'true');
         const tempResponse = await apiFetch<{
           success: boolean;
           engine: string;
@@ -423,11 +424,19 @@ export default function DoctorDashboard({ onNavigate }: Props) {
           doctorAdvice?: string[];
           structuredLabs?: Record<string, any>;
           temporaryCleanedUp: boolean;
+          savedToPatientRecord?: boolean;
+          document?: { id: string } | null;
         }>('/ocr/extract-temporary', {
           method: 'POST',
           headers: { 'X-Target-Patient-Id': selectedPatient.patientId },
           body: formData,
         });
+        if (tempResponse.savedToPatientRecord) {
+          setTemporaryOcrResult(null);
+          setDocumentUploadSuccess('Report uploaded via Sarvam OCR and stored in the patient record (original binary file scrubbed from memory; raw file storage disabled).');
+          await loadPatientDocuments(selectedPatient.patientId);
+          return;
+        }
         setTemporaryOcrResult({
           title,
           engine: tempResponse.engine,
@@ -1523,17 +1532,13 @@ export default function DoctorDashboard({ onNavigate }: Props) {
                           <h3 className="text-xs font-bold uppercase tracking-wide text-slate-800">Medical reports</h3>
                           <p className="mt-1 text-[11px] text-slate-500">
                             {documentCapabilities && !documentCapabilities.persistentStorageAvailable
-                              ? 'Temporary Sarvam OCR mode: extracts report data in memory without durable file storage.'
+                              ? 'Sarvam OCR extracts text & labs and stores the report in the patient record (original binary file scrubbed, not stored).'
                               : 'Patient and clinician uploads appear in the shared patient record.'}
                           </p>
                         </div>
                         <label className={`inline-flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold text-white ${documentUploading ? 'bg-slate-400' : 'bg-teal-700 hover:bg-teal-800'}`}>
                           <Upload className="h-3.5 w-3.5" />
-                          {documentUploading
-                            ? 'Extracting OCR…'
-                            : documentCapabilities && !documentCapabilities.persistentStorageAvailable
-                            ? 'Scan Report (Temp Sarvam OCR)'
-                            : 'Upload report'}
+                          {documentUploading ? 'Uploading report…' : 'Upload report'}
                           <input
                             type="file"
                             accept="application/pdf,image/jpeg,image/png,image/webp"
@@ -1666,8 +1671,15 @@ export default function DoctorDashboard({ onNavigate }: Props) {
                               {(report.extractedData?.text || report.hasOriginalFile) && (
                                 <>
                                   <div className="mt-2 flex items-center justify-between gap-2">
-                                    <span className="text-[11px] text-slate-500">{report.extractedData?.provider || 'Uploaded report'} · compare with original before relying on it</span>
-                                    <button type="button" onClick={() => setSelectedPatientReport(report as ReviewableMedicalReport)} className="rounded-lg bg-teal-700 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-teal-800 focus:outline-none focus:ring-2 focus:ring-teal-500">Review OCR & original</button>
+                                    <span className="text-[11px] text-slate-500">
+                                      {report.extractedData?.provider || 'Uploaded report'} ·{' '}
+                                      {report.hasOriginalFile
+                                        ? 'compare with original before relying on it'
+                                        : 'OCR report stored in patient record (original binary file not retained)'}
+                                    </span>
+                                    <button type="button" onClick={() => setSelectedPatientReport(report as ReviewableMedicalReport)} className="rounded-lg bg-teal-700 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-teal-800 focus:outline-none focus:ring-2 focus:ring-teal-500">
+                                      {report.hasOriginalFile ? 'Review OCR & original' : 'Review OCR & labs'}
+                                    </button>
                                   </div>
                                   {report.extractedData?.text && (
                                     <details className="mt-2">
