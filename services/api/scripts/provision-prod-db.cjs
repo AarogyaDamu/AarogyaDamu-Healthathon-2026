@@ -16,6 +16,8 @@ const {
   validateHostedDatabaseConfig,
   validateRuntimePassword,
   escapeSqlStringLiteral,
+  buildPrismaStrictTlsUrl,
+  verifyPostgresTlsConnection,
 } = require('./hosted-db-guard.cjs');
 
 if (process.env.NODE_ENV !== 'production' && process.env.NODE_ENV !== 'test') {
@@ -304,7 +306,8 @@ async function main() {
 
   if (hosted) {
     const validated = validateHostedDatabaseConfig(process.env);
-    migrationUrl = validated.migrationUrl;
+    await verifyPostgresTlsConnection(validated.migrationUrl, { label: 'MIGRATION_DATABASE_URL' });
+    migrationUrl = buildPrismaStrictTlsUrl(validated.migrationUrl);
     rlsSecret = validated.rlsSecret;
     runtimePassword = validated.runtimePassword;
   } else {

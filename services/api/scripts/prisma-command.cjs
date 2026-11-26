@@ -1,6 +1,6 @@
 const { spawnSync } = require('node:child_process');
 const path = require('node:path');
-const { isHostedMode, validateHostedMigrationOnly, validateHostedDatabaseConfig } = require('./hosted-db-guard.cjs');
+const { isHostedMode, validateHostedMigrationOnly, validateHostedDatabaseConfig, buildPrismaStrictTlsUrl } = require('./hosted-db-guard.cjs');
 
 if (process.env.NODE_ENV !== 'production' && process.env.NODE_ENV !== 'test') {
   require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
@@ -23,7 +23,7 @@ if (hosted) {
     const validated = environment.DATABASE_URL
       ? validateHostedDatabaseConfig(environment)
       : validateHostedMigrationOnly(environment);
-    environment.DATABASE_URL = validated.migrationUrl;
+    environment.DATABASE_URL = buildPrismaStrictTlsUrl(validated.migrationUrl);
   }
 } else if (process.env.NODE_ENV !== 'test' && isMigrateCommand && (environment.MIGRATION_DATABASE_URL || environment.ADMIN_DATABASE_URL)) {
   // Local-development convenience fallback only (never active in hosted or test environments).

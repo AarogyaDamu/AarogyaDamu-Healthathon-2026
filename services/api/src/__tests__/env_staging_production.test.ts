@@ -262,5 +262,17 @@ describe('Environment Policy: Staging vs Production Validation', () => {
       MIGRATION_DATABASE_URL: 'postgresql://neondb_owner:owner_pass_1234@ep-new-demo.ap-southeast-1.aws.neon.tech/neondb?sslmode=require',
     };
     expect(envSchema.safeParse(matchedEndpointDb).success).toBe(true);
+
+    const disabledSslDb = {
+      ...matchedEndpointDb,
+      DATABASE_URL: 'postgresql://aarogyadamu_app:strong_prod_pass_1234@ep-new-demo-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=disable',
+    };
+    expect(envSchema.safeParse(disabledSslDb).success).toBe(false);
+
+    const weakSslAcceptDb = {
+      ...matchedEndpointDb,
+      DATABASE_URL: 'postgresql://aarogyadamu_app:strong_prod_pass_1234@ep-new-demo-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&sslaccept=accept_invalid_certs',
+    };
+    expect(envSchema.safeParse(weakSslAcceptDb).success).toBe(false);
   });
 });

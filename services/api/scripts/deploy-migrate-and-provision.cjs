@@ -27,6 +27,8 @@ const {
   EXPECTED_RUNTIME_ROLE,
   validateHostedDatabaseConfig,
   buildRuntimeUrlWithPassword,
+  buildPrismaStrictTlsUrl,
+  verifyPostgresTlsConnection,
   sanitizeConnectionSummary,
 } = require('./hosted-db-guard.cjs');
 const {
@@ -43,22 +45,41 @@ const { PrismaClient } = require(
   require.resolve('@prisma/client', { paths: [apiRoot, path.resolve(apiRoot, '../..')] }),
 );
 
-async function verifyMigrationSslAndIdentity(migrationPrisma, { expectedOwnerRole, requireSsl = true }) {
+async function verifyMigrationSslAndIdentity(migrationPrisma, {
+  expectedOwnerRole,
+  migrationUrl,
+  requireSsl = true,
+  verifyTlsFn = verifyPostgresTlsConnection,
+}) {
+  let tlsVerification = null;
+  if (requireSsl) {
+    if (!migrationUrl) {
+      throw new Error('Security Error: Migration URL is required for active TLS verification.');
+    }
+    tlsVerification = await verifyTlsFn(migrationUrl, { label: 'MIGRATION_DATABASE_URL' });
+    if (!tlsVerification || !tlsVerification.encrypted || !tlsVerification.authorized) {
+      throw new Error('Security Error: Migration connection failed active TLS certificate verification.');
+    }
+  }
+
   const [conn] = await migrationPrisma.$queryRawUnsafe(`
     SELECT
       current_user::text AS active_user,
       session_user::text AS session_user,
-      COALESCE((SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()), false) AS ssl_active
+      COALESCE((SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()), false) AS backend_pg_stat_ssl
   `);
   if (!conn || conn.active_user !== expectedOwnerRole) {
     throw new Error(
       `Security Error: Expected migration role "${expectedOwnerRole}", got "${conn ? conn.active_user : 'unknown'}".`,
     );
   }
-  if (requireSsl && !conn.ssl_active) {
-    throw new Error('Security Error: Migration connection is not encrypted with SSL/TLS.');
-  }
-  return conn;
+
+  return {
+    ...conn,
+    ssl_active: requireSsl ? Boolean(tlsVerification && tlsVerification.encrypted) : Boolean(conn.backend_pg_stat_ssl),
+    backend_pg_stat_ssl: Boolean(conn.backend_pg_stat_ssl),
+    tls: tlsVerification,
+  };
 }
 
 function runPrismaDeploy(env = process.env) {
@@ -80,12 +101,25 @@ function runPrismaDeploy(env = process.env) {
 async function verifyRuntimeDatabaseIsolation(runtimeUrl, {
   expectedPassword,
   requireSsl = true,
+  verifyTlsFn = verifyPostgresTlsConnection,
+  prismaClientFactory,
 } = {}) {
   const authUrl = expectedPassword
     ? buildRuntimeUrlWithPassword(runtimeUrl, expectedPassword)
     : runtimeUrl;
 
-  const runtimePrisma = new PrismaClient({ datasources: { db: { url: authUrl } } });
+  let tlsVerification = null;
+  if (requireSsl) {
+    tlsVerification = await verifyTlsFn(authUrl, { label: 'DATABASE_URL' });
+    if (!tlsVerification || !tlsVerification.encrypted || !tlsVerification.authorized) {
+      throw new Error('Security Error: Runtime DATABASE_URL failed active TLS certificate verification.');
+    }
+  }
+
+  const strictRuntimeUrl = requireSsl ? buildPrismaStrictTlsUrl(authUrl) : authUrl;
+  const runtimePrisma = prismaClientFactory
+    ? prismaClientFactory(strictRuntimeUrl)
+    : new PrismaClient({ datasources: { db: { url: strictRuntimeUrl } } });
   try {
     const roleRows = await runtimePrisma.$queryRawUnsafe(`
       SELECT
@@ -97,7 +131,7 @@ async function verifyRuntimeDatabaseIsolation(runtimeUrl, {
         r.rolcreaterole AS can_create_role,
         r.rolreplication AS can_replicate,
         r.rolcanlogin AS can_login,
-        COALESCE((SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()), false) AS ssl_active
+        COALESCE((SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()), false) AS backend_pg_stat_ssl
       FROM pg_catalog.pg_roles r
       WHERE r.rolname = current_user
     `);
@@ -121,9 +155,6 @@ async function verifyRuntimeDatabaseIsolation(runtimeUrl, {
       throw new Error(
         `Runtime role "${role.active_user}" holds forbidden elevated attributes in hosted deployment.`,
       );
-    }
-    if (requireSsl && !role.ssl_active) {
-      throw new Error('Security Error: Runtime DATABASE_URL connection is not encrypted with SSL/TLS.');
     }
 
     const schemaPrivRows = await runtimePrisma.$queryRawUnsafe(`
@@ -171,7 +202,7 @@ async function verifyRuntimeDatabaseIsolation(runtimeUrl, {
     }
 
     console.log(
-      `Hosted DB runtime verification passed for "${role.active_user}" (SSL=${role.ssl_active}, NOSUPERUSER, NOBYPASSRLS, _security_vault 42501 denied, unscoped HealthDocument count=0).`,
+      `Hosted DB runtime verification passed for "${role.active_user}" (TLS=${tlsVerification ? tlsVerification.protocol : 'disabled'}, backendPgStatSsl=${Boolean(role.backend_pg_stat_ssl)}, NOSUPERUSER, NOBYPASSRLS, _security_vault 42501 denied, unscoped HealthDocument count=0).`,
     );
   } finally {
     await runtimePrisma.$disconnect();
@@ -185,12 +216,27 @@ async function executeDeploymentSequence({
   runtimePassword,
   rlsSecret,
   requireSsl = true,
+  verifyTlsFn = verifyPostgresTlsConnection,
+  prismaClientFactory,
   migrateFn,
 }) {
-  const migrationPrisma = new PrismaClient({ datasources: { db: { url: migrationUrl } } });
+  const strictMigrationUrl = requireSsl ? buildPrismaStrictTlsUrl(migrationUrl) : migrationUrl;
+  const createClient = prismaClientFactory || ((url) => new PrismaClient({ datasources: { db: { url } } }));
+
+  const migrationPrisma = createClient(strictMigrationUrl);
   try {
-    console.log('Hosted deploy step 2-3/6: verifying owner SSL connection and pre-provisioning restricted roles...');
-    await verifyMigrationSslAndIdentity(migrationPrisma, { expectedOwnerRole, requireSsl });
+    console.log('Hosted deploy step 2-3/6: verifying active migration TLS handshake, owner identity, and pre-provisioning restricted roles...');
+    const migIdentity = await verifyMigrationSslAndIdentity(migrationPrisma, {
+      expectedOwnerRole,
+      migrationUrl,
+      requireSsl,
+      verifyTlsFn,
+    });
+    if (migIdentity.tls) {
+      console.log(
+        `Migration TLS verified (${migIdentity.tls.protocol}, cipher=${migIdentity.tls.cipher || 'unknown'}, backendPgStatSsl=${migIdentity.backend_pg_stat_ssl}).`,
+      );
+    }
     await preProvisionRoles(migrationPrisma, { runtimePassword, requireCreaterole: true });
   } finally {
     await migrationPrisma.$disconnect();
@@ -199,7 +245,7 @@ async function executeDeploymentSequence({
   console.log('Hosted deploy step 4/6: applying Prisma production migrations via MIGRATION_DATABASE_URL...');
   migrateFn();
 
-  const postMigratePrisma = new PrismaClient({ datasources: { db: { url: migrationUrl } } });
+  const postMigratePrisma = createClient(strictMigrationUrl);
   try {
     console.log('Hosted deploy step 5-9/6: syncing vault secret, rotating runtime password, and verifying RLS/AuditLog/triggers...');
     await synchronizeAndVerifySecurityState(postMigratePrisma, {
@@ -211,10 +257,12 @@ async function executeDeploymentSequence({
     await postMigratePrisma.$disconnect();
   }
 
-  console.log('Hosted deploy step 10-14/6: verifying pooled runtime connection, password auth, _security_vault 42501, and unscoped isolation...');
+  console.log('Hosted deploy step 10-14/6: verifying pooled runtime TLS handshake, password auth, _security_vault 42501, and unscoped isolation...');
   await verifyRuntimeDatabaseIsolation(runtimeUrl, {
     expectedPassword: runtimePassword,
     requireSsl,
+    verifyTlsFn,
+    prismaClientFactory,
   });
   console.log('Hosted deploy step 15/6: all database security preflight & runtime checks passed.');
 }

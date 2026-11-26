@@ -176,6 +176,29 @@ const envSchema = z.object({
             }
           }
         }
+        const rawSslMode = parsedRuntimeDb.searchParams.get('sslmode')?.trim().toLowerCase();
+        if (rawSslMode && !['require', 'verify-ca', 'verify-full'].includes(rawSslMode)) {
+          context.addIssue({
+            code: 'custom',
+            path: ['DATABASE_URL'],
+            message: 'Hosted runtime DATABASE_URL cannot weaken TLS with sslmode=disable/allow/prefer.',
+          });
+        }
+        if (config.EXPECTED_NEON_ENDPOINT && !rawSslMode) {
+          context.addIssue({
+            code: 'custom',
+            path: ['DATABASE_URL'],
+            message: 'Hosted Neon DATABASE_URL must enforce TLS with sslmode=require, verify-ca, or verify-full.',
+          });
+        }
+        const rawSslAccept = parsedRuntimeDb.searchParams.get('sslaccept')?.trim().toLowerCase();
+        if (rawSslAccept && rawSslAccept !== 'strict') {
+          context.addIssue({
+            code: 'custom',
+            path: ['DATABASE_URL'],
+            message: 'Hosted runtime DATABASE_URL cannot disable certificate verification with sslaccept!=strict.',
+          });
+        }
       } catch {
         context.addIssue({
           code: 'custom',

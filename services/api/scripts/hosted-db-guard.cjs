@@ -7,6 +7,10 @@
  * the target Neon endpoint identity before any SQL runs, and never logs credentials.
  */
 
+const fs = require('node:fs');
+const net = require('node:net');
+const tls = require('node:tls');
+
 const DEFAULT_DEV_RLS_SECRETS = new Set([
   'aarogya_rls_signing_secret_super_secure_2026_production_key_minimum_32_chars',
   'local-dev-and-test-only-signing-secret-change-for-production',
@@ -134,14 +138,26 @@ function parsePostgresUrlStrict(rawUrl, label, { requireSsl = true } = {}) {
   }
 
   let sslMode = null;
+  let sslAccept = null;
+  let sslRootCert = null;
   for (const [k, v] of parsed.searchParams.entries()) {
-    if (k.toLowerCase() === 'sslmode') {
+    const key = k.toLowerCase();
+    if (key === 'sslmode') {
       sslMode = String(v).trim().toLowerCase();
+    } else if (key === 'sslaccept') {
+      sslAccept = String(v).trim().toLowerCase();
+    } else if (key === 'sslrootcert') {
+      sslRootCert = String(v).trim();
     }
   }
   if (requireSsl && (!sslMode || !ALLOWED_SSL_MODES.has(sslMode))) {
     throw new Error(
       `Security Error: ${label} must enforce TLS with sslmode=require, verify-ca, or verify-full.`,
+    );
+  }
+  if (requireSsl && sslAccept && sslAccept !== 'strict') {
+    throw new Error(
+      `Security Error: ${label} cannot weaken TLS certificate verification with sslaccept=${sslAccept}.`,
     );
   }
 
@@ -154,6 +170,8 @@ function parsePostgresUrlStrict(rawUrl, label, { requireSsl = true } = {}) {
     password,
     databaseName,
     sslMode,
+    sslAccept,
+    sslRootCert,
   };
 }
 
@@ -316,6 +334,192 @@ function validateHostedDatabaseConfig(env = process.env) {
   };
 }
 
+function buildPrismaStrictTlsUrl(rawUrl) {
+  const parsed = new URL(rawUrl);
+  const existingMode = parsed.searchParams.get('sslmode')?.trim().toLowerCase();
+  if (existingMode && !ALLOWED_SSL_MODES.has(existingMode)) {
+    throw new Error(
+      `Security Error: Cannot construct strict TLS URL from unsafe sslmode="${existingMode}".`,
+    );
+  }
+  const existingAccept = parsed.searchParams.get('sslaccept')?.trim().toLowerCase();
+  if (existingAccept && existingAccept !== 'strict') {
+    throw new Error(
+      `Security Error: Cannot construct strict TLS URL from unsafe sslaccept="${existingAccept}".`,
+    );
+  }
+  // Prisma 5 query/schema engine treats sslmode=verify-full/verify-ca as prefer and
+  // defaults sslmode=require to accept_invalid_certs unless sslaccept=strict is explicit.
+  parsed.searchParams.set('sslmode', 'require');
+  parsed.searchParams.set('sslaccept', 'strict');
+  return parsed.toString();
+}
+
+function verifyPostgresTlsConnection(rawUrl, options = {}) {
+  const parsed = parsePostgresUrlStrict(rawUrl, options.label || 'PostgreSQL TLS connection', {
+    requireSsl: true,
+  });
+  const port = Number(parsed.port || '5432');
+  const hostname = parsed.hostname;
+  const verifyHost = (options.servername || hostname).trim().toLowerCase();
+  const timeoutMs = Number.isFinite(options.timeoutMs) ? Number(options.timeoutMs) : 10000;
+
+  let ca = options.ca;
+  if (!ca && parsed.sslRootCert) {
+    try {
+      ca = fs.readFileSync(parsed.sslRootCert, 'utf8');
+    } catch {
+      return Promise.reject(
+        new Error(
+          `Security Error: Unable to read configured sslrootcert for ${hostname}:${port}.`,
+        ),
+      );
+    }
+  }
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let rawSocket = null;
+    let tlsSocket = null;
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      if (tlsSocket) {
+        tlsSocket.removeAllListeners();
+        tlsSocket.destroy();
+      }
+      if (rawSocket) {
+        rawSocket.removeAllListeners();
+        rawSocket.destroy();
+      }
+    };
+
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(err instanceof Error ? err : new Error(String(err)));
+    };
+
+    const succeed = (result) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(result);
+    };
+
+    const timer = setTimeout(() => {
+      fail(new Error(`Security Error: TLS handshake timed out for ${hostname}:${port}.`));
+    }, timeoutMs);
+
+    rawSocket = net.createConnection({ host: hostname, port });
+    rawSocket.once('error', (err) => {
+      fail(
+        new Error(
+          `Security Error: Unable to open TCP connection for TLS verification to ${hostname}:${port} (${err.code || err.message}).`,
+        ),
+      );
+    });
+
+    rawSocket.once('connect', () => {
+      // PostgreSQL v3 SSLRequest packet: Int32(8), Int32(80877103)
+      const sslRequest = Buffer.from([0x00, 0x00, 0x00, 0x08, 0x04, 0xd2, 0x16, 0x2f]);
+      rawSocket.write(sslRequest);
+    });
+
+    rawSocket.once('close', () => {
+      if (!settled && !tlsSocket) {
+        fail(
+          new Error(
+            `Security Error: PostgreSQL server at ${hostname}:${port} closed connection before TLS negotiation.`,
+          ),
+        );
+      }
+    });
+
+    rawSocket.once('data', (chunk) => {
+      if (!chunk || chunk.length < 1 || chunk[0] !== 0x53) {
+        const reply = chunk && chunk.length > 0 ? String.fromCharCode(chunk[0]) : 'EOF';
+        fail(
+          new Error(
+            `Security Error: PostgreSQL server at ${hostname}:${port} refused TLS negotiation (received '${reply}'; plaintext connections are forbidden).`,
+          ),
+        );
+        return;
+      }
+
+      rawSocket.removeAllListeners();
+      const tlsOptions = {
+        socket: rawSocket,
+        host: verifyHost,
+        servername: net.isIP(verifyHost) ? undefined : verifyHost,
+        rejectUnauthorized: true,
+        minVersion: 'TLSv1.2',
+        checkServerIdentity: (_host, cert) => tls.checkServerIdentity(verifyHost, cert),
+      };
+      if (ca) {
+        tlsOptions.ca = ca;
+      }
+
+      tlsSocket = tls.connect(tlsOptions);
+      tlsSocket.once('error', (err) => {
+        fail(
+          new Error(
+            `Security Error: TLS certificate or handshake verification failed for ${hostname}:${port} (${err.code || err.message}).`,
+          ),
+        );
+      });
+      tlsSocket.once('secureConnect', () => {
+        if (!tlsSocket.encrypted || !tlsSocket.authorized) {
+          fail(
+            new Error(
+              `Security Error: TLS socket is not authenticated for ${hostname}:${port} (${tlsSocket.authorizationError || 'unauthorized'}).`,
+            ),
+          );
+          return;
+        }
+        const protocol = tlsSocket.getProtocol();
+        if (protocol !== 'TLSv1.2' && protocol !== 'TLSv1.3') {
+          fail(
+            new Error(
+              `Security Error: Weak or unsupported TLS protocol "${protocol || 'unknown'}" negotiated for ${hostname}:${port}.`,
+            ),
+          );
+          return;
+        }
+        const peerCert = tlsSocket.getPeerCertificate();
+        if (!peerCert || Object.keys(peerCert).length === 0) {
+          fail(
+            new Error(
+              `Security Error: No peer X.509 certificate received from ${hostname}:${port}.`,
+            ),
+          );
+          return;
+        }
+        const identityErr = tls.checkServerIdentity(verifyHost, peerCert);
+        if (identityErr) {
+          fail(
+            new Error(
+              `Security Error: TLS certificate hostname mismatch for ${hostname}:${port} (${identityErr.code || identityErr.message}).`,
+            ),
+          );
+          return;
+        }
+        const cipher = tlsSocket.getCipher();
+        succeed({
+          encrypted: true,
+          authorized: true,
+          protocol,
+          cipher: cipher ? cipher.name : null,
+          hostname: verifyHost,
+          port,
+          peerSubjectCN: peerCert.subject ? peerCert.subject.CN || null : null,
+        });
+      });
+    });
+  });
+}
+
 function escapeSqlStringLiteral(value) {
   if (typeof value !== 'string' || /[\u0000]/.test(value)) {
     throw new Error('SQL string literal contains invalid characters.');
@@ -354,5 +558,7 @@ module.exports = {
   validateHostedDatabaseConfig,
   escapeSqlStringLiteral,
   buildRuntimeUrlWithPassword,
+  buildPrismaStrictTlsUrl,
+  verifyPostgresTlsConnection,
   sanitizeConnectionSummary,
 };

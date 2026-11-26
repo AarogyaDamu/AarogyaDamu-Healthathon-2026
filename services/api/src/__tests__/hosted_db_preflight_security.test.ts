@@ -1,8 +1,10 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import tls from 'node:tls';
+import { execFileSync, spawnSync } from 'node:child_process';
 
 const apiRoot = path.resolve(__dirname, '../..');
 const repoRoot = path.resolve(apiRoot, '../..');
@@ -415,5 +417,319 @@ describe('Hosted Database Security Preflight & Render Free Startup Hardening', (
 
     expect(badStartup.status).not.toBe(0);
     expect(`${badStartup.stdout}${badStartup.stderr}`).not.toContain('Core API running on');
+  });
+
+  test('enforces strict certificate verification URLs and rejects weakened sslaccept parameters', () => {
+    expect(() =>
+      guard.validateHostedDatabaseConfig(
+        validHostedEnv({
+          MIGRATION_DATABASE_URL: `postgresql://neondb_owner:${OWNER_PASS}@${NEW_ENDPOINT}/aarogyadamu_release_demo?sslmode=require&sslaccept=accept_invalid_certs`,
+        }),
+      ),
+    ).toThrow(/sslaccept=accept_invalid_certs/i);
+
+    expect(() =>
+      guard.validateHostedDatabaseConfig(
+        validHostedEnv({
+          DATABASE_URL: `postgresql://aarogyadamu_app:${RUNTIME_PASS}@ep-release-demo-778899-pooler.ap-southeast-1.aws.neon.tech/aarogyadamu_release_demo?sslmode=require&sslaccept=accept_invalid_certs`,
+        }),
+      ),
+    ).toThrow(/sslaccept=accept_invalid_certs/i);
+
+    const strictFromVerifyFull = guard.buildPrismaStrictTlsUrl(
+      `postgresql://neondb_owner:${OWNER_PASS}@${NEW_ENDPOINT}/aarogyadamu_release_demo?sslmode=verify-full&channel_binding=require`,
+    );
+    const parsedStrict = new URL(strictFromVerifyFull);
+    expect(parsedStrict.searchParams.get('sslmode')).toBe('require');
+    expect(parsedStrict.searchParams.get('sslaccept')).toBe('strict');
+    expect(parsedStrict.searchParams.get('channel_binding')).toBe('require');
+
+    expect(() =>
+      guard.buildPrismaStrictTlsUrl(
+        `postgresql://neondb_owner:${OWNER_PASS}@${NEW_ENDPOINT}/aarogyadamu_release_demo?sslmode=disable`,
+      ),
+    ).toThrow(/unsafe sslmode/i);
+  });
+
+  test('verifyPostgresTlsConnection rejects plaintext and untrusted certificates while accepting verified TLSv1.2+ connections', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aarogyadamu-pg-tls-'));
+    const caKey = path.join(tmpDir, 'ca.key');
+    const caCrt = path.join(tmpDir, 'ca.crt');
+    const srvKey = path.join(tmpDir, 'srv.key');
+    const srvCsr = path.join(tmpDir, 'srv.csr');
+    const srvCrt = path.join(tmpDir, 'srv.crt');
+    const extCfg = path.join(tmpDir, 'ext.cnf');
+    const rogueKey = path.join(tmpDir, 'rogue.key');
+    const rogueCrt = path.join(tmpDir, 'rogue.crt');
+
+    fs.writeFileSync(
+      extCfg,
+      [
+        'basicConstraints=CA:FALSE',
+        'keyUsage=digitalSignature,keyEncipherment',
+        'extendedKeyUsage=serverAuth',
+        'subjectAltName=IP:127.0.0.1,DNS:localhost,DNS:ep-tls-test.ap-southeast-1.aws.neon.tech',
+      ].join('\n'),
+    );
+
+    execFileSync(
+      'openssl',
+      ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', caKey, '-out', caCrt, '-days', '1', '-subj', '/CN=AarogyaTestCA'],
+      { stdio: 'ignore' },
+    );
+    execFileSync(
+      'openssl',
+      ['req', '-new', '-newkey', 'rsa:2048', '-nodes', '-keyout', srvKey, '-out', srvCsr, '-subj', '/CN=ep-tls-test.ap-southeast-1.aws.neon.tech'],
+      { stdio: 'ignore' },
+    );
+    execFileSync(
+      'openssl',
+      ['x509', '-req', '-in', srvCsr, '-CA', caCrt, '-CAkey', caKey, '-CAcreateserial', '-out', srvCrt, '-days', '1', '-extfile', extCfg],
+      { stdio: 'ignore' },
+    );
+    execFileSync(
+      'openssl',
+      ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', rogueKey, '-out', rogueCrt, '-days', '1', '-subj', '/CN=127.0.0.1', '-addext', 'subjectAltName=IP:127.0.0.1'],
+      { stdio: 'ignore' },
+    );
+
+    const caPem = fs.readFileSync(caCrt, 'utf8');
+    const srvOpts = { key: fs.readFileSync(srvKey), cert: fs.readFileSync(srvCrt) };
+    const rogueOpts = { key: fs.readFileSync(rogueKey), cert: fs.readFileSync(rogueCrt) };
+
+    const startMockPgServer = async (mode: 'plaintext' | 'valid_tls' | 'rogue_tls') => {
+      const server = net.createServer((sock) => {
+        sock.once('data', (buf) => {
+          const isSslReq = buf.length === 8 && buf.readInt32BE(0) === 8 && buf.readInt32BE(4) === 80877103;
+          if (!isSslReq) {
+            sock.destroy();
+            return;
+          }
+          if (mode === 'plaintext') {
+            sock.write(Buffer.from('N'));
+            return;
+          }
+          sock.write(Buffer.from('S'));
+          const t = new tls.TLSSocket(sock, {
+            ...(mode === 'valid_tls' ? srvOpts : rogueOpts),
+            isServer: true,
+          });
+          t.on('error', () => t.destroy());
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+      const addr = server.address() as net.AddressInfo;
+      return { server, port: addr.port };
+    };
+
+    try {
+      // 1. Plaintext server rejecting SSLRequest ('N') MUST be rejected even when URL has ?sslmode=require
+      const plain = await startMockPgServer('plaintext');
+      try {
+        await expect(
+          guard.verifyPostgresTlsConnection(
+            `postgresql://neondb_owner:${OWNER_PASS}@127.0.0.1:${plain.port}/aarogyadamu_release_demo?sslmode=require`,
+            { ca: caPem },
+          ),
+        ).rejects.toThrow(/refused TLS negotiation|plaintext/i);
+      } finally {
+        await new Promise<void>((resolve) => plain.server.close(() => resolve()));
+      }
+
+      // 2. Untrusted self-signed certificate MUST be rejected even when server agrees to TLS ('S')
+      const rogue = await startMockPgServer('rogue_tls');
+      try {
+        await expect(
+          guard.verifyPostgresTlsConnection(
+            `postgresql://neondb_owner:${OWNER_PASS}@127.0.0.1:${rogue.port}/aarogyadamu_release_demo?sslmode=require`,
+            { ca: caPem },
+          ),
+        ).rejects.toThrow(/certificate or handshake verification failed/i);
+      } finally {
+        await new Promise<void>((resolve) => rogue.server.close(() => resolve()));
+      }
+
+      // 3. Valid CA-signed certificate with mismatched hostname MUST be rejected
+      const valid = await startMockPgServer('valid_tls');
+      try {
+        await expect(
+          guard.verifyPostgresTlsConnection(
+            `postgresql://neondb_owner:${OWNER_PASS}@127.0.0.1:${valid.port}/aarogyadamu_release_demo?sslmode=require`,
+            { ca: caPem, servername: 'ep-wrong-host.ap-southeast-1.aws.neon.tech' },
+          ),
+        ).rejects.toThrow(/TLS certificate or handshake verification failed|hostname mismatch|ERR_TLS_CERT_ALTNAME_INVALID/i);
+
+        // 4. Valid CA-signed TLS server with matching SNI succeeds
+        const tlsResult = await guard.verifyPostgresTlsConnection(
+          `postgresql://neondb_owner:${OWNER_PASS}@127.0.0.1:${valid.port}/aarogyadamu_release_demo?sslmode=require`,
+          { ca: caPem, servername: 'ep-tls-test.ap-southeast-1.aws.neon.tech' },
+        );
+        expect(tlsResult.encrypted).toBe(true);
+        expect(tlsResult.authorized).toBe(true);
+        expect(['TLSv1.2', 'TLSv1.3']).toContain(tlsResult.protocol);
+
+        // 5. Simulates Neon TLS-terminating proxy (backend pg_stat_ssl=false while external wire TLS passes)
+        const neonProxyPrisma = {
+          $queryRawUnsafe: async () => [
+            { active_user: 'neondb_owner', session_user: 'neondb_owner', backend_pg_stat_ssl: false },
+          ],
+        };
+        const verifiedMig = await deploy.verifyMigrationSslAndIdentity(neonProxyPrisma, {
+          expectedOwnerRole: 'neondb_owner',
+          migrationUrl: `postgresql://neondb_owner:${OWNER_PASS}@127.0.0.1:${valid.port}/aarogyadamu_release_demo?sslmode=require`,
+          requireSsl: true,
+          verifyTlsFn: (u: string) =>
+            guard.verifyPostgresTlsConnection(u, {
+              ca: caPem,
+              servername: 'ep-tls-test.ap-southeast-1.aws.neon.tech',
+            }),
+        });
+        expect(verifiedMig.active_user).toBe('neondb_owner');
+        expect(verifiedMig.ssl_active).toBe(true);
+        expect(verifiedMig.backend_pg_stat_ssl).toBe(false);
+
+        // 6. Plaintext server MUST cause verifyMigrationSslAndIdentity to reject BEFORE any SQL runs
+        const sqlCalled: string[] = [];
+        const neverCalledPrisma = {
+          $queryRawUnsafe: async (sql: string) => {
+            sqlCalled.push(sql);
+            return [];
+          },
+        };
+        const plainFail = await startMockPgServer('plaintext');
+        try {
+          await expect(
+            deploy.verifyMigrationSslAndIdentity(neverCalledPrisma, {
+              expectedOwnerRole: 'neondb_owner',
+              migrationUrl: `postgresql://neondb_owner:${OWNER_PASS}@127.0.0.1:${plainFail.port}/aarogyadamu_release_demo?sslmode=require`,
+              requireSsl: true,
+            }),
+          ).rejects.toThrow(/refused TLS negotiation|plaintext/i);
+          expect(sqlCalled.length).toBe(0);
+        } finally {
+          await new Promise<void>((resolve) => plainFail.server.close(() => resolve()));
+        }
+
+        // 7. executeDeploymentSequence passes strict Prisma TLS URLs and succeeds when proxy terminates TLS
+        const createdClientUrls: string[] = [];
+        let runtimeAuthVerified = false;
+        const fakePrismaFactory = (url: string) => {
+          createdClientUrls.push(url);
+          const u = new URL(url);
+          const isRuntime = decodeURIComponent(u.username) === 'aarogyadamu_app';
+          return {
+            $queryRawUnsafe: async (sql: string) => {
+              if (sql.includes('backend_pg_stat_ssl') && sql.includes('pg_catalog.pg_roles')) {
+                runtimeAuthVerified = true;
+                return [
+                  {
+                    active_user: 'aarogyadamu_app',
+                    session_user: 'aarogyadamu_app',
+                    is_superuser: false,
+                    can_bypass_rls: false,
+                    can_create_db: false,
+                    can_create_role: false,
+                    can_replicate: false,
+                    can_login: true,
+                    backend_pg_stat_ssl: false,
+                  },
+                ];
+              }
+              if (sql.includes('backend_pg_stat_ssl')) {
+                return [{ active_user: 'neondb_owner', session_user: 'neondb_owner', backend_pg_stat_ssl: false }];
+              }
+              if (sql.includes('WHERE r.rolname = current_user')) {
+                return [{ active_user: 'neondb_owner', is_superuser: false, can_create_role: true, scs: 'on' }];
+              }
+              if (sql.includes("WHERE rolname = 'aarogyadamu_app'")) {
+                return [
+                  {
+                    rolname: 'aarogyadamu_app',
+                    rolsuper: false,
+                    rolbypassrls: false,
+                    rolcreatedb: false,
+                    rolcreaterole: false,
+                    rolreplication: false,
+                    rolcanlogin: true,
+                  },
+                ];
+              }
+              if (sql.includes("WHERE rolname = 'aarogyadamu_migrator'")) {
+                return [
+                  {
+                    rolname: 'aarogyadamu_migrator',
+                    rolsuper: false,
+                    rolbypassrls: false,
+                    rolcreatedb: false,
+                    rolcreaterole: false,
+                    rolreplication: false,
+                    rolcanlogin: false,
+                  },
+                ];
+              }
+              if (sql.includes('core_rls_count')) {
+                return [
+                  {
+                    app_has_vault_schema: false,
+                    app_has_vault_table_grant: false,
+                    app_selects_migrations: false,
+                    app_selects_audit: true,
+                    app_inserts_audit: true,
+                    app_updates_audit: false,
+                    app_deletes_audit: false,
+                    core_rls_count: 15,
+                    force_rls_count: 6,
+                    active_trigger_count: 11,
+                  },
+                ];
+              }
+              if (sql.includes('has_vault_schema')) {
+                return [{ has_vault_schema: false, can_read_migrations: false }];
+              }
+              if (sql.includes('FROM _security_vault.rls_signing_key')) {
+                throw new Error('ERROR: permission denied for schema _security_vault (42501)');
+              }
+              if (sql.includes('unscoped_count')) {
+                return [{ unscoped_count: 0 }];
+              }
+              return [];
+            },
+            $executeRawUnsafe: async () => 1,
+            $disconnect: async () => {},
+          };
+        };
+
+        let migrated = false;
+        await deploy.executeDeploymentSequence({
+          migrationUrl: `postgresql://neondb_owner:${OWNER_PASS}@127.0.0.1:${valid.port}/aarogyadamu_release_demo?sslmode=require`,
+          runtimeUrl: `postgresql://aarogyadamu_app:${RUNTIME_PASS}@127.0.0.1:${valid.port}/aarogyadamu_release_demo?sslmode=require`,
+          expectedOwnerRole: 'neondb_owner',
+          runtimePassword: RUNTIME_PASS,
+          rlsSecret: RLS_SECRET,
+          requireSsl: true,
+          verifyTlsFn: (u: string) =>
+            guard.verifyPostgresTlsConnection(u, {
+              ca: caPem,
+              servername: 'ep-tls-test.ap-southeast-1.aws.neon.tech',
+            }),
+          prismaClientFactory: fakePrismaFactory,
+          migrateFn: () => {
+            migrated = true;
+          },
+        });
+        expect(migrated).toBe(true);
+        expect(runtimeAuthVerified).toBe(true);
+        expect(createdClientUrls.length).toBe(3);
+        for (const usedUrl of createdClientUrls) {
+          const parsedUsed = new URL(usedUrl);
+          expect(parsedUsed.searchParams.get('sslmode')).toBe('require');
+          expect(parsedUsed.searchParams.get('sslaccept')).toBe('strict');
+        }
+      } finally {
+        await new Promise<void>((resolve) => valid.server.close(() => resolve()));
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });
