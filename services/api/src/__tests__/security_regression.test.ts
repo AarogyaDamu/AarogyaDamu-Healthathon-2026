@@ -2,6 +2,7 @@ import request from 'supertest';
 import { randomUUID } from 'crypto';
 import { app, prisma, REFRESH_COOKIE_NAME, CSRF_COOKIE_NAME, parseCookies } from '../server';
 import { hashToken } from '../services/authSessions';
+import { env } from '../config/env';
 
 describe('AarogyaDamu Security Regression Test Suite', () => {
   const testId = randomUUID();
@@ -157,17 +158,30 @@ describe('AarogyaDamu Security Regression Test Suite', () => {
       data: { expiresAt: new Date(Date.now() - 5000) },
     });
 
-    const regRes = await request(app).post('/api/auth/doctor/register').send({
+    // Public self-registration endpoint must always fail closed
+    const publicDisabledRes = await request(app).post('/api/auth/doctor/register').send({
       email: expiredEmail,
       password,
       fullName: 'Expired Doctor',
       invitationToken: issueRes.body.invitationToken,
     });
+    expect(publicDisabledRes.status).toBe(403);
+    expect(publicDisabledRes.body.code).toBe('PUBLIC_DOCTOR_REGISTRATION_DISABLED');
+
+    const regRes = await request(app)
+      .post('/api/auth/admin/doctors')
+      .set('x-doctor-invitation-admin-key', 'test-admin-provisioning-key-that-is-long-enough')
+      .send({
+        email: expiredEmail,
+        password,
+        fullName: 'Expired Doctor',
+        invitationToken: issueRes.body.invitationToken,
+      });
     expect(regRes.status).toBe(403);
     expect(regRes.body.error).toMatch(/invalid, expired/i);
   });
 
-  // 5. Used invitations cannot be reused
+  // 5. Used invitations cannot be reused even through admin provisioning
   test('CONTROL 5: Used invitations cannot be reused', async () => {
     const issueRes = await request(app)
       .post('/api/auth/doctor-invitations')
@@ -176,23 +190,29 @@ describe('AarogyaDamu Security Regression Test Suite', () => {
     expect(issueRes.status).toBe(201);
     const token = issueRes.body.invitationToken;
 
-    // First use: registration succeeds
-    const regRes1 = await request(app).post('/api/auth/doctor/register').send({
-      email: doctorEmail,
-      password,
-      fullName: 'Dr. First Use',
-      invitationToken: token,
-    });
+    // First use: admin-gated provisioning succeeds
+    const regRes1 = await request(app)
+      .post('/api/auth/admin/doctors')
+      .set('x-doctor-invitation-admin-key', 'test-admin-provisioning-key-that-is-long-enough')
+      .send({
+        email: doctorEmail,
+        password,
+        fullName: 'Dr. First Use',
+        invitationToken: token,
+      });
     expect(regRes1.status).toBe(201);
     expect(regRes1.body.user.isClinician).toBe(true);
 
     // Second use: must be rejected
-    const regRes2 = await request(app).post('/api/auth/doctor/register').send({
-      email: doctorEmail,
-      password: 'AnotherPassword123!',
-      fullName: 'Dr. Second Attempt',
-      invitationToken: token,
-    });
+    const regRes2 = await request(app)
+      .post('/api/auth/admin/doctors')
+      .set('x-doctor-invitation-admin-key', 'test-admin-provisioning-key-that-is-long-enough')
+      .send({
+        email: doctorEmail,
+        password: 'AnotherPassword123!',
+        fullName: 'Dr. Second Attempt',
+        invitationToken: token,
+      });
     expect(regRes2.status).toBe(403);
     expect(regRes2.body.error).toMatch(/invalid, expired, or has already been used/i);
   });
@@ -216,8 +236,8 @@ describe('AarogyaDamu Security Regression Test Suite', () => {
     expect(auditCount).toBeGreaterThan(0);
   });
 
-  // 7. Password-reset tokens cannot be reused
-  test('CONTROL 7: Password-reset tokens cannot be reused and revoke old sessions', async () => {
+  // 7. Password-reset is disabled by default in hosted/email-disabled mode, and when enabled tokens are one-time
+  test('CONTROL 7: Password-reset is disabled in hosted mode and tokens cannot be reused when enabled', async () => {
     // Register account and establish session
     const resetUserEmail = `reset-${testId}@test.local`;
     const regRes = await request(app).post('/api/auth/register').send({
@@ -238,25 +258,46 @@ describe('AarogyaDamu Security Regression Test Suite', () => {
       },
     });
 
-    // Reset password successfully
-    const resetRes = await request(app).post('/api/auth/reset-password').send({
+    // Disabled by default (EMAIL_PROVIDER=disabled / ALLOW_PUBLIC_PASSWORD_RESET=false)
+    const disabledResetRes = await request(app).post('/api/auth/reset-password').send({
       token: rawResetToken,
       newPassword: 'BrandNewPassword123!',
     });
-    expect(resetRes.status).toBe(200);
+    expect(disabledResetRes.status).toBe(503);
+    expect(disabledResetRes.body.code).toBe('PASSWORD_RESET_DISABLED');
 
-    // Old access token must be invalidated
-    const oldAccessCheck = await request(app)
-      .get('/api/auth/me')
-      .set('Authorization', `Bearer ${oldToken}`);
-    expect(oldAccessCheck.status).toBe(401);
+    const prevAppEnv = env.APP_ENV;
+    const prevEmailProvider = env.EMAIL_PROVIDER;
+    const prevAllowReset = env.ALLOW_PUBLIC_PASSWORD_RESET;
+    try {
+      (env as any).APP_ENV = 'production';
+      (env as any).EMAIL_PROVIDER = 'resend';
+      (env as any).ALLOW_PUBLIC_PASSWORD_RESET = true;
 
-    // Attempting to reuse the reset token must be rejected
-    const reuseReset = await request(app).post('/api/auth/reset-password').send({
-      token: rawResetToken,
-      newPassword: 'YetAnotherPassword123!',
-    });
-    expect(reuseReset.status).toBe(400);
+      // Reset password successfully when explicitly enabled
+      const resetRes = await request(app).post('/api/auth/reset-password').send({
+        token: rawResetToken,
+        newPassword: 'BrandNewPassword123!',
+      });
+      expect(resetRes.status).toBe(200);
+
+      // Old access token must be invalidated
+      const oldAccessCheck = await request(app)
+        .get('/api/auth/me')
+        .set('Authorization', `Bearer ${oldToken}`);
+      expect(oldAccessCheck.status).toBe(401);
+
+      // Attempting to reuse the reset token must be rejected
+      const reuseReset = await request(app).post('/api/auth/reset-password').send({
+        token: rawResetToken,
+        newPassword: 'YetAnotherPassword123!',
+      });
+      expect(reuseReset.status).toBe(400);
+    } finally {
+      (env as any).APP_ENV = prevAppEnv;
+      (env as any).EMAIL_PROVIDER = prevEmailProvider;
+      (env as any).ALLOW_PUBLIC_PASSWORD_RESET = prevAllowReset;
+    }
   });
 
   // 8. Doctor-only routes reject Patient and Caregiver accounts

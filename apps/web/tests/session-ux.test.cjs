@@ -25,9 +25,8 @@ test('Doctor Login form starts empty without demo patient/caregiver credentials'
   assert.match(authPage, /name="doctor-password"/);
   assert.match(authPage, /placeholder="doctor@hospital\.org"/);
 
-  // Doctor registration must strictly require invitation token
-  assert.match(authPage, /!invitationToken\.trim\(\)/);
-  assert.match(authPage, /A valid doctor invitation is required to register\./);
+  // Public doctor self-registration and password reset must be completely excluded from UI
+  assert.doesNotMatch(authPage, /invitationToken|Doctor Registration|Create Doctor Account|Forgot password\?|forgot-password|reset-password/i);
 });
 
 test('Session expired notification is displayed on Doctor Login and cleared on user interaction', () => {

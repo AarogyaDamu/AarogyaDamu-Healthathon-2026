@@ -27,7 +27,8 @@ describe('Session UX, Doctor Login & Lifecycle Verification (Issue 4)', () => {
     const inviteToken = inviteRes.body.invitationToken;
 
     const docReg = await request(app)
-      .post('/api/auth/doctor/register')
+      .post('/api/auth/admin/doctors')
+      .set('X-Doctor-Invitation-Admin-Key', env.DOCTOR_INVITATION_ADMIN_KEY)
       .send({
         email: doctorEmail,
         password,
@@ -297,7 +298,7 @@ describe('Session UX, Doctor Login & Lifecycle Verification (Issue 4)', () => {
       .send({});
     expect(freshRefresh.status).toBe(401);
 
-    // Attempting doctor registration without invitation token is strictly rejected
+    // Attempting public doctor self-registration is strictly disabled
     const uninvitedReg = await request(app)
       .post('/api/auth/doctor/register')
       .send({
@@ -306,8 +307,9 @@ describe('Session UX, Doctor Login & Lifecycle Verification (Issue 4)', () => {
         fullName: 'Uninvited Person',
         invitationToken: '',
       });
-    expect(uninvitedReg.status).toBe(400);
-    expect(uninvitedReg.body.error).toMatch(/invitation/i);
+    expect(uninvitedReg.status).toBe(403);
+    expect(uninvitedReg.body.code).toBe('PUBLIC_DOCTOR_REGISTRATION_DISABLED');
+    expect(uninvitedReg.headers['set-cookie']).toBeUndefined();
   });
 
   // SCENARIO 9: Concurrent refresh protection (5 simultaneous requests receiving 401)

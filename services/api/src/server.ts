@@ -11,9 +11,15 @@ import { env } from './config/env';
 import { AuthenticatedRequest, requireAuth } from './middleware/auth';
 import { AuthorizationError, resolvePatientContext } from './permissions/evaluator';
 import { logAuditEvent } from './audit/auditLogger';
-import { deletePrivateFile, generateValidSyntheticPdfBuffer, readPrivateFile, savePrivateFile } from './services/storageService';
-import { extractMedicalReportText, MedicalReportOcrError } from './services/ocrService';
-import { SarvamOcrService } from './services/sarvamOcrService';
+import {
+  deletePrivateFile,
+  isCloudStorageEnabled,
+  isDurableStorageAvailable,
+  PrivateStorageUnavailableError,
+  readPrivateFile,
+  savePrivateFile,
+} from './services/storageService';
+import { getConfiguredSarvamApiKey, SarvamOcrService } from './services/sarvamOcrService';
 import { createAuthSession, hashToken, revokeAllAuthSessions, revokeAuthSession, rotateRefreshToken } from './services/authSessions';
 import { runWithTenantContext, preserveTenantContext } from './db/tenantContext';
 import { EmailDeliveryError, sendPasswordResetEmail } from './services/emailService';
@@ -204,24 +210,215 @@ const sendLiveness = (_req: Request, res: Response) => {
 };
 app.get('/health', sendLiveness);
 app.get('/health/live', sendLiveness);
-if (env.APP_ENV === 'staging') {
-  app.get('/health/staging-seed', async (_req: Request, res: Response) => {
-    try {
-      const result = await ensureStagingDemoDoctor(prisma);
-      res.json(result);
-    } catch {
-      res.status(500).json({ error: 'Staging demo seed operation failed.' });
-    }
-  });
-}
-app.get('/health/ready', async (_req: Request, res: Response) => {
+app.get('/health/staging-seed', async (req: Request, res: Response) => {
+  if (env.APP_ENV !== 'staging') {
+    res.status(404).json({ error: 'Not found.' });
+    return;
+  }
+  const suppliedKey = req.header('x-doctor-invitation-admin-key') ?? '';
+  if (!safeStringEqual(suppliedKey, env.DOCTOR_INVITATION_ADMIN_KEY)) {
+    res.status(403).json({ error: 'Administrative provisioning authorization required.' });
+    return;
+  }
   try {
-    await prisma.$queryRaw`SELECT 1`;
-    res.json({
-      status: 'ready',
-      checks: { database: 'available' },
+    const result = await ensureStagingDemoDoctor(prisma);
+    res.json(result);
+  } catch {
+    res.status(500).json({ error: 'Staging demo seed operation failed.' });
+  }
+});
+
+async function inspectDatabaseAndSecurityInvariants(): Promise<{
+  connected: boolean;
+  activeUser: string;
+  sessionUser: string;
+  runtimeRoleRestricted: boolean;
+  runtimeRoleMatchesExpected: boolean;
+  vaultIsolated: boolean;
+  unscopedIsolationVerified: boolean;
+  migrationsReady: boolean;
+  details: { coreRlsCount: number; forceRlsCount: number; activeTriggerCount: number };
+}> {
+  await prisma.$queryRaw`SELECT 1`;
+  const rows = (await prisma.$queryRawUnsafe(`
+    SELECT
+      current_user::text AS active_user,
+      session_user::text AS session_user,
+      r.rolsuper,
+      r.rolbypassrls,
+      r.rolcreatedb,
+      r.rolcreaterole,
+      r.rolreplication,
+      COALESCE(pg_catalog.has_schema_privilege(current_user, '_security_vault', 'USAGE'), false) AS has_vault_schema,
+      (
+        SELECT count(*)::int FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+          AND c.relname IN (
+            'User','PatientProfile','HealthObservation','HealthDocument','AuditLog',
+            'ConsultationNote','ConsultationPrescriptionItem','ConsultationNoteVersion',
+            'MedicationSchedule','MedicationAdherenceEvent','CarePlan',
+            'CaregiverConsent','DoctorPatientAssignment','OcrProcessingJob','ClinicalReviewEncounter'
+          )
+          AND c.relrowsecurity = true
+      ) AS core_rls_count,
+      (
+        SELECT count(*)::int FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+          AND c.relname IN (
+            'CgmDeviceConnection','CgmGlucoseReading','OcrProcessingJob',
+            'OcrUsageLog','PatientCareTeamMember','ClinicalReviewEncounter'
+          )
+          AND c.relrowsecurity = true
+          AND c.relforcerowsecurity = true
+      ) AS force_rls_count,
+      (
+        SELECT count(*)::int FROM pg_trigger t
+        JOIN pg_class c ON c.oid = t.tgrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+          AND t.tgname IN (
+            'trg_user_columns','trg_healthdocument_columns','trg_caretask_columns',
+            'trg_healthobservation_columns','trg_medicationschedule_columns',
+            'trg_lifestylerecord_columns','trg_reminder_columns',
+            'trg_consultation_note_lifecycle','trg_prescription_item_lifecycle',
+            'trg_note_version_append_only','trg_adherence_event_immutable'
+          )
+          AND t.tgenabled <> 'D'
+      ) AS active_trigger_count
+    FROM pg_catalog.pg_roles r
+    WHERE r.rolname = current_user
+  `)) as Array<{
+    active_user: string;
+    session_user: string;
+    rolsuper: boolean;
+    rolbypassrls: boolean;
+    rolcreatedb: boolean;
+    rolcreaterole: boolean;
+    rolreplication: boolean;
+    has_vault_schema: boolean;
+    core_rls_count: number;
+    force_rls_count: number;
+    active_trigger_count: number;
+  }>;
+  const info = rows[0];
+  const activeUser = info?.active_user || '';
+  const sessionUser = info?.session_user || '';
+  const runtimeRoleRestricted = Boolean(
+    info &&
+      !info.rolsuper &&
+      !info.rolbypassrls &&
+      !info.rolcreatedb &&
+      !info.rolcreaterole &&
+      !info.rolreplication,
+  );
+  const runtimeRoleMatchesExpected = activeUser === 'aarogyadamu_app' && sessionUser === 'aarogyadamu_app';
+
+  // Prove runtime access to _security_vault fails with permission denied (42501),
+  // without relying on has_table_privilege which itself throws 42501 across schema boundaries.
+  let vaultQueryBlocked = false;
+  if (info && !info.has_vault_schema) {
+    try {
+      await prisma.$queryRawUnsafe('SELECT secret FROM _security_vault.rls_signing_key LIMIT 1');
+    } catch (vaultErr: any) {
+      const msg = String(vaultErr?.message || vaultErr || '');
+      if (/42501|permission denied/i.test(msg)) {
+        vaultQueryBlocked = true;
+      }
+    }
+  }
+  const vaultIsolated = Boolean(info && !info.has_vault_schema && vaultQueryBlocked);
+
+  const unscopedRows = (await prisma.$queryRawUnsafe(
+    'SELECT count(*)::int AS unscoped_count FROM public."HealthDocument"',
+  )) as Array<{ unscoped_count: number }>;
+  const unscopedIsolationVerified = Number(unscopedRows?.[0]?.unscoped_count || 0) === 0;
+
+  const migrationsReady = Boolean(
+    info && info.core_rls_count >= 15 && info.force_rls_count >= 6 && info.active_trigger_count >= 11,
+  );
+  return {
+    connected: true,
+    activeUser,
+    sessionUser,
+    runtimeRoleRestricted,
+    runtimeRoleMatchesExpected,
+    vaultIsolated,
+    unscopedIsolationVerified,
+    migrationsReady,
+    details: {
+      coreRlsCount: Number(info?.core_rls_count || 0),
+      forceRlsCount: Number(info?.force_rls_count || 0),
+      activeTriggerCount: Number(info?.active_trigger_count || 0),
+    },
+  };
+}
+
+app.get('/health/ready', async (req: Request, res: Response) => {
+  const shouldProbeExternal = req.query.probe === 'true';
+  try {
+    const dbCheck = await inspectDatabaseAndSecurityInvariants();
+    const enforceRestrictedRole = env.NODE_ENV === 'production';
+    const permissionsOk = !enforceRestrictedRole || (
+      dbCheck.runtimeRoleRestricted &&
+      dbCheck.runtimeRoleMatchesExpected &&
+      dbCheck.vaultIsolated &&
+      dbCheck.unscopedIsolationVerified
+    );
+    const dbReady = dbCheck.connected && dbCheck.migrationsReady && permissionsOk;
+
+    const ocrAvail = SarvamOcrService.getAvailability();
+    let sarvamStatus: 'operational' | 'configured_unverified' | 'unconfigured' | 'unavailable' =
+      ocrAvail.sarvamEnabled && ocrAvail.credentialsConfigured
+        ? 'configured_unverified'
+        : 'unconfigured';
+    if (shouldProbeExternal) {
+      const probe = await SarvamOcrService.probeAvailability();
+      sarvamStatus = probe.status;
+    }
+
+    const emailStatus =
+      env.EMAIL_PROVIDER === 'disabled'
+        ? 'disabled'
+        : env.RESEND_API_KEY && env.EMAIL_FROM
+          ? 'configured_unverified'
+          : 'unconfigured';
+
+    const durableStorage = isDurableStorageAvailable();
+    const storageStatus = isCloudStorageEnabled()
+      ? 'configured_unverified'
+      : env.NODE_ENV === 'production'
+        ? 'disabled'
+        : 'local_dev_only';
+
+    const payload = {
+      status: dbReady ? 'ready' : 'not_ready',
+      checks: {
+        database: 'available',
+        runtimePermissions:
+          dbCheck.runtimeRoleRestricted &&
+          dbCheck.runtimeRoleMatchesExpected &&
+          dbCheck.vaultIsolated &&
+          dbCheck.unscopedIsolationVerified
+            ? 'verified_restricted'
+            : enforceRestrictedRole
+              ? 'misconfigured'
+              : 'unrestricted_nonprod',
+        migrations: dbCheck.migrationsReady ? 'verified' : 'incomplete',
+        sarvamOcr: sarvamStatus,
+        email: emailStatus,
+        storage: storageStatus,
+      },
+      capabilities: {
+        persistentDocumentStorage: durableStorage,
+        temporarySarvamOcr: ocrAvail.sarvamEnabled && ocrAvail.credentialsConfigured,
+        publicDoctorRegistration: false,
+        publicPasswordReset: false,
+      },
       timestamp: new Date().toISOString(),
-    });
+    };
+    res.status(dbReady ? 200 : 503).json(payload);
   } catch {
     safeClinicalLog('error', 'API readiness check failed: database unavailable');
     res.status(503).json({
@@ -329,6 +526,17 @@ const invitationRateLimiter = rateLimit({
       console.error('Failed to audit a rate-limited doctor invitation request.');
     });
     res.status(429).json({ error: 'Too many invitation requests. Try again later.' });
+  },
+});
+
+const adminDoctorProvisionRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: createRateLimitStore('rl:admin-doc-provision:', 15 * 60 * 1000),
+  handler: (_req, res) => {
+    res.status(429).json({ error: 'Too many administrator doctor provisioning requests. Try again later.' });
   },
 });
 
@@ -452,7 +660,135 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
   }
 });
 
+authRouter.post('/admin/doctors', adminDoctorProvisionRateLimiter, asyncRoute(async (req: Request, res: Response): Promise<void> => {
+  const suppliedKey = req.header('x-doctor-invitation-admin-key') ?? '';
+  if (!safeStringEqual(suppliedKey, env.DOCTOR_INVITATION_ADMIN_KEY)) {
+    await recordSecurityEvent('DOCTOR_ADMIN_PROVISION_DENIED', req);
+    res.status(403).json({ error: 'Administrator provisioning authorization required.' });
+    return;
+  }
+
+  const parsed = z.object({
+    email: z.string().email().transform((value) => value.trim().toLowerCase()),
+    password: z.string().min(12, 'Doctor password must be at least 12 characters'),
+    fullName: z.string().min(2),
+    invitationToken: z.string().min(1).optional(),
+  }).safeParse(req.body);
+
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Valid clinician email, fullName, and >= 12 char password are required.' });
+    return;
+  }
+
+  const email = parsed.data.email;
+  const tokenParam = parsed.data.invitationToken;
+  let verifiedInvitation: { id: string; tokenHash: string } | null = null;
+  if (tokenParam) {
+    verifiedInvitation = verifyDoctorInvitation(tokenParam, email);
+    if (!verifiedInvitation) {
+      await recordSecurityEvent('DOCTOR_INVITATION_REDEMPTION_REJECTED', req, email);
+      res.status(403).json({ error: 'This doctor invitation is invalid, expired, or for a different email address.' });
+      return;
+    }
+
+    const storedInvitation = await runWithTenantContext({ isSystemWorker: true, workerScope: 'INVITATION_WORKER' }, async () => {
+      return prisma.doctorInvitation.findFirst({
+        where: {
+          id: verifiedInvitation!.id,
+          email,
+          tokenHash: verifiedInvitation!.tokenHash,
+          usedAt: null,
+          expiresAt: { gt: new Date() },
+        },
+      });
+    });
+    if (!storedInvitation) {
+      await recordSecurityEvent('DOCTOR_INVITATION_REDEMPTION_REJECTED', req, email);
+      res.status(403).json({ error: 'This doctor invitation is invalid, expired, or has already been used.' });
+      return;
+    }
+  }
+
+  const existing = await prisma.user.findUnique({ where: { email } });
+  if (existing) {
+    res.status(409).json({ error: 'An account with this email already exists.' });
+    return;
+  }
+
+  const passwordHash = await bcrypt.hash(parsed.data.password, 10);
+  const { user, session } = await runWithTenantContext({ isSystemWorker: true, workerScope: 'INVITATION_WORKER' }, async () => {
+    const u = await prisma.$transaction(async (transaction) => {
+      if (verifiedInvitation) {
+        const redemption = await transaction.doctorInvitation.updateMany({
+          where: {
+            id: verifiedInvitation.id,
+            email,
+            tokenHash: verifiedInvitation.tokenHash,
+            usedAt: null,
+            expiresAt: { gt: new Date() },
+          },
+          data: { usedAt: new Date() },
+        });
+        if (redemption.count !== 1) return null;
+      }
+
+      return transaction.user.create({
+        data: {
+          email,
+          passwordHash,
+          isClinician: true,
+          profile: {
+            create: {
+              fullName: parsed.data.fullName.trim(),
+              diabetesType: 'NOT_APPLICABLE',
+              primaryClinician: 'Specialist Clinician',
+            },
+          },
+        },
+        include: { profile: true },
+      });
+    });
+
+    if (!u) return { user: null, session: null };
+    const s = await createAuthSession(prisma, u);
+    return { user: u, session: s };
+  });
+
+  if (!user || !session) {
+    await recordSecurityEvent('DOCTOR_INVITATION_REDEMPTION_REJECTED', req, email);
+    res.status(403).json({ error: 'This doctor invitation is invalid, expired, or has already been used.' });
+    return;
+  }
+
+  await recordSecurityEvent('DOCTOR_ADMIN_PROVISIONED', req, email);
+  await logAuditEvent({
+    userId: user.id,
+    actorId: user.id,
+    action: 'DOCTOR_ACCOUNT_REGISTERED',
+    entityType: 'User',
+    entityId: user.id,
+    ipAddress: req.ip,
+    userAgent: req.headers['user-agent'],
+  });
+
+  const csrfToken = setAuthCookies(res, session.refreshToken, req);
+  res.status(201).json({
+    ...session,
+    csrfToken,
+    user: { id: user.id, email: user.email, isSyntheticDemo: user.isSyntheticDemo, isClinician: true },
+    profile: user.profile,
+  });
+}));
+
 authRouter.post('/doctor/register', async (req: Request, res: Response): Promise<void> => {
+  if (env.APP_ENV === 'staging' || !env.ALLOW_PUBLIC_DOCTOR_REGISTRATION) {
+    await recordSecurityEvent('PUBLIC_DOCTOR_REGISTRATION_BLOCKED', req);
+    res.status(403).json({
+      error: 'Public doctor registration is disabled. Clinician accounts must be provisioned by an administrator.',
+      code: 'PUBLIC_DOCTOR_REGISTRATION_DISABLED',
+    });
+    return;
+  }
   const parsed = z.object({
     email: z.string().email().transform((value) => value.trim().toLowerCase()),
     password: z.string().min(8, 'Password must be at least 8 characters'),
@@ -845,9 +1181,10 @@ authRouter.post('/deactivate', requireAuth, asyncRoute(async (req: Request, res:
 
 authRouter.post('/forgot-password', passwordResetRateLimiter, async (req: Request, res: Response): Promise<void> => {
   try {
-    if (env.EMAIL_PROVIDER === 'disabled' && (env.APP_ENV === 'staging' || process.env.NODE_ENV === 'production')) {
+    if (env.APP_ENV === 'staging' || env.EMAIL_PROVIDER === 'disabled' || !env.ALLOW_PUBLIC_PASSWORD_RESET) {
       res.status(503).json({
-        error: 'Password reset email delivery is currently disabled or unavailable in this environment. Please contact your clinical administrator.',
+        error: 'Public password reset is disabled or unavailable in this environment. Please contact your clinical administrator.',
+        code: 'PASSWORD_RESET_DISABLED',
       });
       return;
     }
@@ -906,6 +1243,14 @@ authRouter.post('/forgot-password', passwordResetRateLimiter, async (req: Reques
 });
 
 authRouter.post('/reset-password', passwordResetCompletionRateLimiter, asyncRoute(async (req: Request, res: Response): Promise<void> => {
+  if (env.APP_ENV === 'staging' || env.EMAIL_PROVIDER === 'disabled' || !env.ALLOW_PUBLIC_PASSWORD_RESET) {
+    res.status(503).json({
+      error: 'Public password reset is disabled or unavailable in this environment. Please contact your clinical administrator.',
+      code: 'PASSWORD_RESET_DISABLED',
+    });
+    return;
+  }
+
   const parsed = z.object({
     token: z.string().min(1),
     newPassword: z.string().min(8, 'New password must be at least 8 characters'),
@@ -1704,8 +2049,8 @@ async function processMedicalReportOcr(
             processingStatus: 'FAILED',
             notes: safeErrorMsg,
             extractedData: JSON.stringify({
-              provider: env.SARVAM_API_KEY ? 'SARVAM_DOC_AI' : 'LOCAL_FALLBACK',
-              engine: env.SARVAM_API_KEY ? 'SARVAM_DOCUMENT_AI' : 'LOCAL_FALLBACK',
+              provider: 'SARVAM_DOC_AI',
+              engine: 'SARVAM_DOCUMENT_AI',
               status: 'FAILED',
               error: safeErrorMsg,
               doctorReviewStatus: 'NEEDS_ATTENTION',
@@ -1732,6 +2077,13 @@ const handleDocumentUpload = async (req: Request, res: Response): Promise<void> 
   let documentCreated = false;
   try {
     const { effectivePatientId } = await resolvePatientContext(req, 'MANAGE_DOCUMENTS');
+    if (!isDurableStorageAvailable()) {
+      res.status(503).json({
+        error: 'Persistent medical document upload is disabled in this hosted demo because durable cloud storage is not configured. Use temporary Sarvam OCR extraction (/api/ocr/extract-temporary) instead.',
+        code: 'DURABLE_STORAGE_UNAVAILABLE',
+      });
+      return;
+    }
     if (!req.file || !hasValidReportSignature(req.file)) {
       res.status(400).json({ error: 'Upload a valid PDF, JPEG, PNG, or WebP medical report.' });
       return;
@@ -1786,6 +2138,7 @@ const handleDocumentUpload = async (req: Request, res: Response): Promise<void> 
     }
 
     void processMedicalReportOcr(document.id, effectivePatientId, actorId, req.file);
+    const hasSarvam = getConfiguredSarvamApiKey().length >= 10;
     res.status(202).json({
       document: {
         id: document.id,
@@ -1799,15 +2152,22 @@ const handleDocumentUpload = async (req: Request, res: Response): Promise<void> 
         createdAt: document.createdAt,
       },
       extraction: {
-        provider: env.SARVAM_API_KEY ? 'SARVAM_DOC_AI' : 'LOCAL_FALLBACK',
-        status: 'PENDING',
-        message: env.SARVAM_API_KEY
-          ? 'Report securely saved. Sarvam Document AI is extracting structured clinical data.'
-          : 'Report securely saved. High-fidelity OCR fallback parser is extracting clinical data.',
+        provider: 'SARVAM_DOC_AI',
+        status: hasSarvam ? 'PENDING' : 'UNAVAILABLE',
+        message: hasSarvam
+          ? 'Report saved. Sarvam Document AI is extracting structured clinical data.'
+          : 'Report saved, but Sarvam OCR credentials are unavailable so automated extraction cannot run.',
       },
     });
   } catch (err: any) {
     if (savedFile && !documentCreated) await deletePrivateFile(savedFile.storagePath);
+    if (err instanceof PrivateStorageUnavailableError || err?.status === 503) {
+      res.status(503).json({
+        error: err.message,
+        code: err.code || 'DURABLE_STORAGE_UNAVAILABLE',
+      });
+      return;
+    }
     res.status(getAuthErrorStatus(err)).json({ error: err.message });
   }
 };
@@ -1837,7 +2197,15 @@ docRouter.get('/', requireAuth, async (req: Request, res: Response): Promise<voi
         createdAt: true,
       },
     });
+    const sarvamAvail = SarvamOcrService.getAvailability();
     res.json({
+      capabilities: {
+        persistentStorageAvailable: isDurableStorageAvailable(),
+        storageProvider: isCloudStorageEnabled() ? 'gcs' : (env.NODE_ENV === 'production' ? 'disabled' : 'local_dev'),
+        ocrProvider: sarvamAvail.configuredProvider,
+        sarvamOcrConfigured: sarvamAvail.credentialsConfigured,
+        temporaryOcrAvailable: sarvamAvail.sarvamEnabled && sarvamAvail.credentialsConfigured,
+      },
       documents: documents.map((doc) => {
         let parsedExtracted: any = null;
         try {
@@ -1905,38 +2273,12 @@ async function verifyDocumentAccess(documentId: string, actor: any): Promise<any
   return null;
 }
 
-function buildDevelopmentFallbackBuffer(document: { title: string; mimeType?: string | null }): { buffer: Buffer; ext: string } {
-  if (document.mimeType === 'text/plain') {
-    const textContent = `Diagnostic Report: ${document.title}\nPatient: Ramesh Deshmukh\nFacility: Metropolis Healthcare Pune\n\nFasting Blood Sugar: 118 mg/dL\nHbA1c: 6.3%\nPost-Prandial Glucose: 142 mg/dL`;
-    return { buffer: Buffer.from(textContent, 'utf8'), ext: '.txt' };
-  }
-  if (document.mimeType?.startsWith('image/')) {
-    return {
-      buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64'),
-      ext: '.png',
-    };
-  }
-  return {
-    buffer: generateValidSyntheticPdfBuffer(document.title),
-    ext: '.pdf',
-  };
-}
-
 async function loadDocumentFileContent(document: { id?: string; storagePath?: string | null; title: string; mimeType?: string | null }): Promise<{ buffer: Buffer; ext: string } | null> {
   try {
-    if (document.storagePath) {
-      const stored = await readPrivateFile(document.storagePath);
-      if (stored) {
-        return stored;
-      }
-    }
-
-    // Never fabricate synthetic clinical report bytes when a persisted file is missing in production.
-    if (env.NODE_ENV === 'production') {
+    if (!document.storagePath) {
       return null;
     }
-
-    return buildDevelopmentFallbackBuffer(document);
+    return await readPrivateFile(document.storagePath);
   } catch (err: any) {
     safeClinicalLog('error', `Failed to load private document file: ${err?.message}`);
     return null;
@@ -3022,9 +3364,27 @@ if (process.env.NODE_ENV !== 'test') {
   const startServer = async (): Promise<void> => {
     if (env.NODE_ENV === 'production') {
       await prisma.$connect();
+      const dbState = await inspectDatabaseAndSecurityInvariants();
+      if (!dbState.runtimeRoleMatchesExpected) {
+        throw new Error(`SECURITY HALT: Runtime database role must be "aarogyadamu_app", got "${dbState.activeUser || 'unknown'}".`);
+      }
+      if (!dbState.runtimeRoleRestricted) {
+        throw new Error('SECURITY HALT: Runtime database role must be NOSUPERUSER, NOBYPASSRLS, NOCREATEDB, NOCREATEROLE, and NOREPLICATION.');
+      }
+      if (!dbState.vaultIsolated) {
+        throw new Error('SECURITY HALT: Runtime database role must NOT be permitted to access _security_vault.rls_signing_key.');
+      }
+      if (!dbState.unscopedIsolationVerified) {
+        throw new Error('SECURITY HALT: Unscoped HealthDocument query must fail closed with 0 rows.');
+      }
+      if (!dbState.migrationsReady) {
+        throw new Error(
+          `DATABASE HALT: Schema/RLS provisioning incomplete (RLS=${dbState.details.coreRlsCount}, FORCE=${dbState.details.forceRlsCount}, triggers=${dbState.details.activeTriggerCount}). Run prisma migrate deploy and db:provision first.`,
+        );
+      }
     }
 
-    if (env.APP_ENV === 'staging') {
+    if (env.APP_ENV === 'staging' && process.env.AUTO_SEED_STAGING_ON_BOOT === 'true') {
       try {
         await ensureStagingDemoDoctor(prisma);
       } catch (err: any) {
@@ -3075,7 +3435,7 @@ if (process.env.NODE_ENV !== 'test') {
   void startServer().catch(async (error: unknown) => {
     console.error(
       'API startup failed before listening:',
-      error instanceof Error ? error.name : 'UnknownError',
+      error instanceof Error ? `${error.name}: ${error.message}` : 'UnknownError',
     );
     try {
     await prisma.$disconnect();

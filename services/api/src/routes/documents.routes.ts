@@ -5,7 +5,14 @@ import { z } from 'zod';
 import { requireAuth } from '../middleware/auth';
 import { resolvePatientContext } from '../permissions/evaluator';
 import { preserveTenantContext } from '../db/tenantContext';
-import { savePrivateFile, readPrivateFile, deletePrivateFile, validateFileMagicBytes } from '../services/storageService';
+import {
+  savePrivateFile,
+  readPrivateFile,
+  deletePrivateFile,
+  validateFileMagicBytes,
+  isDurableStorageAvailable,
+  PrivateStorageUnavailableError,
+} from '../services/storageService';
 import { logAuditEvent } from '../audit/auditLogger';
 
 const router = Router();
@@ -59,6 +66,13 @@ router.post(
   async (req: Request, res: Response): Promise<void> => {
     try {
       const { effectivePatientId } = await resolvePatientContext(req, 'MANAGE_DOCUMENTS');
+      if (!isDurableStorageAvailable()) {
+        res.status(503).json({
+          error: 'Persistent medical document upload is disabled in this hosted demo because durable cloud storage is not configured.',
+          code: 'DURABLE_STORAGE_UNAVAILABLE',
+        });
+        return;
+      }
       const { title, category, issuingFacility, notes } = req.body;
 
       if (!title) {
@@ -128,6 +142,10 @@ router.post(
 
       res.status(201).json({ document });
     } catch (err: any) {
+      if (err instanceof PrivateStorageUnavailableError || err?.status === 503) {
+        res.status(503).json({ error: err.message, code: err.code || 'DURABLE_STORAGE_UNAVAILABLE' });
+        return;
+      }
       res.status(err.message.includes('Forbidden') ? 403 : 500).json({ error: err.message });
     }
   }

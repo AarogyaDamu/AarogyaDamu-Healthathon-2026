@@ -20,6 +20,7 @@
     "db:validate": "npm --workspace=services/api run prisma:validate",
     "db:migrate": "npm --workspace=services/api run prisma:migrate",
     "db:deploy": "npm --workspace=services/api run prisma:deploy",
+    "db:deploy:hosted": "npm --workspace=services/api run db:deploy:hosted",
     "db:status": "npm --workspace=services/api run prisma:status",
     "db:seed": "npm --workspace=services/api run prisma:seed",
     "db:seed:staging": "npm --workspace=services/api run seed:staging",

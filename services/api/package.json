@@ -15,6 +15,7 @@
     "prisma:deploy": "node scripts/prisma-command.cjs migrate deploy",
     "prisma:status": "node scripts/prisma-command.cjs migrate status",
     "db:provision": "node scripts/provision-prod-db.cjs",
+    "db:deploy:hosted": "node scripts/deploy-migrate-and-provision.cjs",
     "prisma:seed": "tsx prisma/seed.ts",
     "prisma:seed:staging": "tsx scripts/seed-staging-demo.ts",
     "seed:staging": "tsx scripts/seed-staging-demo.ts",

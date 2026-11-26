@@ -4,10 +4,18 @@ import type { RequestHandler } from 'express';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { env } from '../config/env';
 
-const RLS_CONTEXT_SECRET =
-  process.env.RLS_CONTEXT_SECRET ||
-  env.RLS_CONTEXT_SECRET ||
-  'aarogya_rls_signing_secret_super_secure_2026_production_key_minimum_32_chars';
+function getRlsContextSecret(): string {
+  if (process.env.RLS_CONTEXT_SECRET) {
+    return process.env.RLS_CONTEXT_SECRET;
+  }
+  if (
+    env.RLS_CONTEXT_SECRET &&
+    env.RLS_CONTEXT_SECRET !== 'local-dev-and-test-only-signing-secret-change-for-production'
+  ) {
+    return env.RLS_CONTEXT_SECRET;
+  }
+  return 'aarogya_rls_signing_secret_super_secure_2026_production_key_minimum_32_chars';
+}
 
 export const VALID_WORKER_SCOPES = [
   'SECURITY_RECORDER',
@@ -139,7 +147,7 @@ export async function setPostgresLocalContext(
   }
 
   const payload = `v2|${ctx.practiceId || ''}|${ctx.userId || ''}|${ctx.role || ''}|${ctx.patientId || ''}|${workerVal}|${now}|${exp}|${xid}|${pid}|${auditEventVal}`;
-  const signature = crypto.createHmac('sha256', RLS_CONTEXT_SECRET).update(payload).digest('hex');
+  const signature = crypto.createHmac('sha256', getRlsContextSecret()).update(payload).digest('hex');
 
   await tx.$executeRawUnsafe(`SELECT set_config('app.context_payload', $1, true)`, payload);
   await tx.$executeRawUnsafe(`SELECT set_config('app.context_signature', $1, true)`, signature);

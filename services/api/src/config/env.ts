@@ -2,9 +2,11 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { z } from 'zod';
 
-dotenv.config({ path: path.resolve(__dirname, '../../.env') });
-dotenv.config({ path: path.resolve(process.cwd(), 'services/api/.env') });
-dotenv.config({ path: path.resolve(process.cwd(), '.env') });
+if (process.env.NODE_ENV !== 'test') {
+  dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+  dotenv.config({ path: path.resolve(process.cwd(), 'services/api/.env') });
+  dotenv.config({ path: path.resolve(process.cwd(), '.env') });
+}
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -14,6 +16,10 @@ const envSchema = z.object({
     .string()
     .regex(/^postgres(?:ql)?:\/\//i, 'DATABASE_URL must use PostgreSQL; SQLite development databases are not supported.')
     .default('postgresql://aarogyadamu:change-me@localhost:5432/aarogyadamu_dev?schema=public'),
+  EXPECTED_NEON_ENDPOINT: z.string().trim().optional().transform((val) => (val && val.length > 0 ? val : undefined)),
+  EXPECTED_NEON_OWNER_ROLE: z.string().trim().optional().transform((val) => (val && val.length > 0 ? val : undefined)),
+  MIGRATION_DATABASE_URL: z.string().trim().optional().transform((val) => (val && val.length > 0 ? val : undefined)),
+  APP_RUNTIME_DB_PASSWORD: z.string().trim().optional().transform((val) => (val && val.length > 0 ? val : undefined)),
   JWT_SECRET: z.string().trim().min(32, 'JWT_SECRET must be at least 32 characters long').default('aarogyadamu_super_secure_clinical_jwt_secret_2026_dev_only'),
   JWT_EXPIRES_IN: z.string().default('15m'),
   JWT_ISSUER: z.string().default('aarogyadamu-api'),
@@ -39,6 +45,8 @@ const envSchema = z.object({
   // by the production validation below.
   ALLOW_DEMO_AUTH: z.string().default('false').transform((val) => val === 'true'),
   ENABLE_DEV_DEMO_MODE: z.string().default('false').transform((val) => val === 'true'),
+  ALLOW_PUBLIC_DOCTOR_REGISTRATION: z.string().default('false').transform((val) => val === 'true'),
+  ALLOW_PUBLIC_PASSWORD_RESET: z.string().default('false').transform((val) => val === 'true'),
   GEMINI_API_KEY: z.string().trim().optional().transform((val) => (val && val.length > 0 ? val : undefined)),
   SARVAM_API_KEY: z.string().trim().optional().transform((val) => (val && val.length > 0 ? val : undefined)),
   SARVAM_TTS_MODEL: z.string().trim().default('bulbul:v4-flash'),
@@ -51,9 +59,8 @@ const envSchema = z.object({
   GOOGLE_APPLICATION_CREDENTIALS_JSON: z.string().trim().optional().transform((val) => (val && val.length > 0 ? val : undefined)),
   GOOGLE_CLOUD_PROJECT_ID: z.string().trim().optional().transform((val) => (val && val.length > 0 ? val : undefined)),
   GOOGLE_CLOUD_STORAGE_BUCKET: z.string().trim().optional().transform((val) => (val && val.length > 0 ? val : undefined)),
-  // The local showcase is deliberately synthetic and requires no cloud account.
-  // Production deployments must explicitly switch to Google Cloud Vision.
-  MEDICAL_REPORT_OCR_PROVIDER: z.enum(['synthetic', 'google_vision']).default('synthetic'),
+  // Local showcase defaults to synthetic. Hosted demo (staging) uses Sarvam OCR without requiring Google Cloud Vision.
+  MEDICAL_REPORT_OCR_PROVIDER: z.enum(['synthetic', 'sarvam', 'google_vision']).default('synthetic'),
 }).superRefine((config, context) => {
   // 1. Distinct server-side secrets validation
   const secrets = [
@@ -131,6 +138,51 @@ const envSchema = z.object({
         path: ['DATABASE_URL'],
         message: 'Staging and production require a PostgreSQL DATABASE_URL; SQLite development databases are not supported.',
       });
+    } else {
+      try {
+        const parsedRuntimeDb = new URL(config.DATABASE_URL);
+        const runtimeUser = decodeURIComponent(parsedRuntimeDb.username || '');
+        const ownerRole = config.EXPECTED_NEON_OWNER_ROLE || 'neondb_owner';
+        if (runtimeUser === ownerRole || runtimeUser === 'neondb_owner') {
+          context.addIssue({
+            code: 'custom',
+            path: ['DATABASE_URL'],
+            message: 'Hosted runtime DATABASE_URL cannot use the Neon owner role; use restricted role aarogyadamu_app.',
+          });
+        }
+        if (config.MIGRATION_DATABASE_URL && config.DATABASE_URL === config.MIGRATION_DATABASE_URL) {
+          context.addIssue({
+            code: 'custom',
+            path: ['DATABASE_URL'],
+            message: 'Hosted runtime DATABASE_URL must be distinct from MIGRATION_DATABASE_URL.',
+          });
+        }
+        if (config.EXPECTED_NEON_ENDPOINT) {
+          if (/[:/?@#\s]/.test(config.EXPECTED_NEON_ENDPOINT) || config.EXPECTED_NEON_ENDPOINT.split('.')[0].endsWith('-pooler')) {
+            context.addIssue({
+              code: 'custom',
+              path: ['EXPECTED_NEON_ENDPOINT'],
+              message: 'EXPECTED_NEON_ENDPOINT must be a bare direct Neon endpoint hostname without protocol, path, query, or -pooler suffix.',
+            });
+          } else {
+            const labels = config.EXPECTED_NEON_ENDPOINT.toLowerCase().split('.');
+            const expectedPooled = [`${labels[0]}-pooler`, ...labels.slice(1)].join('.');
+            if (parsedRuntimeDb.hostname.toLowerCase() !== expectedPooled || runtimeUser !== 'aarogyadamu_app') {
+              context.addIssue({
+                code: 'custom',
+                path: ['DATABASE_URL'],
+                message: 'DATABASE_URL must match the pooled EXPECTED_NEON_ENDPOINT hostname and authenticate as aarogyadamu_app.',
+              });
+            }
+          }
+        }
+      } catch {
+        context.addIssue({
+          code: 'custom',
+          path: ['DATABASE_URL'],
+          message: 'DATABASE_URL must be a valid PostgreSQL connection string.',
+        });
+      }
     }
 
     if (
@@ -236,13 +288,45 @@ const envSchema = z.object({
       });
     }
 
+    if (config.ALLOW_PUBLIC_DOCTOR_REGISTRATION) {
+      context.addIssue({
+        code: 'custom',
+        path: ['ALLOW_PUBLIC_DOCTOR_REGISTRATION'],
+        message: 'Public doctor self-registration must remain disabled in staging and production.',
+      });
+    }
+
+    if (config.EMAIL_PROVIDER === 'disabled' && config.ALLOW_PUBLIC_PASSWORD_RESET) {
+      context.addIssue({
+        code: 'custom',
+        path: ['ALLOW_PUBLIC_PASSWORD_RESET'],
+        message: 'Public password reset cannot be enabled when EMAIL_PROVIDER is disabled.',
+      });
+    }
+
+    if (config.APP_ENV === 'staging' && config.ALLOW_PUBLIC_PASSWORD_RESET) {
+      context.addIssue({
+        code: 'custom',
+        path: ['ALLOW_PUBLIC_PASSWORD_RESET'],
+        message: 'Public password reset must remain disabled in the hosted staging/demo environment.',
+      });
+    }
+
     // 6. Strict Production-Only Hardening (requires APP_ENV === 'production')
     if (config.APP_ENV === 'production') {
-      if (config.MEDICAL_REPORT_OCR_PROVIDER !== 'google_vision') {
+      if (config.MEDICAL_REPORT_OCR_PROVIDER === 'synthetic') {
         context.addIssue({
           code: 'custom',
           path: ['MEDICAL_REPORT_OCR_PROVIDER'],
-          message: 'Production medical report OCR must use MEDICAL_REPORT_OCR_PROVIDER=google_vision.',
+          message: 'Production medical report OCR must use MEDICAL_REPORT_OCR_PROVIDER=sarvam or google_vision.',
+        });
+      }
+
+      if (config.MEDICAL_REPORT_OCR_PROVIDER === 'sarvam' && !config.SARVAM_API_KEY) {
+        context.addIssue({
+          code: 'custom',
+          path: ['SARVAM_API_KEY'],
+          message: 'Production Sarvam OCR requires SARVAM_API_KEY to be configured.',
         });
       }
 
@@ -250,7 +334,7 @@ const envSchema = z.object({
         context.addIssue({
           code: 'custom',
           path: ['EMAIL_PROVIDER'],
-          message: 'Production password-reset delivery requires EMAIL_PROVIDER=resend.',
+          message: 'Production email delivery requires EMAIL_PROVIDER=resend.',
         });
       }
     }

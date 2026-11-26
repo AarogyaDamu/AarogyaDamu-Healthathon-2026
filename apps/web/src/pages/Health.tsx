@@ -108,6 +108,22 @@ export default function Health() {
   const [loadingDocs, setLoadingDocs] = useState(true);
   const [isScanning, setIsScanning] = useState(false);
   const [scanStep, setScanStep] = useState('');
+  const [docUploadError, setDocUploadError] = useState<string | null>(null);
+  const [documentCapabilities, setDocumentCapabilities] = useState<{
+    persistentStorageAvailable: boolean;
+    temporaryOcrAvailable: boolean;
+    ocrProvider: string;
+    ocrConfigured: boolean;
+  } | null>(null);
+  const [temporaryOcrResult, setTemporaryOcrResult] = useState<{
+    title: string;
+    engine: string;
+    provider: string;
+    rawText: string;
+    plainSummary: string;
+    structuredLabs?: Record<string, any>;
+    temporaryCleanedUp: boolean;
+  } | null>(null);
 
   // Reserved for a future explicit review step. The current OCR flow persists
   // provider output directly and never enables this panel.
@@ -147,8 +163,19 @@ export default function Health() {
 
   const fetchDocuments = async () => {
     try {
-      const res = await apiFetch<{ documents: HealthDocument[] }>('/documents');
+      const res = await apiFetch<{
+        documents: HealthDocument[];
+        capabilities?: {
+          persistentStorageAvailable: boolean;
+          temporaryOcrAvailable: boolean;
+          ocrProvider: string;
+          ocrConfigured: boolean;
+        };
+      }>('/documents');
       setDocuments(res.documents || []);
+      if (res.capabilities) {
+        setDocumentCapabilities(res.capabilities);
+      }
     } catch (e) {
       console.warn('Failed to load documents:', e);
     } finally {
@@ -333,19 +360,50 @@ export default function Health() {
   // patient or a clinical interpretation.
   const handleFileUpload = async (file: File) => {
     setIsScanning(true);
+    setDocUploadError(null);
+    setTemporaryOcrResult(null);
 
     try {
-      setScanStep('Uploading the original report securely...');
+      const title = file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ');
       const formData = new FormData();
       formData.append('file', file);
-      formData.append('title', file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' '));
+      formData.append('title', title);
 
+      const persistentAvailable = documentCapabilities?.persistentStorageAvailable ?? true;
+      if (!persistentAvailable) {
+        setScanStep('Running temporary Sarvam OCR in memory (original file is not stored permanently)...');
+        const tempResult = await apiFetch<{
+          success: boolean;
+          engine: string;
+          provider: string;
+          rawOcrText: string;
+          plainSummary: string;
+          structuredLabs?: Record<string, any>;
+          temporaryCleanedUp: boolean;
+        }>('/ocr/extract-temporary', {
+          method: 'POST',
+          body: formData,
+        });
+        setTemporaryOcrResult({
+          title,
+          engine: tempResult.engine,
+          provider: tempResult.provider,
+          rawText: tempResult.rawOcrText,
+          plainSummary: tempResult.plainSummary,
+          structuredLabs: tempResult.structuredLabs,
+          temporaryCleanedUp: tempResult.temporaryCleanedUp,
+        });
+        showNotification('Sarvam OCR extraction complete (temporary session only — file scrubbed from server memory).');
+        return;
+      }
+
+      setScanStep('Uploading the original report securely...');
       const uploadResult = await apiFetch<{ document: HealthDocument; extraction: { status: string } }>('/documents/upload-report', {
         method: 'POST',
         body: formData,
       });
 
-      setScanStep('OCR is extracting report text; the original file stays available for comparison...');
+      setScanStep('Sarvam OCR is extracting report text; the original file stays available for comparison...');
       let completed: HealthDocument | null = null;
       for (let attempt = 0; attempt < 20; attempt += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 1500));
@@ -356,16 +414,16 @@ export default function Health() {
       }
 
       if (!completed || completed.processingStatus === 'PENDING') {
-        showNotification('Report saved. OCR is still processing; refresh this page to review the result.');
-      } else if (completed.processingStatus === 'EXTRACTION_FAILED') {
-        throw new Error(completed.notes || 'Google Cloud Vision could not extract text from this report.');
+        showNotification('Report saved. Sarvam OCR is still processing; refresh this page to review the result.');
+      } else if (completed.processingStatus === 'EXTRACTION_FAILED' || completed.processingStatus === 'FAILED') {
+        throw new Error(completed.notes || 'Sarvam OCR could not extract text from this report.');
       } else {
         setSelectedDocForViewing(completed);
         setDocModalTab('summary');
         showNotification('Report processed. Review the verified OCR text before using it clinically.');
       }
     } catch (err: any) {
-      alert(`Could not process document: ${err.message}`);
+      setDocUploadError(err instanceof Error ? err.message : 'Could not process document.');
     } finally {
       setIsScanning(false);
       setScanStep('');
@@ -737,19 +795,26 @@ export default function Health() {
                 <UploadCloud className="h-7 w-7" />
               </div>
               <div>
-                <h3 className="text-sm font-bold text-slate-900">Upload Prescription Photo or Lab PDF</h3>
+                <h3 className="text-sm font-bold text-slate-900">
+                  {documentCapabilities && !documentCapabilities.persistentStorageAvailable
+                    ? 'Scan Prescription Photo or Lab PDF (Temporary Sarvam OCR)'
+                    : 'Upload Prescription Photo or Lab PDF'}
+                </h3>
                 <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
-                  Take a photo of your doctor's slip or choose a PDF. We will organize your medicines, doses, and test results so they are easy to read.
+                  {documentCapabilities && !documentCapabilities.persistentStorageAvailable
+                    ? 'Sarvam OCR processes your image or PDF in memory and clears the file immediately afterward. No permanent file storage is enabled on this hosted demo.'
+                    : 'Take a photo of your report or choose a PDF. Sarvam OCR organizes your medicines, doses, and test results while retaining the original file.'}
                 </p>
               </div>
 
               <div className="flex justify-center pt-2">
                 <label className="cursor-pointer inline-flex items-center gap-2 px-6 py-3 bg-teal-700 hover:bg-teal-800 text-white rounded-xl text-xs font-bold shadow-xs transition hover:scale-[1.01] active:scale-[0.99]">
                   <FileCheck className="h-4 w-4" />
-                  <span>Choose Photo or PDF File</span>
+                  <span>{isScanning ? 'Extracting…' : 'Choose Photo or PDF File'}</span>
                   <input
                     type="file"
                     accept=".pdf,image/*"
+                    disabled={isScanning}
                     className="hidden"
                     onChange={(e) => {
                       if (e.target.files && e.target.files[0]) {
@@ -766,7 +831,41 @@ export default function Health() {
                   <span>{scanStep}</span>
                 </div>
               )}
+
+              {docUploadError && (
+                <div role="alert" className="mx-auto max-w-md rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-left text-xs text-rose-800">
+                  {docUploadError}
+                </div>
+              )}
             </div>
+
+            {temporaryOcrResult && (
+              <div className="rounded-2xl border border-amber-300 bg-amber-50/70 p-5 space-y-3 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-amber-900">
+                      Temporary Sarvam OCR Result — Not Saved to Storage
+                    </p>
+                    <h4 className="text-sm font-bold text-slate-900">{temporaryOcrResult.title}</h4>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setTemporaryOcrResult(null)}
+                    className="rounded-lg border border-amber-300 bg-white px-3 py-1 font-semibold text-amber-900 hover:bg-amber-100"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+                {temporaryOcrResult.plainSummary && (
+                  <p className="text-slate-800 leading-relaxed">{temporaryOcrResult.plainSummary}</p>
+                )}
+                {temporaryOcrResult.rawText && (
+                  <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-xl border border-amber-200 bg-white p-3 text-[11px] text-slate-700">
+                    {temporaryOcrResult.rawText}
+                  </pre>
+                )}
+              </div>
+            )}
 
             {/* DRAFT REVIEW BOX BEFORE SAVING */}
             {hasExtractedDraft && (

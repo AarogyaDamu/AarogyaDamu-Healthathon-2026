@@ -106,6 +106,9 @@ jobs:
 
       - name: Export production mobile web bundle
         run: npm run build:mobile:web
+        env:
+          EXPO_PUBLIC_APP_ENV: production
+          EXPO_PUBLIC_API_URL: https://api.aarogyadamu.net/api
 
       - name: Upload Web Application Build Artifact
         uses: actions/upload-artifact@v4

@@ -200,6 +200,23 @@ export default function DoctorDashboard({ onNavigate }: Props) {
   const [documentUploadError, setDocumentUploadError] = useState<string | null>(null);
   const [documentUploadSuccess, setDocumentUploadSuccess] = useState<string | null>(null);
   const [documentUploading, setDocumentUploading] = useState(false);
+  const [documentCapabilities, setDocumentCapabilities] = useState<{
+    persistentStorageAvailable: boolean;
+    temporaryOcrAvailable: boolean;
+    ocrProvider: string;
+    ocrConfigured: boolean;
+  } | null>(null);
+  const [temporaryOcrResult, setTemporaryOcrResult] = useState<{
+    title: string;
+    engine: string;
+    provider: string;
+    documentType?: string;
+    rawText: string;
+    plainSummary: string;
+    doctorAdvice: string[];
+    structuredLabs?: Record<string, any>;
+    temporaryCleanedUp: boolean;
+  } | null>(null);
   const [journalLoading, setJournalLoading] = useState(false);
   const [journalFilter, setJournalFilter] = useState<string>('ALL');
   const [vitalStats, setVitalStats] = useState<any | null>(null);
@@ -292,12 +309,24 @@ export default function DoctorDashboard({ onNavigate }: Props) {
   const loadPatientDocuments = useCallback(async (patientId: string) => {
     setDocumentsLoading(true);
     setDocumentUploadError(null);
+    setTemporaryOcrResult(null);
     try {
-      const response = await apiFetch<{ documents: typeof patientDocuments }>(
+      const response = await apiFetch<{
+        documents: typeof patientDocuments;
+        capabilities?: {
+          persistentStorageAvailable: boolean;
+          temporaryOcrAvailable: boolean;
+          ocrProvider: string;
+          ocrConfigured: boolean;
+        };
+      }>(
         '/documents',
         { headers: { 'X-Target-Patient-Id': patientId } }
       );
       setPatientDocuments(response.documents);
+      if (response.capabilities) {
+        setDocumentCapabilities(response.capabilities);
+      }
     } catch (err) {
       setPatientDocuments([]);
       setDocumentUploadError(err instanceof Error ? err.message : 'Unable to load patient reports.');
@@ -376,19 +405,53 @@ export default function DoctorDashboard({ onNavigate }: Props) {
     setDocumentUploading(true);
     setDocumentUploadError(null);
     setDocumentUploadSuccess(null);
+    setTemporaryOcrResult(null);
+    const title = file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ');
     const formData = new FormData();
     formData.append('file', file);
-    formData.append('title', file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' '));
+    formData.append('title', title);
     try {
+      const persistentAvailable = documentCapabilities?.persistentStorageAvailable ?? true;
+      if (!persistentAvailable) {
+        const tempResponse = await apiFetch<{
+          success: boolean;
+          engine: string;
+          provider: string;
+          documentType?: string;
+          rawOcrText: string;
+          plainSummary: string;
+          doctorAdvice?: string[];
+          structuredLabs?: Record<string, any>;
+          temporaryCleanedUp: boolean;
+        }>('/ocr/extract-temporary', {
+          method: 'POST',
+          headers: { 'X-Target-Patient-Id': selectedPatient.patientId },
+          body: formData,
+        });
+        setTemporaryOcrResult({
+          title,
+          engine: tempResponse.engine,
+          provider: tempResponse.provider,
+          documentType: tempResponse.documentType,
+          rawText: tempResponse.rawOcrText,
+          plainSummary: tempResponse.plainSummary,
+          doctorAdvice: tempResponse.doctorAdvice || [],
+          structuredLabs: tempResponse.structuredLabs,
+          temporaryCleanedUp: tempResponse.temporaryCleanedUp,
+        });
+        setDocumentUploadSuccess('Temporary Sarvam OCR extraction completed. Original file was scrubbed from memory and not stored permanently.');
+        return;
+      }
+
       await apiFetch('/documents/upload-report', {
         method: 'POST',
         headers: { 'X-Target-Patient-Id': selectedPatient.patientId },
         body: formData,
       });
-      setDocumentUploadSuccess('Report uploaded. Synthetic OCR is preparing a clearly labelled demo result.');
+      setDocumentUploadSuccess('Report uploaded. Sarvam OCR extraction started.');
       await loadPatientDocuments(selectedPatient.patientId);
     } catch (err) {
-      setDocumentUploadError(err instanceof Error ? err.message : 'Report upload failed.');
+      setDocumentUploadError(err instanceof Error ? err.message : 'Report processing failed.');
     } finally {
       setDocumentUploading(false);
     }
@@ -1458,11 +1521,19 @@ export default function DoctorDashboard({ onNavigate }: Props) {
                       <div className="flex flex-wrap items-center justify-between gap-3">
                         <div>
                           <h3 className="text-xs font-bold uppercase tracking-wide text-slate-800">Medical reports</h3>
-                          <p className="mt-1 text-[11px] text-slate-500">Patient and clinician uploads appear in the shared patient record.</p>
+                          <p className="mt-1 text-[11px] text-slate-500">
+                            {documentCapabilities && !documentCapabilities.persistentStorageAvailable
+                              ? 'Temporary Sarvam OCR mode: extracts report data in memory without durable file storage.'
+                              : 'Patient and clinician uploads appear in the shared patient record.'}
+                          </p>
                         </div>
                         <label className={`inline-flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold text-white ${documentUploading ? 'bg-slate-400' : 'bg-teal-700 hover:bg-teal-800'}`}>
                           <Upload className="h-3.5 w-3.5" />
-                          {documentUploading ? 'Uploading…' : 'Upload report'}
+                          {documentUploading
+                            ? 'Extracting OCR…'
+                            : documentCapabilities && !documentCapabilities.persistentStorageAvailable
+                            ? 'Scan Report (Temp Sarvam OCR)'
+                            : 'Upload report'}
                           <input
                             type="file"
                             accept="application/pdf,image/jpeg,image/png,image/webp"
@@ -1483,6 +1554,49 @@ export default function DoctorDashboard({ onNavigate }: Props) {
                         <p role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 p-2 text-xs text-emerald-800">
                           {documentUploadSuccess}
                         </p>
+                      )}
+
+                      {temporaryOcrResult && (
+                        <div className="rounded-xl border border-amber-300 bg-amber-50/70 p-3 space-y-2" data-testid="temporary-ocr-result">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                              <span className="text-[10px] font-bold uppercase tracking-wider text-amber-900">
+                                Temporary Sarvam OCR Result — File Not Stored
+                              </span>
+                              <h4 className="text-xs font-bold text-slate-900">{temporaryOcrResult.title}</h4>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setTemporaryOcrResult(null)}
+                              className="rounded-md border border-amber-300 bg-white px-2 py-1 text-[11px] font-semibold text-amber-900 hover:bg-amber-100"
+                            >
+                              Dismiss
+                            </button>
+                          </div>
+                          {temporaryOcrResult.plainSummary && (
+                            <p className="text-xs text-slate-800">{temporaryOcrResult.plainSummary}</p>
+                          )}
+                          {temporaryOcrResult.structuredLabs && Object.keys(temporaryOcrResult.structuredLabs).length > 0 && (
+                            <div className="flex flex-wrap gap-1.5">
+                              {Object.entries(temporaryOcrResult.structuredLabs).map(([k, v]: [string, any]) => (
+                                v?.displayName && v?.extractedValue ? (
+                                  <span key={k} className="inline-flex items-center gap-1 rounded bg-white px-2 py-0.5 text-[11px] font-mono text-slate-800 border border-amber-200">
+                                    <span className="font-semibold text-slate-600">{v.displayName}:</span>
+                                    <span className="font-bold text-teal-700">{v.extractedValue}</span>
+                                  </span>
+                                ) : null
+                              ))}
+                            </div>
+                          )}
+                          {temporaryOcrResult.rawText && (
+                            <details>
+                              <summary className="cursor-pointer text-[11px] font-semibold text-amber-900">View extracted OCR text</summary>
+                              <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-white p-2 text-[11px] text-slate-700 border border-amber-200">
+                                {temporaryOcrResult.rawText}
+                              </pre>
+                            </details>
+                          )}
+                        </div>
                       )}
 
                       <div className="rounded-xl border border-indigo-200 bg-indigo-50/60 p-3">

@@ -50,14 +50,14 @@ describe('Express Reverse-Proxy & Rate-Limiter Trust Configuration', () => {
     const clientIp = '198.51.100.99';
     const email = 'rate-limit-proxy-test@example.com';
 
-    // passwordResetRateLimiter has max: 5 requests per hour
+    // passwordResetRateLimiter has max: 5 requests per hour; even when disabled (503) rate limiting applies first
     for (let i = 0; i < 5; i++) {
       const res = await request(app)
         .post('/api/auth/forgot-password')
         .set('X-Forwarded-For', clientIp)
         .send({ email });
-      // Request is accepted within limit
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(503);
+      expect(res.body.code).toBe('PASSWORD_RESET_DISABLED');
     }
 
     // The 6th request from the same client IP must be blocked with HTTP 429
@@ -69,13 +69,13 @@ describe('Express Reverse-Proxy & Rate-Limiter Trust Configuration', () => {
     expect(blockedRes.status).toBe(429);
     expect(blockedRes.body.error).toMatch(/too many password reset requests/i);
 
-    // Another client with a different IP should NOT be blocked
+    // Another client with a different IP should NOT be blocked by the first IP's limit
     const differentClientIp = '198.51.100.100';
     const otherClientRes = await request(app)
       .post('/api/auth/forgot-password')
       .set('X-Forwarded-For', differentClientIp)
       .send({ email });
 
-    expect(otherClientRes.status).toBe(200);
+    expect(otherClientRes.status).toBe(503);
   });
 });

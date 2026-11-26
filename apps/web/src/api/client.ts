@@ -348,10 +348,7 @@ export async function apiFetch<T>(
   if (response.status === 401) {
     const isAuthEndpoint = [
       '/auth/login',
-      '/auth/doctor/register',
       '/auth/refresh',
-      '/auth/forgot-password',
-      '/auth/reset-password',
     ].includes(targetPath);
 
     const canRefresh = !isAuthEndpoint && hasExistingSession();
@@ -391,10 +388,7 @@ export async function apiFetch<T>(
   if (response.status === 401) {
     const isAuthEndpoint = [
       '/auth/login',
-      '/auth/doctor/register',
       '/auth/refresh',
-      '/auth/forgot-password',
-      '/auth/reset-password',
     ].includes(targetPath);
 
     let errorData: any = null;

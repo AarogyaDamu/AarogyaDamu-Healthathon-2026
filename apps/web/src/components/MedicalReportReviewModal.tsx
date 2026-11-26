@@ -81,7 +81,6 @@ export default function MedicalReportReviewModal({
   const isSynthetic =
     extracted?.isSynthetic ||
     extracted?.provider?.includes('SYNTHETIC') ||
-    (!isOcrFailed && extracted?.engine === 'LOCAL_FALLBACK') ||
     report.category === 'ABHA_IMPORT';
 
   const currentReviewStatus =
@@ -320,7 +319,9 @@ export default function MedicalReportReviewModal({
                       ? 'OCR Extraction Unavailable — Retry or Review Source File'
                       : extracted?.engine === 'SARVAM_DOCUMENT_AI'
                       ? 'Sarvam Document AI V1 (Live Parsing)'
-                      : 'Local Resilient Fallback Parser (Offline)'}
+                      : isSynthetic
+                      ? 'Synthetic Demo Preview'
+                      : 'Document Metadata Only'}
                   </p>
                 </div>
                 <div className="flex items-center gap-3">

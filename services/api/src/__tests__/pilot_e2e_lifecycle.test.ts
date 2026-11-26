@@ -450,7 +450,7 @@ describe('Phase 5 — Pilot Readiness & Synthetic Patient End-to-End Lifecycle S
       await new Promise((resolve) => setTimeout(resolve, 250));
       settled = await prisma.healthDocument.findUnique({ where: { id: saved!.id } });
     }
-    expect(settled?.processingStatus).toMatch(/COMPLETED|NEEDS_REVIEW|OCR_NO_TEXT|EXTRACTION_FAILED/);
+    expect(settled?.processingStatus).toMatch(/COMPLETED|NEEDS_REVIEW|OCR_NO_TEXT|EXTRACTION_FAILED|FAILED/);
 
     const patientVault = await request(app)
       .get('/api/documents')

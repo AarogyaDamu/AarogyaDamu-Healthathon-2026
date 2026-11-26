@@ -85,12 +85,31 @@ describe('Authentication security and Doctor-only API authorization', () => {
       where: { id: expiredId },
       data: { expiresAt: new Date(Date.now() - 1000) },
     });
-    const expiredRedemption = await request(app).post('/api/auth/doctor/register').send({
+    const publicRegAttempt = await request(app).post('/api/auth/doctor/register').send({
       email: expiredDoctorEmail,
       password,
-      fullName: 'Expired Doctor',
+      fullName: 'Public Signup Doctor',
       invitationToken: expiredIssue.body.invitationToken,
     });
+    expect(publicRegAttempt.status).toBe(403);
+    expect(publicRegAttempt.body.code).toBe('PUBLIC_DOCTOR_REGISTRATION_DISABLED');
+
+    const unauthAdminCreate = await request(app).post('/api/auth/admin/doctors').send({
+      email: expiredDoctorEmail,
+      password,
+      fullName: 'Unauth Admin Doctor',
+    });
+    expect(unauthAdminCreate.status).toBe(403);
+
+    const expiredRedemption = await request(app)
+      .post('/api/auth/admin/doctors')
+      .set('x-doctor-invitation-admin-key', 'test-admin-provisioning-key-that-is-long-enough')
+      .send({
+        email: expiredDoctorEmail,
+        password,
+        fullName: 'Expired Doctor',
+        invitationToken: expiredIssue.body.invitationToken,
+      });
     expect(expiredRedemption.status).toBe(403);
 
     const issued = await request(app)
@@ -103,30 +122,39 @@ describe('Authentication security and Doctor-only API authorization', () => {
       where: { action: 'DOCTOR_INVITATION_ISSUED', subject: doctorEmail },
     })).toBe(1);
 
-    const wrongEmail = await request(app).post('/api/auth/doctor/register').send({
-      email: `other-${suffix}@test.local`,
-      password,
-      fullName: 'Doctor Test',
-      invitationToken: issued.body.invitationToken,
-    });
+    const wrongEmail = await request(app)
+      .post('/api/auth/admin/doctors')
+      .set('x-doctor-invitation-admin-key', 'test-admin-provisioning-key-that-is-long-enough')
+      .send({
+        email: `other-${suffix}@test.local`,
+        password,
+        fullName: 'Doctor Test',
+        invitationToken: issued.body.invitationToken,
+      });
     expect(wrongEmail.status).toBe(403);
 
-    const registration = await request(app).post('/api/auth/doctor/register').send({
-      email: doctorEmail,
-      password,
-      fullName: 'Doctor Test',
-      invitationToken: issued.body.invitationToken,
-    });
+    const registration = await request(app)
+      .post('/api/auth/admin/doctors')
+      .set('x-doctor-invitation-admin-key', 'test-admin-provisioning-key-that-is-long-enough')
+      .send({
+        email: doctorEmail,
+        password,
+        fullName: 'Doctor Test',
+        invitationToken: issued.body.invitationToken,
+      });
     expect(registration.status).toBe(201);
     expect(registration.body.user.isClinician).toBe(true);
     doctorAccessToken = registration.body.token;
 
-    const reused = await request(app).post('/api/auth/doctor/register').send({
-      email: doctorEmail,
-      password,
-      fullName: 'Doctor Test',
-      invitationToken: issued.body.invitationToken,
-    });
+    const reused = await request(app)
+      .post('/api/auth/admin/doctors')
+      .set('x-doctor-invitation-admin-key', 'test-admin-provisioning-key-that-is-long-enough')
+      .send({
+        email: doctorEmail,
+        password,
+        fullName: 'Doctor Test',
+        invitationToken: issued.body.invitationToken,
+      });
     expect(reused.status).toBe(403);
 
     const doctorAccess = await request(app)
@@ -214,30 +242,50 @@ describe('Authentication security and Doctor-only API authorization', () => {
     expect(otherDevice.status).toBe(401);
   });
 
-  test('staging environment with disabled email returns documented HTTP 503 for password reset', async () => {
+  test('staging/disabled email disables both forgot-password and reset-password with 503', async () => {
     const prevAppEnv = env.APP_ENV;
     const prevEmailProvider = env.EMAIL_PROVIDER;
+    const prevAllowReset = env.ALLOW_PUBLIC_PASSWORD_RESET;
+    const emailSendSpy = jest.spyOn(emailService, 'sendPasswordResetEmail').mockResolvedValue(undefined);
     try {
       (env as any).APP_ENV = 'staging';
       (env as any).EMAIL_PROVIDER = 'disabled';
+      (env as any).ALLOW_PUBLIC_PASSWORD_RESET = false;
 
-      const response = await request(app)
+      const forgotResponse = await request(app)
         .post('/api/auth/forgot-password')
         .set('X-Forwarded-For', '203.0.113.111')
         .send({ email: doctorEmail });
 
-      expect(response.status).toBe(503);
-      expect(response.body.error).toContain('disabled or unavailable in this environment');
+      expect(forgotResponse.status).toBe(503);
+      expect(forgotResponse.body.code).toBe('PASSWORD_RESET_DISABLED');
+      expect(forgotResponse.body.error).toContain('disabled');
+      expect(emailSendSpy).not.toHaveBeenCalled();
+
+      const resetResponse = await request(app)
+        .post('/api/auth/reset-password')
+        .send({ token: 'any-token', newPassword: 'ChangedPassword123!' });
+      expect(resetResponse.status).toBe(503);
+      expect(resetResponse.body.code).toBe('PASSWORD_RESET_DISABLED');
     } finally {
+      emailSendSpy.mockRestore();
       (env as any).APP_ENV = prevAppEnv;
       (env as any).EMAIL_PROVIDER = prevEmailProvider;
+      (env as any).ALLOW_PUBLIC_PASSWORD_RESET = prevAllowReset;
     }
   });
 
-  test('password-reset requests do not enumerate accounts, and tokens are one-time and expire', async () => {
+  test('when explicitly enabled in production, password-reset does not enumerate accounts and tokens are one-time', async () => {
+    const prevAppEnv = env.APP_ENV;
+    const prevEmailProvider = env.EMAIL_PROVIDER;
+    const prevAllowReset = env.ALLOW_PUBLIC_PASSWORD_RESET;
     const emailSendSpy = jest.spyOn(emailService, 'sendPasswordResetEmail').mockResolvedValue(undefined);
 
     try {
+      (env as any).APP_ENV = 'production';
+      (env as any).EMAIL_PROVIDER = 'resend';
+      (env as any).ALLOW_PUBLIC_PASSWORD_RESET = true;
+
       const firstResponse = await request(app)
         .post('/api/auth/forgot-password')
         .set('X-Forwarded-For', '203.0.113.222')
@@ -306,6 +354,9 @@ describe('Authentication security and Doctor-only API authorization', () => {
       expect(reused.status).toBe(400);
     } finally {
       emailSendSpy.mockRestore();
+      (env as any).APP_ENV = prevAppEnv;
+      (env as any).EMAIL_PROVIDER = prevEmailProvider;
+      (env as any).ALLOW_PUBLIC_PASSWORD_RESET = prevAllowReset;
     }
   });
 });

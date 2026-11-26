@@ -47,6 +47,44 @@ describe('Environment Policy: Staging vs Production Validation', () => {
     }
   });
 
+  test('validates staging hosted-demo profile with Sarvam OCR and disabled email', () => {
+    const hostedDemoStaging = {
+      ...validStagingBase,
+      MEDICAL_REPORT_OCR_PROVIDER: 'sarvam',
+      SARVAM_API_KEY: 'sk_staging_sarvam_demo_key_123456',
+      EMAIL_PROVIDER: 'disabled',
+    };
+    const result = envSchema.safeParse(hostedDemoStaging);
+    if (!result.success) {
+      console.error('Hosted demo staging diagnostics:', formatIssues(result.error.issues));
+    }
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.APP_ENV).toBe('staging');
+      expect(result.data.MEDICAL_REPORT_OCR_PROVIDER).toBe('sarvam');
+      expect(result.data.EMAIL_PROVIDER).toBe('disabled');
+      expect(result.data.ALLOW_PUBLIC_DOCTOR_REGISTRATION).toBe(false);
+      expect(result.data.ALLOW_PUBLIC_PASSWORD_RESET).toBe(false);
+    }
+  });
+
+  test('rejects staging when public doctor registration or public password reset is enabled', () => {
+    const withPublicDocReg = envSchema.safeParse({
+      ...validStagingBase,
+      ALLOW_PUBLIC_DOCTOR_REGISTRATION: 'true',
+    });
+    expect(withPublicDocReg.success).toBe(false);
+
+    const withPublicReset = envSchema.safeParse({
+      ...validStagingBase,
+      EMAIL_PROVIDER: 'resend',
+      RESEND_API_KEY: 're_staging_valid_key_1234567890',
+      EMAIL_FROM: 'noreply@aarogyadamu.net',
+      ALLOW_PUBLIC_PASSWORD_RESET: 'true',
+    });
+    expect(withPublicReset.success).toBe(false);
+  });
+
   test('validates staging deployment with Google Vision and Resend when configured', () => {
     const stagingWithResend = {
       ...validStagingBase,
@@ -77,7 +115,7 @@ describe('Environment Policy: Staging vs Production Validation', () => {
     }
   });
 
-  test('rejects actual production when MEDICAL_REPORT_OCR_PROVIDER is synthetic', () => {
+  test('rejects actual production when MEDICAL_REPORT_OCR_PROVIDER is synthetic or Sarvam key missing', () => {
     const prodWithSyntheticOcr = {
       ...validStagingBase,
       APP_ENV: 'production',
@@ -90,7 +128,22 @@ describe('Environment Policy: Staging vs Production Validation', () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       const messages = result.error.issues.map((i) => i.message);
-      expect(messages).toContain('Production medical report OCR must use MEDICAL_REPORT_OCR_PROVIDER=google_vision.');
+      expect(messages).toContain('Production medical report OCR must use MEDICAL_REPORT_OCR_PROVIDER=sarvam or google_vision.');
+    }
+
+    const prodWithMissingSarvamKey = {
+      ...validStagingBase,
+      APP_ENV: 'production',
+      EMAIL_PROVIDER: 'resend',
+      RESEND_API_KEY: 're_prod_valid_key_1234567890',
+      EMAIL_FROM: 'care@aarogyadamu.org',
+      MEDICAL_REPORT_OCR_PROVIDER: 'sarvam',
+    };
+    const missingKeyRes = envSchema.safeParse(prodWithMissingSarvamKey);
+    expect(missingKeyRes.success).toBe(false);
+    if (!missingKeyRes.success) {
+      const messages = missingKeyRes.error.issues.map((i) => i.message);
+      expect(messages).toContain('Production Sarvam OCR requires SARVAM_API_KEY to be configured.');
     }
   });
 
@@ -105,11 +158,25 @@ describe('Environment Policy: Staging vs Production Validation', () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       const messages = result.error.issues.map((i) => i.message);
-      expect(messages).toContain('Production password-reset delivery requires EMAIL_PROVIDER=resend.');
+      expect(messages).toContain('Production email delivery requires EMAIL_PROVIDER=resend.');
     }
   });
 
-  test('validates actual production when both Google Vision and Resend are configured properly', () => {
+  test('validates actual production with Sarvam OCR or Google Vision plus Resend', () => {
+    const fullProductionSarvam = {
+      ...validStagingBase,
+      APP_ENV: 'production',
+      MEDICAL_REPORT_OCR_PROVIDER: 'sarvam',
+      SARVAM_API_KEY: 'sk_prod_sarvam_valid_key_abcdef',
+      EMAIL_PROVIDER: 'resend',
+      RESEND_API_KEY: 're_prod_secure_api_key_abcdef123456',
+      EMAIL_FROM: 'notifications@aarogyadamu.org',
+      ALLOWED_ORIGINS: 'https://doctor.aarogyadamu.org,https://api.aarogyadamu.org',
+      WEB_APP_URL: 'https://doctor.aarogyadamu.org',
+      API_PUBLIC_URL: 'https://api.aarogyadamu.org',
+    };
+    expect(envSchema.safeParse(fullProductionSarvam).success).toBe(true);
+
     const fullProduction = {
       ...validStagingBase,
       APP_ENV: 'production',
@@ -166,5 +233,34 @@ describe('Environment Policy: Staging vs Production Validation', () => {
     const wildcardTrustProxy = { ...validStagingBase, TRUST_PROXY: 'true' };
     const wildcardTrustProxyResult = envSchema.safeParse(wildcardTrustProxy);
     expect(wildcardTrustProxyResult.success).toBe(false);
+
+    // 8. Owner role neondb_owner in runtime DATABASE_URL is rejected
+    const ownerRuntimeDb = {
+      ...validStagingBase,
+      DATABASE_URL: 'postgresql://neondb_owner:rotate_pass_123456@ep-demo-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require',
+    };
+    expect(envSchema.safeParse(ownerRuntimeDb).success).toBe(false);
+
+    // 9. EXPECTED_NEON_ENDPOINT enforces matching pooled aarogyadamu_app DATABASE_URL and rejects -pooler/protocol in endpoint var
+    const badEndpointProtocol = {
+      ...validStagingBase,
+      EXPECTED_NEON_ENDPOINT: 'https://ep-demo.ap-southeast-1.aws.neon.tech',
+    };
+    expect(envSchema.safeParse(badEndpointProtocol).success).toBe(false);
+
+    const mismatchEndpointDb = {
+      ...validStagingBase,
+      EXPECTED_NEON_ENDPOINT: 'ep-new-demo.ap-southeast-1.aws.neon.tech',
+      DATABASE_URL: 'postgresql://aarogyadamu_app:strong_prod_pass_1234@ep-old-staging-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require',
+    };
+    expect(envSchema.safeParse(mismatchEndpointDb).success).toBe(false);
+
+    const matchedEndpointDb = {
+      ...validStagingBase,
+      EXPECTED_NEON_ENDPOINT: 'ep-new-demo.ap-southeast-1.aws.neon.tech',
+      DATABASE_URL: 'postgresql://aarogyadamu_app:strong_prod_pass_1234@ep-new-demo-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require',
+      MIGRATION_DATABASE_URL: 'postgresql://neondb_owner:owner_pass_1234@ep-new-demo.ap-southeast-1.aws.neon.tech/neondb?sslmode=require',
+    };
+    expect(envSchema.safeParse(matchedEndpointDb).success).toBe(true);
   });
 });

@@ -6,6 +6,16 @@ import { env } from '../config/env';
 
 let cachedStorageClient: Storage | null = null;
 
+export class PrivateStorageUnavailableError extends Error {
+  readonly status = 503;
+  readonly code = 'DURABLE_STORAGE_UNAVAILABLE';
+
+  constructor(message = 'Persistent medical document storage is unavailable because no durable private storage bucket is configured.') {
+    super(message);
+    this.name = 'PrivateStorageUnavailableError';
+  }
+}
+
 /**
  * Builds @google-cloud/* client options supporting both mounted key files
  * (GOOGLE_APPLICATION_CREDENTIALS / ADC) and inline JSON secrets (Render env vars).
@@ -23,6 +33,17 @@ export function getGoogleCloudClientOptions(): { projectId?: string; credentials
 
 export function isCloudStorageEnabled(): boolean {
   return Boolean(env.GOOGLE_CLOUD_STORAGE_BUCKET);
+}
+
+/**
+ * In deployed environments (NODE_ENV=production, including Render Free staging),
+ * local ephemeral filesystems must NEVER be used as permanent document storage.
+ */
+export function isDurableStorageAvailable(): boolean {
+  if (env.NODE_ENV === 'production' || process.env.NODE_ENV === 'production') {
+    return isCloudStorageEnabled();
+  }
+  return true;
 }
 
 function getStorageClient(): Storage {
@@ -196,6 +217,12 @@ export async function savePrivateFile(
       storagePath: `gs://${bucketName}/${objectKey}`,
       fileSizeBytes: buffer.length,
     };
+  }
+
+  if (!isDurableStorageAvailable()) {
+    throw new PrivateStorageUnavailableError(
+      'Persistent medical document upload is disabled in this hosted demo because durable cloud storage is not configured. Use temporary Sarvam OCR extraction instead.',
+    );
   }
 
   initStorage();

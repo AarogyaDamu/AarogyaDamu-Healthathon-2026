@@ -29,7 +29,6 @@ interface AuthContextType {
   sessionNotice: string | null;
   clearSessionNotice: () => void;
   login: (email: string, password: string) => Promise<void>;
-  register: (email: string, password: string, fullName: string, invitationToken: string) => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -211,26 +210,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [acceptDoctorSession]);
 
-  const register = useCallback(async (
-    email: string,
-    password: string,
-    fullName: string,
-    invitationToken: string,
-  ) => {
-    setAuthenticating(true);
-    setAccessDenied(false);
-    setSessionNotice(null);
-    try {
-      const response = await apiFetch<AuthResponse>('/auth/doctor/register', {
-        method: 'POST',
-        body: JSON.stringify({ email, password, fullName, invitationToken }),
-      });
-      await acceptDoctorSession(response);
-    } finally {
-      setAuthenticating(false);
-    }
-  }, [acceptDoctorSession]);
-
   const logout = useCallback(async () => {
     let logoutError: unknown = null;
     try {
@@ -266,9 +245,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     sessionNotice,
     clearSessionNotice,
     login,
-    register,
     logout,
-  }), [user, profile, token, loading, authenticating, accessDenied, sessionNotice, clearSessionNotice, login, register, logout]);
+  }), [user, profile, token, loading, authenticating, accessDenied, sessionNotice, clearSessionNotice, login, logout]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

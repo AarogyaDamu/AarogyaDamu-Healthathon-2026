@@ -351,8 +351,6 @@ async function mobileApiFetchInternal<T = unknown>(
       'auth/login',
       'auth/register',
       'auth/refresh',
-      'auth/forgot-password',
-      'auth/reset-password',
     ];
     if (allowRefresh && !refreshExcludedPaths.includes(normalizedPath)) {
       const session = await rotateMobileRefreshToken();

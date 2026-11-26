@@ -14,26 +14,40 @@ describe('Group A RLS Security Regression Suite (PostgreSQL 18 & aarogyadamu_app
   let nurse: any;
 
   beforeAll(async () => {
-    const rawUrl = process.env.DATABASE_URL || 'postgresql://aarogyadamu_app:AarogyaAppRuntime2026!@127.0.0.1:55432/aarogyadamu_test?schema=public';
-    const targetDb = rawUrl.includes('rls_demo') ? 'aarogyadamu_rls_demo' : 'aarogyadamu_test';
+    const rawUrl =
+      process.env.DATABASE_URL ||
+      'postgresql://aarogyadamu_app:AarogyaAppRuntime2026!@127.0.0.1:55432/aarogyadamu_test?schema=public';
+    const parsedRaw = new URL(rawUrl);
+    const targetDb = parsedRaw.pathname.replace(/^\//, '').split('?')[0] || 'aarogyadamu_test';
 
     function setDbAndAuth(url: string, db: string, username?: string, password?: string) {
-      try {
-        const u = new URL(url);
-        u.pathname = '/' + db;
-        if (username !== undefined) u.username = username;
-        if (password !== undefined) u.password = password;
-        return u.toString();
-      } catch {
-        return url;
-      }
+      const u = new URL(url);
+      u.pathname = '/' + db;
+      if (username !== undefined) u.username = username;
+      if (password !== undefined) u.password = password;
+      return u.toString();
     }
 
-    const appUrl = setDbAndAuth(rawUrl, targetDb, 'aarogyadamu_app', process.env.APP_RUNTIME_DB_PASSWORD || 'AarogyaAppRuntime2026!');
-    const defaultAdminUrl = rawUrl.includes('aarogyadamu_app:')
-      ? rawUrl.replace('aarogyadamu_app:AarogyaAppRuntime2026!', 'aarogyadamu_dev:local-audit-password')
-      : rawUrl;
-    const adminUrl = setDbAndAuth(process.env.ADMIN_DATABASE_URL || defaultAdminUrl, targetDb);
+    const appUrl = setDbAndAuth(
+      rawUrl,
+      targetDb,
+      'aarogyadamu_app',
+      process.env.APP_RUNTIME_DB_PASSWORD || 'AarogyaAppRuntime2026!'
+    );
+    const explicitAdminUrl = process.env.ADMIN_DATABASE_URL?.trim();
+    const defaultAdminUrl =
+      decodeURIComponent(parsedRaw.username) === 'aarogyadamu_app'
+        ? setDbAndAuth(rawUrl, targetDb, 'aarogyadamu_dev', 'local-audit-password')
+        : setDbAndAuth(rawUrl, targetDb);
+    const adminUrl = setDbAndAuth(explicitAdminUrl || defaultAdminUrl, targetDb);
+
+    const parsedApp = new URL(appUrl);
+    const parsedAdmin = new URL(adminUrl);
+    if (parsedApp.host !== parsedAdmin.host || parsedApp.pathname !== parsedAdmin.pathname) {
+      throw new Error(
+        `RLS regression target mismatch: app connection targets ${parsedApp.host}${parsedApp.pathname}, while admin connection targets ${parsedAdmin.host}${parsedAdmin.pathname}.`
+      );
+    }
 
     appPrisma = new PrismaClient({ datasources: { db: { url: appUrl } } });
     adminPrisma = new PrismaClient({ datasources: { db: { url: adminUrl } } });
@@ -61,6 +75,17 @@ describe('Group A RLS Security Regression Suite (PostgreSQL 18 & aarogyadamu_app
     pilotPatient = await ensureFixtureUser(`rls.groupa.t2d.${ts}@aarogyadamu.local`, 'RLS GroupA Pilot T2D', false, true);
     caregiverUser = await ensureFixtureUser(`rls.groupa.caregiver.${ts}@family.aarogyadamu.local`, 'RLS GroupA Caregiver', false, false);
     nurse = await ensureFixtureUser(`rls.groupa.nurse.${ts}@aarogyadamu.local`, 'RLS GroupA Nurse', true, true);
+
+    const visiblePatient = await withTenantTransaction(
+      appPrisma,
+      { userId: patient1.id, role: 'PATIENT' },
+      async (tx) => tx.user.findUnique({ where: { id: patient1.id }, select: { id: true } })
+    );
+    if (visiblePatient?.id !== patient1.id) {
+      throw new Error(
+        `RLS regression fixture visibility check failed on ${parsedApp.host}${parsedApp.pathname}: admin-seeded patient ${patient1.id} is not visible to appPrisma.`
+      );
+    }
   });
 
   afterAll(async () => {
@@ -123,7 +148,7 @@ describe('Group A RLS Security Regression Suite (PostgreSQL 18 & aarogyadamu_app
 
   test('04. AUDIT_RECORDER cross-patient injection rejection (Tenant Isolation)', async () => {
     const eventId = crypto.randomUUID();
-    let blocked = false;
+    let auditError: any = null;
     try {
       await withTenantTransaction(
         appPrisma,
@@ -146,15 +171,16 @@ describe('Group A RLS Security Regression Suite (PostgreSQL 18 & aarogyadamu_app
         }
       );
     } catch (err: any) {
-      if (err.message.includes('42501') || err.message.includes('row-level security')) {
-        blocked = true;
-      }
+      auditError = err;
     }
-    expect(blocked).toBe(true);
+    expect(auditError).not.toBeNull();
+    const auditErrMsg = String(auditError?.message ?? '');
+    expect(auditErrMsg).toContain('42501');
+    expect(auditErrMsg).toContain('row-level security');
   });
 
   test('05. User Column Guard Trigger (trg_user_column_guard) rejects isSyntheticDemo mutation', async () => {
-    let blocked = false;
+    let userGuardError: any = null;
     try {
       await withTenantTransaction(appPrisma, { userId: doctor.id, role: 'DOCTOR' }, async (tx) => {
         await tx.user.update({
@@ -163,15 +189,16 @@ describe('Group A RLS Security Regression Suite (PostgreSQL 18 & aarogyadamu_app
         });
       });
     } catch (err: any) {
-      if (err.message.includes('42501') && err.message.includes('unauthorized mutation of User.isSyntheticDemo')) {
-        blocked = true;
-      }
+      userGuardError = err;
     }
-    expect(blocked).toBe(true);
+    expect(userGuardError).not.toBeNull();
+    const userErrMsg = String(userGuardError?.message ?? '');
+    expect(userErrMsg).toContain('42501');
+    expect(userErrMsg).toContain('unauthorized mutation of User.isSyntheticDemo');
   });
 
   test('06. HealthDocument Column Guard Trigger rejects patient ownership transfer', async () => {
-    const guardDocId = 'jest-guard-doc-' + Date.now();
+    const guardDocId = 'jest-guard-doc-' + crypto.randomUUID();
     await adminPrisma.healthDocument.create({
       data: {
         id: guardDocId,
@@ -185,7 +212,7 @@ describe('Group A RLS Security Regression Suite (PostgreSQL 18 & aarogyadamu_app
       },
     });
 
-    let blocked = false;
+    let docGuardError: any = null;
     try {
       await withTenantTransaction(appPrisma, { userId: patient1.id, role: 'PATIENT' }, async (tx) => {
         await tx.healthDocument.update({
@@ -194,11 +221,12 @@ describe('Group A RLS Security Regression Suite (PostgreSQL 18 & aarogyadamu_app
         });
       });
     } catch (err: any) {
-      if (err.message.includes('42501') && err.message.includes('cannot reassign HealthDocument patient ownership')) {
-        blocked = true;
-      }
+      docGuardError = err;
     }
-    expect(blocked).toBe(true);
+    expect(docGuardError).not.toBeNull();
+    const docErrMsg = String(docGuardError?.message ?? '');
+    expect(docErrMsg).toContain('42501');
+    expect(docErrMsg).toContain('cannot reassign HealthDocument patient ownership');
   });
 });
 

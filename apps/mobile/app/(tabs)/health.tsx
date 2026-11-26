@@ -174,6 +174,20 @@ export default function HealthVaultScreen() {
 
   // Tab 4: Medical Reports State
   const [reports, setReports] = useState<MedicalDoc[]>([]);
+  const [documentCapabilities, setDocumentCapabilities] = useState<{
+    persistentStorageAvailable: boolean;
+    temporaryOcrAvailable: boolean;
+    ocrProvider: string;
+    ocrConfigured: boolean;
+  } | null>(null);
+  const [temporaryOcrResult, setTemporaryOcrResult] = useState<{
+    title: string;
+    engine: string;
+    provider: string;
+    rawText: string;
+    plainSummary: string;
+    temporaryCleanedUp: boolean;
+  } | null>(null);
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [uploadTitle, setUploadTitle] = useState('');
   const [uploadFacility, setUploadFacility] = useState('');
@@ -247,8 +261,17 @@ export default function HealthVaultScreen() {
 
       // Load Medical Reports
       try {
-        const docRes = await mobileApiFetch<{ documents: MedicalDoc[] }>('/documents');
+        const docRes = await mobileApiFetch<{
+          documents: MedicalDoc[];
+          capabilities?: {
+            persistentStorageAvailable: boolean;
+            temporaryOcrAvailable: boolean;
+            ocrProvider: string;
+            ocrConfigured: boolean;
+          };
+        }>('/documents');
         if (docRes?.documents) setReports(docRes.documents);
+        if (docRes?.capabilities) setDocumentCapabilities(docRes.capabilities);
       } catch {
         // Doc fetch fallback
       }
@@ -277,9 +300,18 @@ export default function HealthVaultScreen() {
     const timer = setInterval(() => {
       if (requestInProgress) return;
       requestInProgress = true;
-      void mobileApiFetch<{ documents: MedicalDoc[] }>('/documents')
+      void mobileApiFetch<{
+        documents: MedicalDoc[];
+        capabilities?: {
+          persistentStorageAvailable: boolean;
+          temporaryOcrAvailable: boolean;
+          ocrProvider: string;
+          ocrConfigured: boolean;
+        };
+      }>('/documents')
         .then((response) => {
           if (response?.documents) setReports(response.documents);
+          if (response?.capabilities) setDocumentCapabilities(response.capabilities);
         })
         .catch(() => undefined)
         .finally(() => {
@@ -294,9 +326,18 @@ export default function HealthVaultScreen() {
     if (activeTab !== 'MEDICAL_REPORTS') return;
     let active = true;
     const refreshReports = () => {
-      void mobileApiFetch<{ documents: MedicalDoc[] }>('/documents')
+      void mobileApiFetch<{
+        documents: MedicalDoc[];
+        capabilities?: {
+          persistentStorageAvailable: boolean;
+          temporaryOcrAvailable: boolean;
+          ocrProvider: string;
+          ocrConfigured: boolean;
+        };
+      }>('/documents')
         .then((response) => {
           if (active && response?.documents) setReports(response.documents);
+          if (active && response?.capabilities) setDocumentCapabilities(response.capabilities);
         })
         .catch(() => undefined);
     };
@@ -486,8 +527,9 @@ export default function HealthVaultScreen() {
     }
     setSubmittingUpload(true);
     try {
+      const title = uploadTitle.trim() || selectedReportFile.name;
       const formData = new FormData();
-      formData.append('title', uploadTitle.trim() || selectedReportFile.name);
+      formData.append('title', title);
       if (uploadFacility.trim()) formData.append('issuingFacility', uploadFacility.trim());
       if (Platform.OS === 'web') {
         const file = selectedReportFile.file ?? await fetch(selectedReportFile.uri).then((response) => response.blob());
@@ -498,6 +540,35 @@ export default function HealthVaultScreen() {
           name: selectedReportFile.name,
           type: selectedReportFile.mimeType,
         } as unknown as Blob);
+      }
+
+      const persistentAvailable = documentCapabilities?.persistentStorageAvailable ?? true;
+      if (!persistentAvailable) {
+        const tempResponse = await mobileApiFetch<{
+          success: boolean;
+          engine: string;
+          provider: string;
+          rawOcrText: string;
+          plainSummary: string;
+          temporaryCleanedUp: boolean;
+        }>('/ocr/extract-temporary', {
+          method: 'POST',
+          body: formData,
+        });
+        setTemporaryOcrResult({
+          title,
+          engine: tempResponse.engine,
+          provider: tempResponse.provider,
+          rawText: tempResponse.rawOcrText,
+          plainSummary: tempResponse.plainSummary,
+          temporaryCleanedUp: tempResponse.temporaryCleanedUp,
+        });
+        showToast('Temporary Sarvam OCR complete. Original file scrubbed and not stored permanently.');
+        setShowUploadModal(false);
+        setSelectedReportFile(null);
+        setUploadTitle('');
+        setUploadFacility('');
+        return;
       }
 
       const response = await mobileApiFetch<{
@@ -514,7 +585,7 @@ export default function HealthVaultScreen() {
       setUploadFacility('');
       await loadVaultData();
     } catch (error) {
-      showToast(error instanceof Error ? error.message : 'Unable to upload the report. Check your connection and try again.');
+      showToast(error instanceof Error ? error.message : 'Unable to process the report. Check your connection and try again.');
     } finally {
       setSubmittingUpload(false);
     }
@@ -912,8 +983,33 @@ export default function HealthVaultScreen() {
                   activeOpacity={0.88}
                 >
                   <FileUp color={theme.colors.white} size={20} />
-                  <Text style={styles.primaryActionBtnText}>Upload Report Photo or PDF</Text>
+                  <Text style={styles.primaryActionBtnText}>
+                    {documentCapabilities && !documentCapabilities.persistentStorageAvailable
+                      ? 'Scan Report (Temp Sarvam OCR)'
+                      : 'Upload Report Photo or PDF'}
+                  </Text>
                 </TouchableOpacity>
+
+                {temporaryOcrResult ? (
+                  <View style={styles.syntheticNotice}>
+                    <View style={{ flex: 1, gap: 6 }}>
+                      <Text style={styles.syntheticNoticeText}>
+                        Temporary Sarvam OCR Result — {temporaryOcrResult.title} (Original file was scrubbed and not saved permanently)
+                      </Text>
+                      {temporaryOcrResult.plainSummary ? (
+                        <Text style={styles.reviewBodyText}>{temporaryOcrResult.plainSummary}</Text>
+                      ) : null}
+                      {temporaryOcrResult.rawText ? (
+                        <Text style={styles.reportExtractedText} numberOfLines={8}>
+                          {temporaryOcrResult.rawText}
+                        </Text>
+                      ) : null}
+                      <TouchableOpacity onPress={() => setTemporaryOcrResult(null)} style={{ alignSelf: 'flex-start' }}>
+                        <Text style={[styles.abhaSecondaryText, { color: theme.colors.mascotOrange }]}>Dismiss Temporary Result</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                ) : null}
 
                 <View style={styles.abhaCard}>
                   <Text style={styles.abhaEyebrow}>ABHA SHOWCASE SANDBOX</Text>
@@ -1261,7 +1357,13 @@ export default function HealthVaultScreen() {
                     {selectedReportForReview?.processingStatus === 'COMPLETED' ? 'Completed' : selectedReportForReview?.processingStatus.replace(/_/g, ' ')}
                   </Text>
                   <Text style={styles.reportFacility}>
-                    Engine: {selectedReportForReview?.extractedData?.engine === 'SARVAM_DOCUMENT_AI' ? 'Sarvam Document AI V1' : 'Local Fallback Parser (Offline)'}
+                    Engine:{' '}
+                    {selectedReportForReview?.extractedData?.engine === 'SARVAM_DOCUMENT_AI'
+                      ? 'Sarvam Document AI V1'
+                      : selectedReportForReview?.extractedData?.isSynthetic ||
+                        selectedReportForReview?.extractedData?.provider?.includes('SYNTHETIC')
+                      ? 'Synthetic Demo Preview'
+                      : 'Document Metadata Only'}
                   </Text>
                 </View>
 
@@ -1428,7 +1530,9 @@ export default function HealthVaultScreen() {
             <View style={styles.uploadInfoBox}>
               <FileUp color={theme.colors.primary} size={24} />
               <Text style={styles.uploadInfoText}>
-                The original is retained in your private records. Google Cloud Vision extracts text only; check the extracted text against your report.
+                {documentCapabilities && !documentCapabilities.persistentStorageAvailable
+                  ? 'Temporary Sarvam OCR mode: your file is processed strictly in memory and scrubbed right after text extraction. No permanent file is stored without cloud storage.'
+                  : 'The original is retained in your private records. Sarvam OCR extracts text only; check the extracted text against your report.'}
               </Text>
             </View>
 
@@ -1441,7 +1545,11 @@ export default function HealthVaultScreen() {
               {submittingUpload ? (
                 <ActivityIndicator color={theme.colors.white} />
               ) : (
-                <Text style={styles.modalSubmitBtnText}>Upload and Extract Text</Text>
+                <Text style={styles.modalSubmitBtnText}>
+                  {documentCapabilities && !documentCapabilities.persistentStorageAvailable
+                    ? 'Extract Text (Temporary Sarvam OCR)'
+                    : 'Upload and Extract Text'}
+                </Text>
               )}
             </TouchableOpacity>
           </View>

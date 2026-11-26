@@ -73,6 +73,22 @@ EXPO_PUBLIC_API_URL=https://app.example.com/api
 
 ---
 
+## 2A. Zero-Cost Hosted Demo Profile (Render Free + Neon Free)
+
+When deploying a public demonstration using **Render Free** (`aarogyadamu-api`, `aarogyadamu-doctor-web`, `aarogyadamu-patient-web`) and **Neon Free** (`aarogyadamu-release-demo`) without paid Resend email, Google Cloud Vision, or GCS storage subscriptions, set:
+
+- `NODE_ENV="production"`
+- `APP_ENV="staging"` (and matching `VITE_APP_ENV="staging"` / `EXPO_PUBLIC_APP_ENV="staging"`)
+- `ALLOW_DEMO_AUTH="false"` and `ENABLE_DEV_DEMO_MODE="false"`
+- `ALLOW_PUBLIC_DOCTOR_REGISTRATION="false"` and `ALLOW_PUBLIC_PASSWORD_RESET="false"`
+- `EMAIL_PROVIDER="disabled"`
+- `MEDICAL_REPORT_OCR_PROVIDER="sarvam"` with `SARVAM_API_KEY` configured in Render secrets
+- `EXPECTED_NEON_ENDPOINT` set to the direct hostname of `aarogyadamu-release-demo` (hostname only, without protocol, credentials, `-pooler`, path, or query string), `EXPECTED_NEON_OWNER_ROLE="neondb_owner"`, `MIGRATION_DATABASE_URL` pointing to the direct `neondb_owner` SSL endpoint, `DATABASE_URL` pointing to the pooled (`-pooler`) `aarogyadamu_app` SSL endpoint, and rotated `APP_RUNTIME_DB_PASSWORD` (>=16 chars).
+
+Startup automation (`npm run db:deploy:hosted`) validates endpoint identity, SSL, and URL separation (refusing `ADMIN_DATABASE_URL` or `DATABASE_URL` fallbacks), pre-provisions `aarogyadamu_app` (`LOGIN`) and optional `aarogyadamu_migrator` (`NOLOGIN`, no password) before historical migrations run, applies `prisma migrate deploy`, synchronizes `_security_vault.rls_signing_key` and `APP_RUNTIME_DB_PASSWORD` (failing closed on errors), and verifies `aarogyadamu_app` authentication, `_security_vault` `42501` denial, and 0 unscoped rows before binding `$PORT`. Permanent report uploads return `503 DURABLE_STORAGE_UNAVAILABLE` until `GOOGLE_CLOUD_STORAGE_BUCKET` is configured; in-memory temporary OCR remains available via `POST /api/ocr/extract-temporary`, and administrator-only doctor onboarding is exposed through `POST /api/auth/admin/doctors` or `POST /api/auth/doctor-invitations`.
+
+---
+
 ## 3. Database Deployment & Migrations
 
 ```bash
@@ -193,5 +209,5 @@ Android Manifest invariants configured in `apps/mobile/app.json`:
 | :--- | :--- | :--- |
 | `GET /health` | Basic liveness probe for load balancers | `200 OK` `{"status":"healthy"}` |
 | `GET /health/live` | Process liveness check | `200 OK` |
-| `GET /health/ready` | Readiness probe (verifies database connectivity) | `200 OK` |
+| `GET /health/ready` | Readiness probe (verifies database connectivity, restricted runtime role, RLS/triggers, and integration capability truth) | `200 OK` / `503` |
 | `GET /api/fhir/r4/metadata` | HL7 FHIR R4 CapabilityStatement | `200 OK` (FHIR JSON) |

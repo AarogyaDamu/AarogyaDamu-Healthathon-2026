@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import zlib from 'zlib';
 import { prisma } from '../db/prisma';
+import { env } from '../config/env';
 import {
   OcrDocumentType,
   ExtractedLab,
@@ -9,9 +10,26 @@ import {
   OcrUsageSummary,
 } from '@aarogyadamu/contracts';
 
-const SARVAM_API_KEY = process.env.SARVAM_API_KEY || '';
 const SARVAM_DOC_AI_BASE = 'https://api.sarvam.ai/doc-ai/v1';
 const INITIAL_CREDIT_BUDGET = 25000;
+
+export function getConfiguredSarvamApiKey(): string {
+  return (process.env.SARVAM_API_KEY ?? env.SARVAM_API_KEY ?? '').trim();
+}
+
+export class SarvamOcrUnavailableError extends Error {
+  readonly status = 503;
+  readonly code: string;
+
+  constructor(
+    message: string,
+    code: string = 'SARVAM_OCR_UNAVAILABLE',
+  ) {
+    super(message);
+    this.name = 'SarvamOcrUnavailableError';
+    this.code = code;
+  }
+}
 
 /**
  * Strips NUL bytes (0x00), control characters (other than tab/newline/CR),
@@ -180,6 +198,64 @@ export class SarvamOcrService {
   }
 
   /**
+   * Returns explicit Sarvam OCR configuration state without claiming external liveliness.
+   */
+  static getAvailability(): {
+    configuredProvider: string;
+    sarvamEnabled: boolean;
+    credentialsConfigured: boolean;
+  } {
+    const provider = process.env.MEDICAL_REPORT_OCR_PROVIDER ?? env.MEDICAL_REPORT_OCR_PROVIDER;
+    const key = getConfiguredSarvamApiKey();
+    return {
+      configuredProvider: provider,
+      sarvamEnabled: provider === 'sarvam',
+      credentialsConfigured: key.length >= 10,
+    };
+  }
+
+  /**
+   * Probes live Sarvam Document Intelligence API authentication reachability.
+   * Does not claim operational merely because SARVAM_API_KEY env var is set.
+   */
+  static async probeAvailability(): Promise<{
+    status: 'operational' | 'unconfigured' | 'unavailable';
+    reason?: string;
+  }> {
+    const provider = process.env.MEDICAL_REPORT_OCR_PROVIDER ?? env.MEDICAL_REPORT_OCR_PROVIDER;
+    const key = getConfiguredSarvamApiKey();
+    if (provider !== 'sarvam' || key.length < 10) {
+      return {
+        status: 'unconfigured',
+        reason: provider !== 'sarvam'
+          ? `MEDICAL_REPORT_OCR_PROVIDER=${provider}`
+          : 'SARVAM_API_KEY is missing or too short',
+      };
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    try {
+      const res = await fetch(`${SARVAM_DOC_AI_BASE}/job/00000000-0000-0000-0000-000000000000/status`, {
+        method: 'GET',
+        headers: { 'api-subscription-key': key },
+        signal: controller.signal,
+      });
+      if (res.status === 401 || res.status === 403) {
+        return { status: 'unavailable', reason: `Sarvam rejected credentials (${res.status})` };
+      }
+      if (res.status >= 500) {
+        return { status: 'unavailable', reason: `Sarvam server error (${res.status})` };
+      }
+      return { status: 'operational' };
+    } catch (err: any) {
+      return { status: 'unavailable', reason: err?.message || 'Sarvam network probe failed' };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
    * Calls official Sarvam Document Intelligence V1 API:
    * 1. POST /doc-ai/v1/job/parse (multipart form-data)
    * 2. Poll GET /doc-ai/v1/job/{job_id}/status
@@ -190,8 +266,9 @@ export class SarvamOcrService {
     fileName: string,
     mimeType: string,
   ): Promise<{ text: string; pagesProcessed: number; sarvamJobId: string }> {
-    if (!SARVAM_API_KEY || SARVAM_API_KEY.length < 10) {
-      throw new Error('SARVAM_API_KEY is not configured or invalid');
+    const sarvamApiKey = getConfiguredSarvamApiKey();
+    if (!sarvamApiKey || sarvamApiKey.length < 10) {
+      throw new SarvamOcrUnavailableError('Sarvam OCR is unavailable because SARVAM_API_KEY is not configured.');
     }
 
     const formData = new FormData();
@@ -203,14 +280,17 @@ export class SarvamOcrService {
     const submitRes = await fetch(submitUrl, {
       method: 'POST',
       headers: {
-        'api-subscription-key': SARVAM_API_KEY,
+        'api-subscription-key': sarvamApiKey,
       },
       body: formData,
     });
 
     if (!submitRes.ok) {
       const errText = await submitRes.text();
-      throw new Error(`Sarvam parse submission failed (${submitRes.status}): ${errText.slice(0, 200)}`);
+      throw new SarvamOcrUnavailableError(
+        `Sarvam parse submission failed (${submitRes.status}): ${errText.slice(0, 200)}`,
+        submitRes.status === 401 || submitRes.status === 403 ? 'SARVAM_AUTH_FAILED' : 'SARVAM_REQUEST_FAILED',
+      );
     }
 
     const submitData: any = await submitRes.json();
@@ -237,13 +317,13 @@ export class SarvamOcrService {
       const statusRes = await fetch(`${SARVAM_DOC_AI_BASE}/job/${sarvamJobId}/status`, {
         method: 'GET',
         headers: {
-          'api-subscription-key': SARVAM_API_KEY,
+          'api-subscription-key': sarvamApiKey,
         },
       });
 
       if (!statusRes.ok) {
         const err = await statusRes.text();
-        throw new Error(`Sarvam job status check failed (${statusRes.status}): ${err.slice(0, 200)}`);
+        throw new SarvamOcrUnavailableError(`Sarvam job status check failed (${statusRes.status}): ${err.slice(0, 200)}`);
       }
 
       const statusData: any = await statusRes.json();
@@ -252,26 +332,26 @@ export class SarvamOcrService {
       if (jobStatus === 'completed' || jobStatus === 'partially_completed') {
         break;
       } else if (jobStatus === 'failed' || jobStatus === 'rejected') {
-        throw new Error(statusData.error || statusData.message || `Sarvam job terminated with status: ${jobStatus}`);
+        throw new SarvamOcrUnavailableError(statusData.error || statusData.message || `Sarvam job terminated with status: ${jobStatus}`);
       }
       pollIntervalMs = Math.min(4000, pollIntervalMs + 500);
     }
 
     if (jobStatus !== 'completed' && jobStatus !== 'partially_completed') {
-      throw new Error(`Sarvam document processing timed out (status: ${jobStatus})`);
+      throw new SarvamOcrUnavailableError(`Sarvam document processing timed out (status: ${jobStatus})`);
     }
 
     // 3. Retrieve download URL
     const downloadRes = await fetch(`${SARVAM_DOC_AI_BASE}/job/${sarvamJobId}/download-url`, {
       method: 'GET',
       headers: {
-        'api-subscription-key': SARVAM_API_KEY,
+        'api-subscription-key': sarvamApiKey,
       },
     });
 
     if (!downloadRes.ok) {
       const err = await downloadRes.text();
-      throw new Error(`Sarvam download-url fetch failed (${downloadRes.status}): ${err.slice(0, 200)}`);
+      throw new SarvamOcrUnavailableError(`Sarvam download-url fetch failed (${downloadRes.status}): ${err.slice(0, 200)}`);
     }
 
     const downloadData: any = await downloadRes.json();
@@ -432,8 +512,97 @@ export class SarvamOcrService {
   }
 
   /**
-   * Submits a document to Sarvam Document Intelligence API or structured fallback parser.
-   * Accurately distinguishes SARVAM_DOCUMENT_AI vs LOCAL_FALLBACK.
+   * Processes an uploaded buffer temporarily in memory using Sarvam Document Intelligence V1.
+   * Zero files are stored persistently, and buffer bytes are scrubbed upon completion.
+   * Fails closed with SarvamOcrUnavailableError whenever credentials or provider fail.
+   */
+  static async processTemporaryBuffer(
+    fileBuffer: Buffer,
+    mimeType: string = 'application/pdf',
+    originalFileName?: string,
+  ): Promise<{
+    success: true;
+    mode: 'TEMPORARY_IN_MEMORY';
+    persistentStorage: false;
+    temporaryCleanedUp: true;
+    engine: 'SARVAM_DOCUMENT_AI';
+    provider: 'SARVAM_DOC_AI';
+    documentType: OcrDocumentType;
+    pageCount: number;
+    sarvamJobId: string;
+    rawOcrText: string;
+    structuredLabs: ExtractedLab;
+    plainSummary: string;
+    doctorAdvice: string[];
+    processingDurationMs: number;
+  }> {
+    if (!fileBuffer || fileBuffer.length === 0) {
+      throw new Error('Document file content is required for temporary OCR processing.');
+    }
+
+    const startTime = Date.now();
+    try {
+      const ocrProvider = process.env.MEDICAL_REPORT_OCR_PROVIDER ?? env.MEDICAL_REPORT_OCR_PROVIDER;
+      if (ocrProvider !== 'sarvam') {
+        throw new SarvamOcrUnavailableError(
+          `Sarvam OCR is inactive (MEDICAL_REPORT_OCR_PROVIDER=${ocrProvider}). Configure MEDICAL_REPORT_OCR_PROVIDER=sarvam.`,
+        );
+      }
+
+      const sarvamApiKey = getConfiguredSarvamApiKey();
+      if (!sarvamApiKey || sarvamApiKey.length < 10) {
+        throw new SarvamOcrUnavailableError(
+          'Sarvam OCR is unavailable: SARVAM_API_KEY is not configured.',
+        );
+      }
+
+      const defaultExt = mimeType.includes('png')
+        ? 'png'
+        : mimeType.includes('jpeg') || mimeType.includes('jpg')
+        ? 'jpg'
+        : mimeType.includes('webp')
+        ? 'webp'
+        : 'pdf';
+      const safeName = originalFileName ? path.basename(originalFileName) : `document.${defaultExt}`;
+
+      const liveResult = await this.callSarvamDocumentAiV1(fileBuffer, safeName, mimeType);
+      const rawOcrText = sanitizePgText(liveResult.text).trim();
+      if (!rawOcrText) {
+        throw new SarvamOcrUnavailableError('Sarvam OCR returned no readable text.', 'SARVAM_EMPTY_OCR');
+      }
+
+      const documentType = this.classifyDocument(rawOcrText);
+      const structuredLabs = this.extractClinicalFields(rawOcrText, documentType);
+      const plainSummary = sanitizePgText(this.generatePlainSummary(structuredLabs, documentType));
+      const doctorAdvice = this.generateDoctorAdvice(structuredLabs).map(sanitizePgText);
+      const pageCount =
+        liveResult.pagesProcessed ||
+        (mimeType.includes('pdf') ? Math.max(1, Math.min(10, Math.ceil(fileBuffer.length / 50000))) : 1);
+
+      return {
+        success: true,
+        mode: 'TEMPORARY_IN_MEMORY',
+        persistentStorage: false,
+        temporaryCleanedUp: true,
+        engine: 'SARVAM_DOCUMENT_AI',
+        provider: 'SARVAM_DOC_AI',
+        documentType,
+        pageCount,
+        sarvamJobId: liveResult.sarvamJobId,
+        rawOcrText,
+        structuredLabs,
+        plainSummary,
+        doctorAdvice,
+        processingDurationMs: Date.now() - startTime,
+      };
+    } finally {
+      fileBuffer.fill(0);
+    }
+  }
+
+  /**
+   * Submits a document to Sarvam Document Intelligence V1 API and records structured extraction.
+   * Never silently falls back to fabricated local text when Sarvam fails or is unconfigured.
    */
   static async processDocument(
     documentId: string,
@@ -477,37 +646,28 @@ export class SarvamOcrService {
     });
 
     const startTime = Date.now();
-    let rawOcrText = '';
-    let creditCostActual = 0;
-    let engine: 'SARVAM_DOCUMENT_AI' | 'LOCAL_FALLBACK' = 'LOCAL_FALLBACK';
-    let sarvamJobId: string | null = null;
 
     try {
-      if (SARVAM_API_KEY && SARVAM_API_KEY.length > 10) {
-        try {
-          const liveResult = await this.callSarvamDocumentAiV1(
-            buffer,
-            uploadFileName,
-            mimeType,
-          );
-          rawOcrText = sanitizePgText(liveResult.text);
-          creditCostActual = liveResult.pagesProcessed;
-          sarvamJobId = liveResult.sarvamJobId;
-          engine = 'SARVAM_DOCUMENT_AI';
-        } catch (liveErr: any) {
-          console.warn(`[Sarvam OCR] Live API failed (${liveErr.message}), falling back to local extractor.`);
-          rawOcrText = sanitizePgText(this.localStructuredExtraction(buffer, mimeType));
-          creditCostActual = 0;
-          engine = 'LOCAL_FALLBACK';
-        }
-      } else {
-        // High-fidelity local clinical OCR simulation for tests and offline demonstrations
-        rawOcrText = sanitizePgText(this.localStructuredExtraction(buffer, mimeType));
-        creditCostActual = 0;
-        engine = 'LOCAL_FALLBACK';
+      const sarvamApiKey = getConfiguredSarvamApiKey();
+      if (!sarvamApiKey || sarvamApiKey.length < 10) {
+        throw new SarvamOcrUnavailableError(
+          'Sarvam OCR is unavailable: SARVAM_API_KEY is not configured.',
+        );
       }
 
-      rawOcrText = sanitizePgText(rawOcrText);
+      const liveResult = await this.callSarvamDocumentAiV1(
+        buffer,
+        uploadFileName,
+        mimeType,
+      );
+      const rawOcrText = sanitizePgText(liveResult.text).trim();
+      if (!rawOcrText) {
+        throw new SarvamOcrUnavailableError('Sarvam OCR response contained no readable text.', 'SARVAM_EMPTY_OCR');
+      }
+
+      const creditCostActual = liveResult.pagesProcessed;
+      const sarvamJobId = liveResult.sarvamJobId;
+      const engine = 'SARVAM_DOCUMENT_AI' as const;
       const durationMs = Date.now() - startTime;
       const documentType = this.classifyDocument(rawOcrText);
       const extractedData = this.extractClinicalFields(rawOcrText, documentType);
@@ -516,7 +676,7 @@ export class SarvamOcrService {
       await prisma.ocrProcessingJob.update({
         where: { id: job.id },
         data: {
-          provider: engine === 'SARVAM_DOCUMENT_AI' ? 'SARVAM_DOC_AI' : 'LOCAL_FALLBACK',
+          provider: 'SARVAM_DOC_AI',
           jobId: sarvamJobId,
           status: 'COMPLETED',
           documentType,
@@ -531,7 +691,7 @@ export class SarvamOcrService {
       const doctorAdvice = this.generateDoctorAdvice(extractedData).map(sanitizePgText);
       const docExtractedJson = sanitizePgText(
         JSON.stringify({
-          provider: engine === 'SARVAM_DOCUMENT_AI' ? 'SARVAM_DOC_AI' : 'LOCAL_FALLBACK',
+          provider: 'SARVAM_DOC_AI',
           engine,
           status: 'COMPLETED',
           documentType,
@@ -569,6 +729,7 @@ export class SarvamOcrService {
       await prisma.ocrProcessingJob.update({
         where: { id: job.id },
         data: {
+          provider: 'SARVAM_DOC_AI',
           status: 'FAILED',
           errorMessage: SarvamOcrService.formatSafeOcrError(err),
         },

@@ -18,7 +18,7 @@ test('unauthenticated web composition is doctor-only and excludes mobile shell r
   assert.match(app, /window\.history\.replaceState\(null, '', '\/login'\)/);
   assert.doesNotMatch(app, /PatientSwitcher|CaregiverConnect|<Navbar|needsOnboarding/);
   assert.match(authPage, /Doctor Login/);
-  assert.match(authPage, /Doctor Registration/);
+  assert.doesNotMatch(authPage, /Doctor Registration|Create Doctor Account|Forgot password\?|forgot-password|reset-password|doctor\/register/i);
   assert.doesNotMatch(authPage, /Patient demo|Caregiver demo|Clinical Onboarding Baseline|role-selection/i);
 });
 
@@ -29,7 +29,8 @@ test('web authentication trusts the verified API doctor role and clears rejected
   assert.ok(authContext.includes("apiFetch<MeResponse>('/auth/me')"));
   assert.match(authContext, /response\.user\?\.isClinician !== true/);
   assert.match(authContext, /verified\.user\?\.isClinician !== true/);
-  assert.ok(authContext.includes("'/auth/doctor/register'"));
+  assert.doesNotMatch(authContext, /\/auth\/doctor\/register/);
+  assert.doesNotMatch(apiClient, /\/auth\/doctor\/register|\/auth\/forgot-password|\/auth\/reset-password/);
   assert.match(authContext, /clearAuthToken\(\)/);
   assert.match(authContext, /setActiveTargetPatientId\(null\)/);
   assert.match(authContext, /clearApiCache\(\)/);

@@ -1,14 +1,8 @@
-# AarogyaDamu — Render Production Blueprint Specification
-# All secret values, cloud credentials, and origin URLs marked `sync: false`
-# must be configured in the Render Dashboard prior to the first live deploy.
-
-databases:
-  - name: aarogyadamu-production-db
-    databaseName: aarogyadamu_production
-    user: aarogyadamu_db_owner
-    plan: basic-256mb
-    region: singapore
-    postgresMajorVersion: "18"
+# AarogyaDamu — Render Free + Neon Free Public Hosted Demo Blueprint
+# Uses external Neon Free PostgreSQL (`aarogyadamu-release-demo`) and three
+# Render Free services (`aarogyadamu-api`, `aarogyadamu-doctor-web`,
+# `aarogyadamu-patient-web`) with `APP_ENV=staging` and no paid add-ons.
+# Secret values marked `sync: false` must be populated in the Render Dashboard.
 
 services:
   # ---------------------------------------------------------------------------
@@ -17,19 +11,19 @@ services:
   - type: web
     name: aarogyadamu-api
     runtime: node
-    plan: starter
+    plan: free
     region: singapore
-    healthCheckPath: /health
+    autoDeploy: false
+    healthCheckPath: /health/ready
     buildCommand: npm ci --include=dev && npm run build:contracts && npm run build:api
-    preDeployCommand: npm --workspace=services/api run prisma:deploy && npm --workspace=services/api run db:provision
-    startCommand: npm --workspace=services/api start
+    startCommand: npm --workspace=services/api run db:deploy:hosted && npm --workspace=services/api start
     envVars:
       - key: NODE_VERSION
         value: '22.23.5'
       - key: NODE_ENV
         value: production
       - key: APP_ENV
-        value: production
+        value: staging
       - key: TRUST_PROXY
         value: '1'
       - key: RATE_LIMIT_STORE
@@ -38,6 +32,10 @@ services:
         value: 'false'
       - key: ENABLE_DEV_DEMO_MODE
         value: 'false'
+      - key: ALLOW_PUBLIC_DOCTOR_REGISTRATION
+        value: 'false'
+      - key: ALLOW_PUBLIC_PASSWORD_RESET
+        value: 'false'
       - key: ALLOW_ROBOTIC_VOICE_FALLBACK
         value: 'false'
       - key: ENABLE_AGENT_EXPIRY_WORKER
@@ -45,9 +43,9 @@ services:
       - key: AGENT_EXPIRY_INTERVAL_MS
         value: '900000'
       - key: EMAIL_PROVIDER
-        value: resend
+        value: disabled
       - key: MEDICAL_REPORT_OCR_PROVIDER
-        value: google_vision
+        value: sarvam
       - key: JWT_EXPIRES_IN
         value: 15m
       - key: JWT_ISSUER
@@ -56,12 +54,15 @@ services:
         value: aarogyadamu-clients
       - key: REFRESH_TOKEN_EXPIRES_DAYS
         value: '30'
-      # Internal owner connection used only by preDeployCommand (prisma migrate deploy + security vault sync)
+      # Expected Neon Free project identity (hostname only, direct endpoint without -pooler, protocol, path, or query)
+      - key: EXPECTED_NEON_ENDPOINT
+        sync: false
+      - key: EXPECTED_NEON_OWNER_ROLE
+        value: neondb_owner
+      # Neon Free direct owner connection for role preflight, prisma migrate deploy, and _security_vault sync
       - key: MIGRATION_DATABASE_URL
-        fromDatabase:
-          name: aarogyadamu-production-db
-          property: connectionString
-      # Runtime connection using restricted non-owner `aarogyadamu_app` role (enforces RLS & append-only AuditLog)
+        sync: false
+      # Neon Free pooled restricted runtime connection using non-owner `aarogyadamu_app` role (enforces RLS & append-only AuditLog)
       - key: DATABASE_URL
         sync: false
       - key: APP_RUNTIME_DB_PASSWORD
@@ -75,28 +76,16 @@ services:
         generateValue: true
       - key: DOCTOR_INVITATION_ADMIN_KEY
         generateValue: true
-      # Public origins & URLs (HTTPS only, exact origin matching, no wildcards)
+      # Hosted public origins & URLs (exact origin matching, HTTPS only, no wildcards)
       - key: WEB_APP_URL
-        sync: false
+        value: https://aarogyadamu-doctor-web.onrender.com
       - key: API_PUBLIC_URL
-        sync: false
+        value: https://aarogyadamu-api.onrender.com/api
       - key: FHIR_SERVER_URL
-        sync: false
+        value: https://aarogyadamu-api.onrender.com/api/fhir/r4
       - key: ALLOWED_ORIGINS
-        sync: false
-      # Email delivery (Resend)
-      - key: RESEND_API_KEY
-        sync: false
-      - key: EMAIL_FROM
-        sync: false
-      # Private GCS object storage & Google Cloud Vision OCR
-      - key: GOOGLE_CLOUD_PROJECT_ID
-        sync: false
-      - key: GOOGLE_CLOUD_STORAGE_BUCKET
-        sync: false
-      - key: GOOGLE_APPLICATION_CREDENTIALS_JSON
-        sync: false
-      # Optional clinical AI & voice integrations
+        value: https://aarogyadamu-doctor-web.onrender.com,https://aarogyadamu-patient-web.onrender.com
+      # Clinical OCR & conversational AI integrations (free/BYOK keys stored securely in Render)
       - key: SARVAM_API_KEY
         sync: false
       - key: GEMINI_API_KEY
@@ -108,18 +97,18 @@ services:
   # 2. Doctor Workstation Static Site (Vite + React SPA)
   # ---------------------------------------------------------------------------
   - type: web
-    name: aarogyadamu-doctor
+    name: aarogyadamu-doctor-web
     runtime: static
+    autoDeploy: false
     buildCommand: npm ci --include=dev && npm run build:contracts && npm run build:web
     staticPublishPath: apps/web/dist
     envVars:
       - key: NODE_VERSION
         value: '22.23.5'
       - key: VITE_APP_ENV
-        value: production
-      # Must be set to https://<api-domain>/api prior to building static bundle
+        value: staging
       - key: VITE_API_URL
-        sync: false
+        value: https://aarogyadamu-api.onrender.com/api
     headers:
       - path: /*
         name: X-Content-Type-Options
@@ -142,18 +131,18 @@ services:
   # 3. Patient Companion Static Site (Expo Web Single-Page Export)
   # ---------------------------------------------------------------------------
   - type: web
-    name: aarogyadamu-patient
+    name: aarogyadamu-patient-web
     runtime: static
+    autoDeploy: false
     buildCommand: npm ci --include=dev && npm run build:contracts && npm run build:mobile:web
     staticPublishPath: apps/mobile/dist
     envVars:
       - key: NODE_VERSION
         value: '22.23.5'
       - key: EXPO_PUBLIC_APP_ENV
-        value: production
-      # Must be set to https://<api-domain>/api prior to building Expo web bundle
+        value: staging
       - key: EXPO_PUBLIC_API_URL
-        sync: false
+        value: https://aarogyadamu-api.onrender.com/api
     headers:
       - path: /*
         name: X-Content-Type-Options

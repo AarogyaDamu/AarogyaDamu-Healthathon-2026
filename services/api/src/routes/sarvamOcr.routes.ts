@@ -1,22 +1,135 @@
 import { Router, Request, Response } from 'express';
+import multer from 'multer';
+import path from 'path';
 import { z } from 'zod';
 import { requireAuth, AuthenticatedRequest, AuthTokenPayload } from '../middleware/auth';
 import { resolvePracticeContext } from '../middleware/tenantMiddleware';
-import { updateTenantContext, runWithTenantContext } from '../db/tenantContext';
+import { updateTenantContext, runWithTenantContext, preserveTenantContext } from '../db/tenantContext';
+import { resolvePatientContext, AuthorizationError } from '../permissions/evaluator';
+import { logAuditEvent } from '../audit/auditLogger';
 import { prisma } from '../db/prisma';
-import { SarvamOcrService } from '../services/sarvamOcrService';
-import { readPrivateFile } from '../services/storageService';
+import { SarvamOcrService, SarvamOcrUnavailableError } from '../services/sarvamOcrService';
+import { readPrivateFile, validateFileMagicBytes, isDurableStorageAvailable } from '../services/storageService';
 import { ReviewOcrJobInputSchema } from '@aarogyadamu/contracts';
 
 const router = Router();
 router.use(requireAuth);
 router.use(resolvePracticeContext);
 
+const temporaryOcrUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, callback) => {
+    const allowed = ['application/pdf', 'image/png', 'image/jpeg', 'image/webp'];
+    callback(null, allowed.includes(file.mimetype));
+  },
+});
+
 function getActor(req: Request): AuthTokenPayload {
   const user = (req as AuthenticatedRequest).user;
   if (!user) throw new Error('Authentication required');
   return user;
 }
+
+// 0. GET /api/ocr/status — truthful configuration & storage capabilities
+router.get('/status', (_req: Request, res: Response) => {
+  const availability = SarvamOcrService.getAvailability();
+  res.json({
+    success: true,
+    ...availability,
+    durableStorageAvailable: isDurableStorageAvailable(),
+    temporaryOcrSupported: true,
+  });
+});
+
+// 0b. POST /api/ocr/extract-temporary — request-scoped in-memory Sarvam OCR (no persistent file saved)
+router.post(
+  '/extract-temporary',
+  preserveTenantContext(temporaryOcrUpload.single('file')),
+  async (req: Request, res: Response) => {
+    const file = req.file;
+    try {
+      const actor = getActor(req);
+      const { effectivePatientId } = await resolvePatientContext(req, 'MANAGE_DOCUMENTS');
+
+      if (!file) {
+        res.status(400).json({ error: 'Upload a valid PDF, JPEG, PNG, or WebP medical report for OCR.' });
+        return;
+      }
+
+      const magic = validateFileMagicBytes(file.buffer);
+      if (!magic.isValid || !magic.detectedMime) {
+        res.status(400).json({
+          error: 'Invalid file signature. Uploaded file contents do not match PDF, JPEG, PNG, or WebP.',
+        });
+        return;
+      }
+
+      const ext = path.extname(file.originalname).toLowerCase();
+      const allowedExt: Record<string, string[]> = {
+        'application/pdf': ['.pdf'],
+        'image/png': ['.png'],
+        'image/jpeg': ['.jpg', '.jpeg'],
+        'image/webp': ['.webp'],
+      };
+      if (ext && !(allowedExt[magic.detectedMime] || []).includes(ext)) {
+        res.status(400).json({
+          error: `File extension "${ext}" does not match the detected format (${magic.detectedMime}).`,
+        });
+        return;
+      }
+
+      const result = await SarvamOcrService.processTemporaryBuffer(
+        file.buffer,
+        magic.detectedMime,
+        file.originalname,
+      );
+
+      await logAuditEvent({
+        userId: effectivePatientId,
+        actorId: actor.id,
+        action: 'DOCUMENT_TEMPORARY_OCR_EXTRACTED',
+        entityType: 'OcrTemporaryExtract',
+        metadata: {
+          mode: result.mode,
+          engine: result.engine,
+          documentType: result.documentType,
+          persistentStorage: false,
+          temporaryCleanedUp: result.temporaryCleanedUp,
+        },
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent'),
+      });
+
+      res.json(result);
+    } catch (err: any) {
+      if (err instanceof AuthorizationError || err?.status === 403 || err?.message?.includes('Forbidden')) {
+        res.status(403).json({ error: err.message });
+        return;
+      }
+      if (err instanceof SarvamOcrUnavailableError) {
+        res.status(503).json({
+          success: false,
+          code: err.code,
+          error: SarvamOcrService.formatSafeOcrError(err),
+          persistentStorage: false,
+          temporaryCleanedUp: true,
+        });
+        return;
+      }
+      res.status(400).json({
+        success: false,
+        error: SarvamOcrService.formatSafeOcrError(err),
+        persistentStorage: false,
+        temporaryCleanedUp: true,
+      });
+    } finally {
+      if (file?.buffer && Buffer.isBuffer(file.buffer)) {
+        file.buffer.fill(0);
+      }
+    }
+  },
+);
 
 // 1. POST /api/ocr/process-document
 const processDocSchema = z.object({
@@ -64,6 +177,13 @@ router.post('/process-document', async (req: Request, res: Response) => {
     }
 
     const storedFile = await readPrivateFile(doc.storagePath);
+
+    if (!doc.storagePath || !storedFile) {
+      res.status(404).json({
+        error: 'Original document file is unavailable. Persistent storage is not enabled or file was not saved.',
+      });
+      return;
+    }
 
     const { result, updatedDoc } = await runWithTenantContext(
       { userId: actor.id, patientId: doc.userId },
@@ -114,6 +234,13 @@ router.post('/process-document', async (req: Request, res: Response) => {
         : undefined,
     });
   } catch (err: any) {
+    if (err instanceof SarvamOcrUnavailableError) {
+      res.status(503).json({
+        code: err.code,
+        error: SarvamOcrService.formatSafeOcrError(err),
+      });
+      return;
+    }
     res.status(400).json({ error: SarvamOcrService.formatSafeOcrError(err) });
   }
 });

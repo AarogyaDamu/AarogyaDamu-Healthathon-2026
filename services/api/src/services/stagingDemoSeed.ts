@@ -4,7 +4,12 @@ import bcrypt from 'bcryptjs';
 import { PrismaClient } from '@prisma/client';
 import { env } from '../config/env';
 import { withTenantTransaction } from '../db/tenantContext';
-import { generateValidSyntheticPdfBuffer, isCloudStorageEnabled, savePrivateFile } from './storageService';
+import {
+  generateValidSyntheticPdfBuffer,
+  isCloudStorageEnabled,
+  isDurableStorageAvailable,
+  savePrivateFile,
+} from './storageService';
 
 export const DEMO_DOCTOR_EMAIL = 'dr.rc@aarogyadamu.local';
 export const DEMO_DOCTOR_NAME = 'Dr. Rupam Choudhary (Diabetologist)';
@@ -1090,7 +1095,7 @@ export async function ensureStagingDemoDoctor(prisma: PrismaClient): Promise<Sta
     ]
   );
 
-  let relativeStoragePath = `uploads/private/${patient1.id}/quarterly_glycemic_panel.pdf`;
+  let relativeStoragePath: string | null = null;
   if (isCloudStorageEnabled()) {
     const saved = await savePrivateFile(
       patient1.id,
@@ -1099,13 +1104,14 @@ export async function ensureStagingDemoDoctor(prisma: PrismaClient): Promise<Sta
       'application/pdf'
     );
     relativeStoragePath = saved.storagePath;
-  } else {
+  } else if (isDurableStorageAvailable()) {
     const uploadDir = path.resolve(env.STORAGE_DIR, patient1.id);
     if (!fs.existsSync(uploadDir)) {
       fs.mkdirSync(uploadDir, { recursive: true });
     }
     const pdfFilePath = path.join(uploadDir, 'quarterly_glycemic_panel.pdf');
     fs.writeFileSync(pdfFilePath, validPdfBuf);
+    relativeStoragePath = `uploads/private/${patient1.id}/quarterly_glycemic_panel.pdf`;
   }
 
   const existingGlycemicDoc = existingDocs.find((d) => d.title.includes('Quarterly Glycemic Panel'));
